@@ -2,8 +2,6 @@
 
 **本地优先的文献管理 + AI 翻译对照阅读工具。** 把英文 PDF 导入进来，本地翻成中文，左右并排对照着读，边读边划词批注、边写 Markdown 笔记。
 
-所有数据都在你自己的硬盘上，不上传任何服务器。翻译和 AI 总结用你**自己的** API Key（或免 Token 的网页版 AI），不存在「把论文传给某个云服务」这一步。
-
 <p align="center">
   <img src="docs/screenshots/reader-dual.png" alt="双语对照阅读" width="100%">
 </p>
@@ -37,10 +35,6 @@ LitHub 把这一串收进一个窗口：
 - 标签、收藏、「最近添加」等智能视图
 - 列表 / 网格两种视图，`/` 直接聚焦搜索框
 - **Zotero 式可展开附件树**：一篇文献下面挂着原文 PDF、译文、双语对照版、笔记，点哪个开哪个
-
-<p align="center">
-  <img src="docs/screenshots/library-tree.png" alt="附件树" width="100%">
-</p>
 
 ### 全文检索
 
@@ -87,7 +81,7 @@ LitHub 把这一串收进一个窗口：
   <img src="docs/screenshots/webai.png" alt="网页 AI" width="100%">
 </p>
 
-想用 ChatGPT / DeepSeek 的网页版（不烧 Token），但又不想来回切窗口？可以把它**嵌进应用右侧**，和论文并排：
+想用 ChatGPT / DeepSeek 的网页版，但又不想来回切窗口？可以把它**嵌进应用右侧**，和论文并排：
 
 - 嵌的是**你自己的 Chrome / Edge**，登录态跟平时完全一样，不用再登录一次
 - 面板头两个按钮喂料：**复制 PDF**（文件进剪贴板，到对话框里 `Ctrl+V` 就是上传）、**复制提示词**
@@ -131,6 +125,7 @@ npm run dev
 ```
 
 > 国内网络如果 Electron 下载失败，先设镜像：
+> 
 > ```powershell
 > $env:ELECTRON_MIRROR = "https://npmmirror.com/mirrors/electron/"
 > ```
@@ -141,10 +136,10 @@ npm run dev
 
 ## 数据存在哪
 
-| 内容 | 位置 |
-|---|---|
-| 文献库、原文 PDF、译文、笔记、批注、搜索索引 | 安装版：`%APPDATA%\文枢 LitHub\data`<br>源码版：`backend/data/` |
-| API Key | 同一份 `library.json`，用 Windows DPAPI 加密（绑定当前 Windows 账户） |
+| 内容                       | 位置                                                     |
+| ------------------------ | ------------------------------------------------------ |
+| 文献库、原文 PDF、译文、笔记、批注、搜索索引 | 安装版：`%APPDATA%\文枢 LitHub\data`<br>源码版：`backend/data/`  |
+| API Key                  | 同一份 `library.json`，用 Windows DPAPI 加密（绑定当前 Windows 账户） |
 
 拷走 `data` 文件夹就是完整备份，换机器复制回去即可。**API Key 换了账户解不开**，需要重新填。
 
@@ -154,13 +149,13 @@ npm run dev
 
 ## 快捷键
 
-| 键 | 作用 |
-|---|---|
-| `/` | 在文献库里聚焦搜索框 |
-| `Ctrl` `+` / `-` / `0` | 阅读器缩放（`0` = 适合宽度） |
-| `Ctrl+S` | 立即保存笔记 |
-| `Ctrl+Enter` | 保存批注备注 |
-| `Esc` | 关闭弹窗 / 中止正在流式输出的 AI 回复 |
+| 键                      | 作用                     |
+| ---------------------- | ---------------------- |
+| `/`                    | 在文献库里聚焦搜索框             |
+| `Ctrl` `+` / `-` / `0` | 阅读器缩放（`0` = 适合宽度）      |
+| `Ctrl+S`               | 立即保存笔记                 |
+| `Ctrl+Enter`           | 保存批注备注                 |
+| `Esc`                  | 关闭弹窗 / 中止正在流式输出的 AI 回复 |
 
 ---
 
