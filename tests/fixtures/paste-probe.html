@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>paste-probe-idle</title>
+<style>
+  body { margin: 0; font: 16px/1.6 system-ui, sans-serif; background: #0b1020; color: #e6edf7; }
+  .wrap { padding: 24px; }
+  #box { width: 100%; height: 240px; background: #131a2e; color: #e6edf7;
+         border: 2px dashed #3b4a6b; border-radius: 12px; padding: 14px; font-size: 15px; }
+  #log { margin-top: 16px; white-space: pre-wrap; color: #7ee787; font-family: ui-monospace, monospace; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h3>剪贴板粘贴探针</h3>
+  <textarea id="box" placeholder="点这里，然后 Ctrl+V"></textarea>
+  <div id="log">等待粘贴…</div>
+</div>
+<script>
+  /* 这是 verify-paste-file.py 用的探针页，不是产品代码。
+     原理：把 paste 事件的解析结果写进 document.title，
+     外部脚本用 GetWindowTextW 读窗口标题就能知道「粘进来的是文件还是文本」，
+     完全不依赖 CDP 的输入通道（那条通道不经过系统剪贴板，测不出文件粘贴）。 */
+  const box = document.getElementById("box");
+  const log = document.getElementById("log");
+
+  box.addEventListener("paste", (e) => {
+    const cd = e.clipboardData || {};
+    const files = Array.from(cd.files || []);
+    const items = Array.from(cd.items || []);
+    const names = files.map((f) => f.name);
+    const itemKinds = items.map((i) => i.kind + ":" + i.type);
+    const text = cd.getData ? cd.getData("text") : "";
+
+    if (names.length) {
+      document.title = "PASTED-FILES:" + names.join("|");
+      log.textContent = "收到文件：" + names.join(", ") + " items=" + itemKinds.join(", ");
+      e.preventDefault();
+    } else if (text) {
+      document.title = "PASTED-TEXT:" + text.slice(0, 80);
+      log.textContent = "收到文本：" + text.slice(0, 200) + " items=" + itemKinds.join(", ");
+    } else {
+      document.title = "PASTED-EMPTY";
+      log.textContent = "paste 事件来了，但既没有文件也没有文本；items=" + itemKinds.join(", ");
+    }
+  });
+
+  box.focus();
+</script>
+</body>
+</html>

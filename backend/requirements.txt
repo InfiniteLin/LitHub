@@ -1,0 +1,14 @@
+# 依赖清单（sidecar 用）
+#
+# 版本按「已在开发机与打包产物里验证过」的组合钉住，不要随手升：
+#   · pymupdf 必须 <1.25.3（pdf2zh 1.9.x 的硬要求）
+#   · 只用 pip install -r 装这几个就够跑 sidecar；
+#     要让「翻译全文」也能用，还需 `pip install pdf2zh==1.9.11`
+#     （以及 build/rebuild-runtime.ps1 里钉住的 bitstring / tencentcloud-sdk 等）
+fastapi==0.142.2
+uvicorn==0.38.0
+pydantic==2.11.10
+python-multipart==0.0.32
+pypdf==6.18.1
+pymupdf==1.25.2
+openai==2.7.2

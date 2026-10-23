@@ -1,0 +1,43 @@
+{
+  "name": "lithub",
+  "productName": "文枢 LitHub",
+  "version": "0.1.0",
+  "description": "文献管理与 AI 翻译对照阅读桌面应用",
+  "author": "LitHub",
+  "main": "electron/main.js",
+  "scripts": {
+    "dev": "electron .",
+    "start": "electron .",
+    "sidecar": "python -m uvicorn main:app --host 127.0.0.1 --port 8130 --app-dir backend",
+    "dist": "electron-builder --config electron-builder.config.js",
+    "dist:dir": "electron-builder --config electron-builder.config.js --dir",
+    "test": "node tests/pdf-view.lazy.test.mjs && node tests/pdf-render.quality.test.mjs",
+    "test:lazy": "node tests/pdf-view.lazy.test.mjs",
+    "test:quality": "node tests/pdf-render.quality.test.mjs",
+    "verify:render": "node tests/verify-render.mjs",
+    "verify:library": "node tests/verify-library.mjs",
+    "verify:library-ux": "node tests/verify-library-interaction.mjs",
+    "verify:titlebar": "node tests/verify-titlebar.mjs",
+    "verify:titlebar-desktop": "node tests/verify-titlebar-desktop.mjs",
+    "verify:notes": "node tests/verify-notes-annotations.mjs",
+    "verify:annot": "node tests/verify-annot-accurate.mjs",
+    "verify:annot-ui": "node tests/verify-annot-ui.mjs",
+    "verify:annot-layout": "node tests/verify-annot-layout.mjs",
+    "verify:annot-delete": "node tests/verify-annot-delete.mjs",
+    "verify:highlight-overlap": "node tests/verify-highlight-overlap.mjs",
+    "verify:note-popup": "node tests/verify-note-popup.mjs",
+    "verify:annot-drag": "node tests/verify-annot-drag.mjs",
+    "verify:note-tab": "node tests/verify-note-tab.mjs",
+    "verify:note-live": "node tests/verify-note-live.mjs",
+    "verify:copy-pdf": "node tests/verify-copy-pdf.mjs",
+    "verify:paste-file": "python tests/verify-paste-file.py"
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^44.5.1",
+    "electron-builder": "^26.15.3"
+  },
+  "dependencies": {
+    "pdfjs-dist": "^6.4.299"
+  }
+}

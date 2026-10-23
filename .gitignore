@@ -1,0 +1,49 @@
+# ---------- 依赖与构建 ----------
+node_modules/
+/dist/
+release/
+__pycache__/
+*.pyc
+
+# 打包产物：内置 Python 运行时（约 640 MB，由 build/rebuild-runtime.ps1 生成）
+# 不入库 —— 它全是第三方 wheel 解出来的二进制，重建一次就有了。
+build/python/
+
+# pip 装依赖时的临时目录（会建在仓库根，容易漏）
+# 只锚定仓库根 + 前缀，避免误伤 tests/template.html、frontend/js/tmp.js 这类正常文件
+/pip-build-tracker-*/
+/pip-ephem-wheel-cache-*/
+/pip-install-*/
+/tmp*
+
+# 注意：frontend/vendor/vditor/dist/ 是**运行时依赖**（Vditor 发行包），必须入库。
+# 所以上面的 dist/ 规则只能锚定仓库根目录，不能写成裸 `dist/`。
+!frontend/vendor/vditor/dist/
+
+# ---------- 运行时数据（敏感：含明文 API Key 与个人文献） ----------
+# backend/data/ 下有 library.json（api_key 明文）、files/ 原文 PDF、
+# out/ 译文产物、text/ 全文旁车、search.db 索引 —— 一律不入库
+backend/data/
+backend/*.log
+*.log
+
+# 本地调试用 PDF 与 pdf2zh 产物
+/sample-*.pdf
+/out_test/
+/out_ds/
+
+# 视觉验证产出的截图
+tests/.shots/
+
+# 开发环境（沙箱）修 ACL 时留下的报告，不属于项目内容
+.acl-reports/
+
+# 内部开发文档（原 README 的详细版：目录结构、API 一览、踩坑记录）
+# 按用户要求不公开到仓库。需要在本地保留就留着，想开源时删掉这行即可。
+/DEVELOPMENT.md
+
+# ---------- 系统与编辑器 ----------
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

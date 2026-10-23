@@ -1,0 +1,47 @@
+﻿<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light" data-accent="zhu">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>文枢 · 文献管理与翻译</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2064%2064'%3E%3Crect%20width='64'%20height='64'%20rx='14'%20fill='%23A6432B'/%3E%3Ctext%20x='32'%20y='44'%20font-size='34'%20font-family='Georgia,serif'%20fill='%23FFF8F0'%20text-anchor='middle'%3E文%3C/text%3E%3C/svg%3E">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Noto+Serif+SC:wght@500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/styles.css?v=20261024f">
+</head>
+<body>
+  <!-- 窗口 chrome：桌面壳下 = 品牌 + 标签栏 + 窗口控件；浏览器下只保留标签栏 -->
+  <div id="titlebar">
+    <div class="tb-brand">
+      <span class="tb-mark">文</span>
+      <span class="tb-name">文枢<i>LITHUB</i></span>
+    </div>
+    <div id="tab-strip" hidden></div>
+    <div class="tb-drag"></div>
+    <div class="tb-controls">
+      <button id="tb-min" title="最小化" aria-label="最小化">
+        <svg viewBox="0 0 10 10" width="10" height="10"><path d="M0 5h10" stroke="currentColor" stroke-width="1"/></svg>
+      </button>
+      <button id="tb-max" class="tb-max" title="最大化" aria-label="最大化">
+        <svg viewBox="0 0 10 10" width="10" height="10"><rect x="0.5" y="0.5" width="9" height="9" fill="none" stroke="currentColor" stroke-width="1"/></svg>
+      </button>
+      <button id="tb-restore" class="tb-restore" title="向下还原" aria-label="向下还原">
+        <svg viewBox="0 0 10 10" width="10" height="10"><path d="M2.5 2.5V0.5H9.5V7.5H7.5" fill="none" stroke="currentColor" stroke-width="1"/><rect x="0.5" y="2.5" width="7" height="7" fill="none" stroke="currentColor" stroke-width="1"/></svg>
+      </button>
+      <button id="tb-close" title="关闭" aria-label="关闭">
+        <svg viewBox="0 0 10 10" width="10" height="10"><path d="M0.5 0.5l9 9M9.5 0.5l-9 9" stroke="currentColor" stroke-width="1"/></svg>
+      </button>
+    </div>
+  </div>
+  <div id="app"></div>
+  <div id="overlay-root"></div>
+  <div id="toast-root" aria-live="polite"></div>
+  <script src="js/api.js?v=20261024f"></script>
+  <script src="js/pdf-view.js?v=20261024f"></script>
+  <script src="js/pdf-annot.js?v=20261024f"></script>
+  <script src="js/note-editor.js?v=20261024f"></script>
+  <script src="js/data.js?v=20261024f"></script>
+  <script src="js/app.js?v=20261024f"></script>
+</body>
+</html>

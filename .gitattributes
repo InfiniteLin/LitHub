@@ -1,0 +1,11 @@
+# 统一换行：仓库内一律 LF，检出时由各平台决定，避免 Windows 下大量 CRLF 噪声
+* text=auto eol=lf
+
+# 二进制资源不做换行转换
+*.png binary
+*.ico binary
+*.pdf binary
+*.pfb binary
+*.ttf binary
+*.bcmap binary
+*.min.js -diff linguist-vendored
