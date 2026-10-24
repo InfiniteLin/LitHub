@@ -10,7 +10,7 @@ import threading
 import time
 from pathlib import Path
 
-from store import store, OUT_DIR
+from store import store
 
 _progress_re = re.compile(r"(\d{1,3})%\|")
 _queue: "queue.Queue[str]" = queue.Queue()
@@ -81,7 +81,7 @@ def _run_one(task_id: str):
         return
 
     src = store.paper_file(paper["id"])
-    out_dir = OUT_DIR / paper["id"]
+    out_dir = store.output_dir / paper["id"]
     out_dir.mkdir(parents=True, exist_ok=True)
     store.update_task(task_id, status="running", progress=0, note="正在解析版面…")
 

@@ -1,9 +1,9 @@
 """JSON 文件存储：文献库 / 任务 / 设置。
 
 MVP 阶段使用单文件 JSON + 线程锁，接口按 SQLite 可替换的粒度设计。
-数据目录由 `paths.py` 决定（开发时 backend/data，装成安装包后在
-`%APPDATA%\\文枢 LitHub\\data`，因为程序目录对普通用户不可写）：
-files/ 存原文，out/<id>/ 存 pdf2zh 产物。
+元数据目录由 paths.py 决定。PDF 附件目录由 PdfStorage 管理，
+默认在程序目录的 pdfs/ 下；旧库沿用原位置，用户可在设置中校验迁移。
+PDF 根目录下 files/ 存原文，out/<id>/ 存译文与对照版。
 """
 
 import json
@@ -17,9 +17,8 @@ from pathlib import Path
 
 import secret
 from paths import DATA_DIR
+from pdf_storage import PdfStorage
 
-FILES_DIR = DATA_DIR / "files"
-OUT_DIR = DATA_DIR / "out"
 STORE_PATH = DATA_DIR / "library.json"
 
 _lock = threading.RLock()
@@ -82,7 +81,7 @@ DEFAULT_PROMPTS = [
 
 
 def _ensure_dirs():
-    for d in (DATA_DIR, FILES_DIR, OUT_DIR):
+    for d in (DATA_DIR,):
         d.mkdir(parents=True, exist_ok=True)
 
 
@@ -148,6 +147,28 @@ class Store:
 
     def __init__(self):
         self._db = _load()
+        program = Path(os.environ.get("LITHUB_PROGRAM_DIR") or Path(__file__).resolve().parent.parent)
+        default = os.environ.get("LITHUB_PDF_DEFAULT_DIR")
+        if not default and os.environ.get("LITHUB_DATA_DIR") and not os.environ.get("LITHUB_PROGRAM_DIR"):
+            default = str(DATA_DIR / "pdfs")
+        self._pdf_storage = PdfStorage(DATA_DIR, program, default)
+        self._pdf_storage.initialize(self._db, self._flush)
+
+    @property
+    def files_dir(self):
+        return self._pdf_storage.files
+
+    @property
+    def output_dir(self):
+        return self._pdf_storage.out
+
+    def pdf_storage_info(self):
+        with _lock:
+            return self._pdf_storage.info()
+
+    def change_pdf_storage(self, directory=None):
+        with _lock:
+            return self._pdf_storage.change(self._db, directory or self._pdf_storage.default, self._flush)
 
     def _flush(self):
         _save(self._db)
@@ -172,30 +193,30 @@ class Store:
 
     def add_paper(self, src: Path, orig_name: str, pages: int, title: str | None,
                   digest: str | None = None, cat: str = "local") -> dict:
-        pid = uuid.uuid4().hex[:12]
-        dst = FILES_DIR / f"{pid}.pdf"
-        shutil.copyfile(src, dst)
-        paper = {
-            "id": pid,
-            "title": title or Path(orig_name).stem,
-            "authors": "",
-            "venue": "本地导入",
-            "year": None,
-            "type": "PDF",
-            "cat": cat if cat else "local",
-            "tags": [],
-            "fav": False,
-            "translated": False,
-            "translated_file": None,
-            "pages": pages,
-            "orig_name": orig_name,
-            "hash": digest,
-            "added": datetime.now().isoformat(timespec="seconds"),
-        }
         with _lock:
+            pid = uuid.uuid4().hex[:12]
+            dst = self.files_dir / f"{pid}.pdf"
+            shutil.copyfile(src, dst)
+            paper = {
+                "id": pid,
+                "title": title or Path(orig_name).stem,
+                "authors": "",
+                "venue": "本地导入",
+                "year": None,
+                "type": "PDF",
+                "cat": cat if cat else "local",
+                "tags": [],
+                "fav": False,
+                "translated": False,
+                "translated_file": None,
+                "pages": pages,
+                "orig_name": orig_name,
+                "hash": digest,
+                "added": datetime.now().isoformat(timespec="seconds"),
+            }
             self._db["papers"][pid] = paper
             self._flush()
-        return dict(paper)
+            return dict(paper)
 
     def update_paper(self, pid, **fields):
         with _lock:
@@ -217,20 +238,20 @@ class Store:
             self._db["notes"].pop(pid, None)
             self._db["annotations"].pop(pid, None)
             self._flush()
-        try:
-            (FILES_DIR / f"{pid}.pdf").unlink(missing_ok=True)
-        except Exception:
-            pass
-        if translated_file:
             try:
-                Path(translated_file).unlink(missing_ok=True)
+                (self.files_dir / f"{pid}.pdf").unlink(missing_ok=True)
             except Exception:
                 pass
-        shutil.rmtree(OUT_DIR / pid, ignore_errors=True)
-        return True
+            if translated_file:
+                try:
+                    Path(translated_file).unlink(missing_ok=True)
+                except Exception:
+                    pass
+            shutil.rmtree(self.output_dir / pid, ignore_errors=True)
+            return True
 
     def paper_file(self, pid) -> Path:
-        return FILES_DIR / f"{pid}.pdf"
+        return self.files_dir / f"{pid}.pdf"
 
     # ---------- categories ----------
     def list_categories(self):

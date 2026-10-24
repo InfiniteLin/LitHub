@@ -615,7 +615,7 @@ mark {
 #drop-overlay .drop-sub { font-size: 12.5px; font-weight: 400; color: var(--ink-2); }
 #drop-overlay[hidden] { display: none; }
 /* PDF.js 面板：双语对照成对布局（左原文 · 右译文）与页角标 */
-.pdf-flow { display: flex; flex-direction: column; align-items: center; }
+.pdf-flow { display: flex; flex-direction: column; align-items: center; width: max-content; min-width: 100%; }
 .pdf-row { display: flex; align-items: flex-start; justify-content: center; column-gap: 20px; margin-bottom: 28px; }
 .pdf-row .pdf-page { margin: 0; }
 .pdf-tag {
@@ -692,6 +692,7 @@ body.reading #sidebar { display: none; }
 .panes.en .pane-en, .panes.zh .pane-zh { flex: 1; }
 .pane {
   flex: 1; min-width: 0; overflow-y: auto; position: relative;
+  overflow-x: auto; overflow-anchor: none; scrollbar-gutter: stable;
   padding: 34px 40px 80px;
   scroll-behavior: auto;
   /* 去除独立的合成层，避免位图被合成器二次缩放导致发虚 */
@@ -714,6 +715,10 @@ body.reading #sidebar { display: none; }
   background: var(--line); pointer-events: none; transition: background 0.12s var(--ease);
 }
 .pane-divider:hover::after, .pane-divider.dragging::after { background: var(--accent); }
+/* 网页 AI 分隔条独占一小段宽度，不覆盖论文滚动条或正文命中区。 */
+#webai-divider {
+  width: 8px; margin: 0; touch-action: none;
+}
 .pane-label {
   position: sticky; top: 0; z-index: 5;
   display: inline-flex; align-items: center; gap: 6px;
@@ -872,12 +877,12 @@ body.webai-resizing * { cursor: col-resize !important; }
    清晰度关键：canvas 的 CSS 尺寸由 JS 精确指定（width/height 内联），
    这里不要再写 width:100% —— 那会引入非整数缩放使文字发虚。 */
 .pdf-page {
-  width: 100%; max-width: 100%;
+  width: 100%; max-width: none; flex: none;
   margin: 0 auto 26px;
   background: var(--paper-page);
-  border: 1px solid var(--line);
+  border: 0;
   border-radius: 3px;
-  box-shadow: var(--shadow-page);
+  box-shadow: 0 0 0 1px var(--line), var(--shadow-page);
   overflow: hidden;
   position: relative;
   /* 位图已按 2x+ 采样，浏览器只需等比缩放到 1x 显示 */
@@ -887,6 +892,14 @@ body.webai-resizing * { cursor: col-resize !important; }
   display: block;
   position: absolute; inset: 0;
   width: 100%; height: 100%;
+}
+.pdf-page .pdf-detail-canvas {
+  inset: auto; z-index: 0; pointer-events: none;
+}
+.pdf-page-error {
+  position: absolute; inset: 40% 10% auto; z-index: 4;
+  padding: 12px; border: 1px solid var(--line); border-radius: 6px;
+  background: var(--surface-2); color: var(--ink-2); cursor: pointer;
 }
 /* 批注层：位于文本层之上，负责绘制高亮/划线；本身不吃鼠标事件，
    但其子元素（批注标记）需要可点击 */

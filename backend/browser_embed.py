@@ -18,7 +18,7 @@ Cookie：Chrome v127+ 的 Cookie 使用 App-Bound Encryption，密钥绑定 Chro
    独立顶层窗口，便于嵌入。
 2. **不要传 --user-data-dir**：传了就变成全新 profile，登录态丢失，目的就没了。
 3. **找窗口**：不能用启动器的 pid（Chrome 会把命令转发给现有进程，实际窗口属于
-   那个进程）。按「启动前不存在的窗口 + 标题/URL 标记」识别。
+   那个进程）。按新窗口、窗口类、真实进程路径共同筛选；多个候选时拒绝猜测。
 4. **WS_CHILD**：SetParent 后还要把窗口样式从 WS_POPUP 改成 WS_CHILD，否则
    嵌入后仍会浮在父窗口之上。
 5. **还原**：面板关闭时要先把窗口从父窗口摘下（SetParent(hwnd, None)），再关闭，
@@ -282,6 +282,24 @@ def _class_name(hwnd: int) -> str:
     return buf.value
 
 
+def _process_image(pid: int) -> str:
+    """Resolve the window's real executable, including an already-running broker."""
+    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.QueryFullProcessImageNameW.argtypes = [wintypes.HANDLE, wintypes.DWORD,
+                                                   wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD)]
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    handle = kernel32.OpenProcess(0x1000, False, pid)  # QUERY_LIMITED_INFORMATION
+    if not handle:
+        return ""
+    try:
+        size = wintypes.DWORD(32768)
+        buf = ctypes.create_unicode_buffer(size.value)
+        return buf.value if kernel32.QueryFullProcessImageNameW(handle, 0, buf, ctypes.byref(size)) else ""
+    finally:
+        kernel32.CloseHandle(handle)
+
+
 class EmbeddedBrowser:
     """管理「用宿主窗口嵌入一个 --app 浏览器窗口」的完整生命周期。
 
@@ -323,17 +341,16 @@ class EmbeddedBrowser:
         self.proc: subprocess.Popen | None = None
         self.hwnd: int | None = None
         self.parent_hwnd: int | None = None
-        self.marker = ""
         self.last_requested: tuple[int, int, int, int] | tuple = ()
         self._insets: tuple[int, int, int, int] = (0, 0, 0, 0)
         self._insets_at = 0.0
         self._closed = False
+        self._cancel_event = threading.Event()
         self.input_lost_count = 0     # 巡检发现「点击/按键没落到浏览器上」的次数
 
     # ---------- 启动并找窗口 ----------
     def _launch(self, url: str) -> str:
         """启动一个 --app 窗口（命令会被转发给已在运行的 Chrome，因此沿用真实 profile）。"""
-        self.marker = "lithub-" + str(int(time.time() * 1000))
         args = [
             self.browser["path"],
             "--no-first-run",
@@ -352,7 +369,8 @@ class EmbeddedBrowser:
             return f"启动浏览器失败：{exc}"
         return ""
 
-    def _find_new_window(self, existed: set[int], deadline: float) -> int | None:
+    def _find_new_window(self, existed: set[int], deadline: float,
+                         stop_on_cancel: bool = True) -> int | None:
         """找出「新出现、且稳定存在」的浏览器窗口。
 
         为什么要等稳定：Chrome 打开 app 窗口时会先建一个占位窗口再换成真正的窗口
@@ -362,10 +380,16 @@ class EmbeddedBrowser:
         """
         last_seen = None
         stable_since = 0.0
-        while time.time() < deadline:
-            best, best_area = None, 0
+        expected = os.path.normcase(os.path.realpath(self.browser["path"]))
+        while time.time() < deadline and (not stop_on_cancel or not self._cancel_event.is_set()):
+            candidates = []
             for h in _enum_windows(lambda x: user32.IsWindowVisible(x)):
                 if h in existed:
+                    continue
+                if _class_name(h) != "Chrome_WidgetWin_1":
+                    continue
+                image = _process_image(_window_pid(h))
+                if not image or os.path.normcase(os.path.realpath(image)) != expected:
                     continue
                 title = _window_title(h)
                 if not title:
@@ -375,15 +399,17 @@ class EmbeddedBrowser:
                 w, hgt = r.right - r.left, r.bottom - r.top
                 if w < 400 or hgt < 300:
                     continue
-                area = w * hgt
-                if area > best_area:
-                    best, best_area = h, area
+                candidates.append(h)
+            # Ambiguous ownership is an error, not a reason to capture the largest window.
+            best = candidates[0] if len(candidates) == 1 else None
             if best is not None:
                 if best == last_seen:
                     if time.time() - stable_since >= 0.4 and user32.IsWindow(best):
                         return best
                 else:
                     last_seen, stable_since = best, time.time()
+            else:
+                last_seen, stable_since = None, 0.0
             time.sleep(0.05)
         return None
 
@@ -421,14 +447,15 @@ class EmbeddedBrowser:
             except Exception:
                 pass
 
-    def open(self, url: str, parent_hwnd: int, timeout: float = 30.0) -> tuple[bool, str]:
+    def open(self, url: str, parent_hwnd: int, timeout: float = 30.0,
+             cancel_event=None) -> tuple[bool, str]:
+        self._cancel_event = cancel_event if cancel_event is not None else threading.Event()
+        if self._cancel_event.is_set():
+            return False, "打开已取消"
         if sys.platform != "win32":
             return False, "仅支持 Windows"
-        if self.hwnd and user32.IsWindow(self.hwnd):
-            # 已嵌入过：直接导航并显示
-            self._navigate(url)
-            self.show()
-            return True, ""
+        if self.alive() or self._closed:
+            return False, "请通过会话管理器创建新的浏览器实例"
 
         # 清掉重启前遗留的嵌入窗口，避免一块不受控的浏览器画面盖在界面上
         self._close_orphans(parent_hwnd)
@@ -446,8 +473,17 @@ class EmbeddedBrowser:
         for attempt in range(2):
             hwnd = self._find_new_window(existed, time.time() + (timeout if attempt == 0 else 10.0))
             if not hwnd:
+                if self._cancel_event.is_set():
+                    # Chrome's broker may create the app window just after cancellation.
+                    # Briefly identify that window so it can be closed instead of orphaned.
+                    self.hwnd = self._find_new_window(existed, time.time() + 2, stop_on_cancel=False)
+                    self.close()
+                    return False, "打开已取消"
                 break
             self.hwnd = hwnd
+            if self._cancel_event.is_set():
+                self.close()
+                return False, "打开已取消"
             ok, rerr = self._reparent(parent_hwnd)
             if not ok:
                 self.hwnd = None
@@ -488,6 +524,16 @@ class EmbeddedBrowser:
                 if ph and not user32.IsWindow(ph):
                     self.close()
                     return
+                if not user32.IsWindowVisible(self.hwnd):
+                    continue
+                # 初次加载/换屏时 Chromium 可能晚于嵌入完成布局。
+                # 前端会合并相同的 bounds，不能依赖下一次拖动来裁掉标题栏。
+                previous = self._insets
+                if self.last_requested and self.content_insets() != previous:
+                    try:
+                        self.set_bounds(*self.last_requested)
+                    except RuntimeError:
+                        pass
                 self._raise_to_top()
                 self._activate_spoof()
                 if not self.input_ok():
@@ -553,7 +599,7 @@ class EmbeddedBrowser:
         try:
             style = user32.GetWindowLongW(self.hwnd, GWL_STYLE)
             # 去掉弹出式/标题栏/可缩放边框，加上子窗口样式
-            style = (style & ~WS_POPUP & ~WS_CAPTION & ~WS_THICKFRAME & ~WS_BORDER) | WS_CHILD | WS_VISIBLE
+            style = (style & ~WS_POPUP & ~WS_CAPTION & ~WS_THICKFRAME & ~WS_BORDER & ~WS_VISIBLE) | WS_CHILD
             user32.SetWindowLongW(self.hwnd, GWL_STYLE, style)
             user32.SetParent(self.hwnd, parent_hwnd)
             # 通知窗口「非客户区变了」，强制它重算客户区（少了这步边框尺寸不会刷新）
@@ -561,25 +607,11 @@ class EmbeddedBrowser:
                 self.hwnd, 0, 0, 0, 0, 0,
                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
             )
-            user32.ShowWindow(self.hwnd, SW_SHOW)
-            self._raise_to_top()
-            self._activate_spoof()
+            user32.ShowWindow(self.hwnd, SW_HIDE)
             return True, ""
         except Exception as exc:
             return False, f"嵌入窗口失败：{exc}"
 
-    def _navigate(self, url: str) -> None:
-        """已打开时切换网址：无地址栏，只能通过命令行转发重新导航。"""
-        try:
-            subprocess.Popen(
-                [self.browser["path"], f"--app={url}"],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-            )
-        except Exception:
-            pass
-
-    # ---------- 尺寸 / 显隐 ----------
     def _measure_insets(self) -> tuple[int, int, int, int]:
         """量出「网页内容矩形」相对窗口左上角的内缩 (left, top, right, bottom)。
 
@@ -593,7 +625,7 @@ class EmbeddedBrowser:
         保留内容矩形。视觉上网页就从面板左上角开始铺满，被裁掉的部分既不显示
         也不吃鼠标事件（窗口区域之外的像素对鼠标是透明的，事件落回宿主窗口）。
 
-        量的办法：找 Chrome 里可见的 Chrome_RenderWidgetHostHWND（真正渲染网页的
+        量的办法：找 Chrome 里启用显示的 Chrome_RenderWidgetHostHWND（真正渲染网页的
         子窗口），它相对 app 窗口的位置就是内容内缩。找不到就返回 0（宁可不裁，
         也不要裁错方向）。
         """
@@ -616,7 +648,10 @@ class EmbeddedBrowser:
 
         best = None
         for h in win:
-            if not user32.IsWindowVisible(h):
+            # IsWindowVisible 也检查祖先：浏览器在完成定位之前是隐藏的，
+            # 此时所有子窗口都会返回 False。只检查子窗口自己的显示位，
+            # 既能在发布前测量，又不会选中 Chromium 留下的隐藏旧视口。
+            if not (user32.GetWindowLongW(h, GWL_STYLE) & WS_VISIBLE):
                 continue
             if not _class_name(h).startswith("Chrome_RenderWidgetHost"):
                 continue
@@ -661,32 +696,41 @@ class EmbeddedBrowser:
         再靠 SetWindowRgn 裁掉那圈，只留内容区。
         """
         if not self.hwnd or not user32.IsWindow(self.hwnd):
-            return
+            raise RuntimeError("浏览器窗口已关闭")
         try:
             x, y = int(x), int(y)
             w, h = max(1, int(w)), max(1, int(h))
             self.last_requested = (x, y, w, h)
             l, t, r, b = self.content_insets()
-            win_x, win_y = x - l, y - t
-            win_w, win_h = w + l + r, h + t + b
-            user32.MoveWindow(self.hwnd, win_x, win_y, win_w, win_h, True)
-            if l or t or r or b:
-                rgn = gdi32.CreateRectRgn(l, t, l + w, t + h)
-                if rgn:
-                    # SetWindowRgn 接管 rgn 所有权，不要自己 DeleteObject
-                    # bRedraw=False：MoveWindow 已经触发重绘，再全量重绘会闪
-                    if not user32.SetWindowRgn(self.hwnd, rgn, False):
-                        try:
-                            gdi32.DeleteObject(rgn)
-                        except Exception:
-                            pass
+            for attempt in range(3):
+                win_x, win_y = x - l, y - t
+                win_w, win_h = w + l + r, h + t + b
+                if not user32.MoveWindow(self.hwnd, win_x, win_y, win_w, win_h, True):
+                    raise RuntimeError("Windows 拒绝更新浏览器窗口位置")
+                # 首次 MoveWindow 后 Chromium 可能才补上自己的边框布局。
+                # 用实际内容窗口再校准，避免标题栏消失后仍留下侧边空隙。
+                measured = self._measure_insets()
+                if measured == (l, t, r, b) or attempt == 2:
+                    break
+                l, t, r, b = measured
+                self._insets = measured
+                self._insets_at = time.time()
+            rgn = gdi32.CreateRectRgn(l, t, l + w, t + h)
+            if rgn:
+                # SetWindowRgn 接管 rgn 所有权，不要自己 DeleteObject。
+                # 即使内缩归零也更新区域，避免保留上一次布局的旧裁剪。
+                if not user32.SetWindowRgn(self.hwnd, rgn, False):
+                    try:
+                        gdi32.DeleteObject(rgn)
+                    except Exception:
+                        pass
             # 每次摆位置都重申一次「最上层」+「以为自己被激活」：
             # 窗口尺寸变化 / Electron 渲染窗口重建时这两件事都会被重置，
             # 一旦重置，面板就会退回「只能看、点不动、快捷键全失效」的状态。
             self._raise_to_top()
             self._activate_spoof()
-        except Exception:
-            pass
+        except Exception as exc:
+            raise RuntimeError(f"调整浏览器窗口失败：{exc}") from exc
 
     def diag(self) -> dict:
         """返回几何诊断信息：把「我要的位置」和「Windows 实际给的」都摊开。
@@ -796,7 +840,6 @@ class EmbeddedBrowser:
         """
         self._closed = True
         hwnd = self.hwnd
-        self.hwnd = None
         if hwnd and user32.IsWindow(hwnd):
             try:
                 user32.SetParent(hwnd, None)
@@ -808,5 +851,11 @@ class EmbeddedBrowser:
                 user32.PostMessageW(hwnd, WM_CLOSE, 0, 0)
             except Exception:
                 pass
+            deadline = time.monotonic() + 1.0
+            while user32.IsWindow(hwnd) and time.monotonic() < deadline:
+                time.sleep(0.025)
+            if user32.IsWindow(hwnd):
+                raise RuntimeError("浏览器窗口尚未关闭，请检查是否有未确认的弹窗后重试")
+        self.hwnd = None
         self._kill_launcher()
         self.parent_hwnd = None

@@ -12,6 +12,22 @@ const API_BASE = location.protocol.startsWith("http") ? location.origin : "http:
 window.LithubAPI = {
   live: false,
 
+  async pdfStorage() {
+    const response = await fetch(`${API_BASE}/api/settings/pdf-storage`);
+    if (!response.ok) throw new Error("读取 PDF 存储设置失败");
+    return response.json();
+  },
+
+  async setPdfStorage(directory) {
+    const response = await fetch(`${API_BASE}/api/settings/pdf-storage`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ directory }),
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.detail || "切换 PDF 存储目录失败");
+    return result;
+  },
+
   async ping() {
     try {
       const r = await fetch(`${API_BASE}/api/health`, { signal: AbortSignal.timeout(2500) });

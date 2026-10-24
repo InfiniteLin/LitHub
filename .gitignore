@@ -24,6 +24,7 @@ build/python/
 # backend/data/ 下有 library.json（api_key 明文）、files/ 原文 PDF、
 # out/ 译文产物、text/ 全文旁车、search.db 索引 —— 一律不入库
 backend/data/
+/pdfs/
 backend/*.log
 *.log
 

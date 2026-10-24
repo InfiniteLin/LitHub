@@ -21,11 +21,12 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from pypdf import PdfReader
 
-from store import store, OUT_DIR
+from store import store
 from paths import DATA_DIR, FRONTEND_DIR
 import translate
 import search_index
 import clipboard_file
+from browser_session import BrowserSession
 
 try:
     import browser_embed
@@ -49,7 +50,10 @@ async def lifespan(_app: FastAPI):
 
     threading.Thread(target=_rebuild, daemon=True).start()
     yield
-    search_index.close()
+    try:
+        _browser_session.shutdown()
+    finally:
+        search_index.close()
 
 
 app = FastAPI(title="LitHub Sidecar", version=SERVICE_VERSION, lifespan=lifespan)
@@ -134,7 +138,7 @@ def _out_artifact(pid: str, kind: str) -> Path | None:
     扫描版等场景下 pdf2zh 可能产出的文件名与预期不同，因此：
     先按 *<kind>*.pdf 匹配，再退化为「同目录下唯一的 pdf 且非该类型」的兜底。
     """
-    d = OUT_DIR / pid
+    d = store.output_dir / pid
     if not d.is_dir():
         return None
     c = sorted(d.glob(f"*{kind}*.pdf"), key=lambda p: p.stat().st_mtime, reverse=True)
@@ -164,7 +168,7 @@ def build_compare_pdf(pid: str, en: Path, zh: Path) -> Path:
     """
     import pymupdf
 
-    out_dir = OUT_DIR / pid
+    out_dir = store.output_dir / pid
     out_dir.mkdir(parents=True, exist_ok=True)
     target = out_dir / f"{pid}-compare.pdf"
 
@@ -464,6 +468,25 @@ def tasks():
 
 
 # ---------- 设置 ----------
+
+class PdfStorageBody(BaseModel):
+    directory: str | None = None
+    use_default: bool = False
+
+
+@app.get("/api/settings/pdf-storage")
+def get_pdf_storage():
+    return store.pdf_storage_info()
+
+
+@app.post("/api/settings/pdf-storage")
+def set_pdf_storage(body: PdfStorageBody):
+    if not body.use_default and not (body.directory or "").strip():
+        raise HTTPException(400, "请选择 PDF 存储目录")
+    try:
+        return store.change_pdf_storage(None if body.use_default else body.directory.strip())
+    except (ValueError, OSError) as exc:
+        raise HTTPException(400, str(exc))
 
 MASK_CHAR = "*"
 MASK_PREFIX_LEN = 6   # 保留前 6 位做「是哪个 Key」的辨识，其余全遮
@@ -976,19 +999,10 @@ class EmbedBoundsBody(BaseModel):
     # （现象：拖完面板，嵌入的网页还是拖动过程中的某个位置/大小，明显错位）。
     # 带序号就能把过期的请求丢掉，只认最新的。
     seq: int = 0
+    session_id: str = ""
 
 
-# 全局只维护一个嵌入实例（一次只看一个 AI 站点）
-_embedded_browser = None
-# 「正在换/开嵌入窗口」的标记。嵌一个浏览器窗口要 1~5 秒（启动 + 等窗口稳定），
-# 这段时间里前端还在不停上报面板矩形；如果这时的旧窗口已经被摘掉，bounds 就会
-# 回一个「窗口已被关闭」，前端据此把面板收起来——于是「刷新」变成了「关闭」。
-# 所以换窗口期间直接告诉前端「忙着呢，别当回事」。
-_embed_busy = False
-# bounds 的「已应用序号」与并发保护（见 EmbedBoundsBody.seq 的注释）
-_embed_lock = threading.Lock()
-_last_bounds_seq = 0
-_bounds_stale_dropped = 0
+_browser_session = BrowserSession()
 
 
 def _require_embed():
@@ -997,14 +1011,6 @@ def _require_embed():
     if sys.platform != "win32":
         raise HTTPException(400, "嵌入浏览器仅支持 Windows")
     return browser_embed
-
-
-def _embed_diag(eb) -> dict:
-    """几何诊断：期望位置 vs Windows 实际给的位置。出错时只返回 None，不影响主流程。"""
-    try:
-        return eb.diag()
-    except Exception:
-        return {}
 
 
 @app.get("/api/browser/detect")
@@ -1039,124 +1045,53 @@ def browser_check_path(body: BrowserCheckBody):
 
 @app.post("/api/browser/embed")
 def browser_embed_open(body: EmbedBrowserBody):
-    """用真实 browser profile 打开 app 窗口并嵌入应用窗口。"""
-    global _embedded_browser, _embed_busy, _last_bounds_seq
     mod = _require_embed()
-    if not (body.url or "").startswith(("http://", "https://")):
+    from urllib.parse import urlsplit
+    target = urlsplit(body.url)
+    if target.scheme not in ("http", "https") or not target.hostname:
         raise HTTPException(400, "只允许 http/https 网址")
-
-    _embed_busy = True
     try:
-        # 已有一个在跑：先关掉，避免多个子窗口叠在一起
-        if _embedded_browser is not None:
-            try:
-                _embedded_browser.close()
-            except Exception:
-                pass
-            _embedded_browser = None
-
-        try:
-            eb = mod.EmbeddedBrowser(
-                browser_id=body.browser_id or None,
-                custom_path=body.browser_path or "",
-            )
-            ok, err = eb.open(body.url, body.parent_hwnd)
-            if not ok:
-                raise HTTPException(400, err or "嵌入失败")
-            eb.set_bounds(body.x, body.y, body.width, body.height)
-            _embedded_browser = eb
-            with _embed_lock:
-                # 新窗口：上一个窗口的序号作废
-                _last_bounds_seq = 0
-            return {
-                "ok": True,
-                "browser": eb.browser["name"],
-                "browser_path": eb.browser.get("path", ""),
-                "title": eb.current_title(),
-                "diag": _embed_diag(eb),
-            }
-        except HTTPException:
-            raise
-        except Exception as exc:
-            raise HTTPException(500, f"嵌入浏览器失败：{exc}")
-    finally:
-        _embed_busy = False
+        return _browser_session.open(
+            lambda: mod.EmbeddedBrowser(browser_id=body.browser_id or None,
+                                        custom_path=body.browser_path or ""),
+            body.url, body.parent_hwnd, (body.x, body.y, body.width, body.height))
+    except Exception as exc:
+        raise HTTPException(500, f"嵌入浏览器失败：{exc}")
 
 
 @app.post("/api/browser/bounds")
 def browser_embed_bounds(body: EmbedBoundsBody):
-    """面板尺寸/位置变化时同步原生子窗口；visible=false 时隐藏。
-
-    ⚠️ 必须串行 + 按序号丢弃过期请求：这个端点跑在 FastAPI 的线程池里，拖动分隔条时
-    前端会连着发很多个，两个请求可能后发先至，把窗口停在一个中间的（错的）几何上。
-    实测 41 个并发请求，5/5 次最终尺寸都是某个中间值——用户看到的就是「拖完错位」。
-    """
-    global _last_bounds_seq, _bounds_stale_dropped
-    if _embed_busy:
-        # 正在换窗口：既没得摆也不需要「窗口已关闭」这种判断
-        return {"ok": False, "busy": True}
-    with _embed_lock:
-        eb = _embedded_browser
-        if eb is None:
-            return {"ok": False, "error": "没有正在嵌入的浏览器"}
-        if not eb.alive():
-            # 用户手动关了浏览器窗口
-            return {"ok": False, "error": "浏览器窗口已被关闭", "closed": True}
-        if body.seq and body.seq <= _last_bounds_seq:
-            _bounds_stale_dropped += 1
-            return {"ok": True, "stale": True}
-        if body.seq:
-            _last_bounds_seq = body.seq
-        try:
-            if body.visible:
-                eb.show()
-                eb.set_bounds(body.x, body.y, body.width, body.height)
-            else:
-                eb.hide()
-            return {"ok": True, "seq": body.seq, "diag": _embed_diag(eb)}
-        except Exception as exc:
-            return {"ok": False, "error": str(exc)}
+    try:
+        return _browser_session.bounds(**body.model_dump())
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
 
 
 @app.get("/api/browser/status")
 def browser_embed_status():
-    """排查用：当前嵌入状态 + DPI 感知级别 + 期望/实际几何。
-
-    dpi_awareness 必须是 per-monitor-v2（或至少 per-monitor），否则坐标会被
-    Windows 二次缩放，子窗口必然偏位放大。
-    """
-    eb = _embedded_browser
-    extra = {"last_bounds_seq": _last_bounds_seq, "bounds_stale_dropped": _bounds_stale_dropped}
-    if eb is None:
-        return {
-            "active": False,
-            "busy": _embed_busy,
-            "dpi_awareness": getattr(browser_embed, "DPI_AWARENESS", "unknown") if browser_embed else "unknown",
-            **extra,
-        }
-    return {"active": True, "busy": _embed_busy, **extra, **_embed_diag(eb)}
+    return {**_browser_session.status(),
+            "dpi_awareness": getattr(browser_embed, "DPI_AWARENESS", "unknown")}
 
 
 @app.post("/api/browser/close")
 def browser_embed_close():
-    global _embedded_browser
-    if _embedded_browser is not None:
-        try:
-            _embedded_browser.close()
-        except Exception:
-            pass
-        _embedded_browser = None
-    return {"ok": True}
+    try:
+        return _browser_session.close()
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
 
 
 @app.post("/api/browser/hide")
 def browser_embed_hide():
-    if _embedded_browser is not None:
-        try:
-            _embedded_browser.hide()
-        except Exception:
-            pass
-    return {"ok": True}
+    return _browser_session.bounds(visible=False)
+
+
+@app.post("/api/browser/shutdown")
+def browser_embed_shutdown():
+    try:
+        return _browser_session.shutdown()
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
 
 
 # 静态托管前端（Electron 直接从 localhost 加载，规避 file:// 的 worker 限制）

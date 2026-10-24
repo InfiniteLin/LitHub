@@ -14,12 +14,18 @@ contextBridge.exposeInMainWorld("lithub", {
      走系统浏览器则直接复用已登录的账号（用户明确要求）。 */
   openExternal: (url) => ipcRenderer.invoke("shell:open-external", url),
 
+  pdfStorage: {
+    pickDirectory: (current) => ipcRenderer.invoke("storage:pick-directory", current),
+    openDirectory: () => ipcRenderer.invoke("storage:open-directory"),
+  },
+
   /* ---- 内嵌网页 AI（WebContentsView 原生层，与论文并排） ---- */
   webAi: {
     /* 打开/切换内嵌站点。url 必须在主进程白名单内。 */
     open: (url) => ipcRenderer.invoke("webai:open", url),
     /* 上报占位 div 的屏幕矩形；visible=false 时隐藏原生层 */
-    setBounds: (rect) => ipcRenderer.send("webai:set-bounds", rect),
+    setBounds: (rect) => ipcRenderer.invoke("webai:set-bounds", rect),
+    close: () => ipcRenderer.invoke("webai:close"),
     hide: () => ipcRenderer.invoke("webai:hide"),
     reload: () => ipcRenderer.invoke("webai:reload"),
     back: () => ipcRenderer.invoke("webai:back"),
@@ -33,6 +39,7 @@ contextBridge.exposeInMainWorld("lithub", {
      原理：用 --app 打开一个无地址栏窗口（命令会转发给已运行的浏览器，
      从而沿用原 profile），再由 sidecar 用 Win32 SetParent 挂到本窗口下。 */
   browser: {
+    reset: () => ipcRenderer.invoke("browser:close"),
     /* 列出可用的 Chromium 系浏览器（自定义路径 → 注册表 → 默认路径） */
     detect: (customPath = "") => ipcRenderer.invoke("browser:detect", customPath),
     /* 系统文件对话框挑浏览器的 exe */

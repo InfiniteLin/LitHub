@@ -4,7 +4,7 @@
  * 前端为 frontend/ 静态页面，后续经 IPC / localhost API 与 sidecar 通信
  * ============================================================ */
 
-const { app, BrowserWindow, dialog, ipcMain, net, shell, WebContentsView } = require("electron");
+const { app, BrowserWindow, dialog, ipcMain, net, shell, screen, WebContentsView } = require("electron");
 const path = require("node:path");
 const fs = require("node:fs");
 const { spawn } = require("node:child_process");
@@ -69,6 +69,10 @@ function startSidecar() {
     ...process.env,
     // sidecar 的 paths.py 读这个变量决定数据放哪
     LITHUB_DATA_DIR: dataDir,
+    LITHUB_PROGRAM_DIR: isPackaged ? path.dirname(app.getPath("exe")) : RES_ROOT,
+    LITHUB_PDF_DEFAULT_DIR: process.env.LITHUB_DATA_DIR
+      ? path.join(dataDir, "pdfs")
+      : path.join(isPackaged ? path.dirname(app.getPath("exe")) : RES_ROOT, "pdfs"),
     LITHUB_API_PORT: String(SIDECAR_PORT),
     // 打包版没有控制台，日志级别压到 warning，避免无谓开销
     LITHUB_LOG_LEVEL: isPackaged ? "warning" : "info",
@@ -150,6 +154,11 @@ function createWindow() {
   });
 
   win.once("ready-to-show", () => win.show());
+  win.webContents.on("render-process-gone", (_event, details) => {
+    log("渲染进程退出:", details.reason);
+    closeBrowserSession();
+    try { webAiView?.setVisible?.(false); } catch {}
+  });
   // 优先从 sidecar 加载前端（localhost 静态服务，规避 file:// 的 worker 限制）
   waitForSidecar()
     .then(() => win.loadURL(`http://127.0.0.1:${SIDECAR_PORT}/`))
@@ -203,6 +212,26 @@ ipcMain.handle("shell:open-external", async (_e, url) => {
   } catch (err) {
     return { ok: false, error: err?.message || "打开失败" };
   }
+});
+
+/* PDF storage: folder selection is native; migration itself is handled by the sidecar. */
+ipcMain.handle("storage:pick-directory", async (_event, current) => {
+  const result = await dialog.showOpenDialog(win, {
+    title: "选择 PDF 存储目录", properties: ["openDirectory", "createDirectory"],
+    defaultPath: typeof current === "string" && path.isAbsolute(current) ? current : undefined,
+  });
+  return result.canceled ? { ok: false, canceled: true } : { ok: true, directory: result.filePaths[0] };
+});
+ipcMain.handle("storage:open-directory", async () => {
+  try {
+    const response = await net.fetch(`http://127.0.0.1:${SIDECAR_PORT}/api/settings/pdf-storage`, {
+      signal: AbortSignal.timeout(4000),
+    });
+    if (!response.ok) throw new Error("读取存储目录失败");
+    const info = await response.json();
+    const error = await shell.openPath(info.directory);
+    return { ok: !error, error };
+  } catch (error) { return { ok: false, error: error.message }; }
 });
 
 /* ============================================================
@@ -310,8 +339,8 @@ ipcMain.handle("webai:open", async (_e, url) => {
 });
 
 /* 渲染进程报告占位 div 的屏幕矩形（CSS 像素）。视图隐藏时传 visible:false。 */
-ipcMain.on("webai:set-bounds", (_e, rect) => {
-  if (!webAiView || !rect) return;
+ipcMain.handle("webai:set-bounds", (_e, rect) => {
+  if (!webAiView || !rect) return { ok: false, error: "网页视图尚未打开" };
   webAiBounds = {
     x: Math.round(rect.x || 0),
     y: Math.round(rect.y || 0),
@@ -332,7 +361,17 @@ ipcMain.on("webai:set-bounds", (_e, rect) => {
     } else {
       webAiView.setVisible?.(false);
     }
-  } catch {}
+  } catch (error) { return { ok: false, error: error.message }; }
+  return { ok: true };
+});
+
+ipcMain.handle("webai:close", async () => {
+  webAiVisible = false;
+  try {
+    webAiView?.webContents.stop();
+    webAiView?.setVisible?.(false);
+    return { ok: true };
+  } catch (error) { return { ok: false, error: error.message }; }
 });
 
 ipcMain.handle("webai:hide", async () => {
@@ -422,18 +461,24 @@ function cssToPhysical(n, dpr) {
   return Math.round((n || 0) * (dpr || 1));
 }
 
+function rendererScale(rect) {
+  const scale = Number(rect?.dpr);
+  if (Number.isFinite(scale) && scale >= 0.25 && scale <= 8) return scale;
+  return win ? screen.getDisplayMatching(win.getBounds()).scaleFactor : 1;
+}
+
 ipcMain.handle("browser:embed", async (_e, { url, browserId, browserPath, rect }) => {
   if (!win) return { ok: false, error: "窗口未就绪" };
   const buf = win.getNativeWindowHandle();
   // Windows：buf 是小端的 4 字节指针值
   const hwnd = buf.length >= 8 ? Number(buf.readBigUInt64LE(0)) : buf.readUInt32LE(0);
-  let dpr = 1;
-  try { dpr = await win.webContents.executeJavaScript("window.devicePixelRatio"); } catch {}
+  const dpr = rendererScale(rect);
   try {
     // 嵌入前先隐藏 WebContentsView，避免原生层叠在一起
     webAiVisible = false;
     try { webAiView?.setVisible?.(false); } catch {}
     const r = await net.fetch(`http://127.0.0.1:${SIDECAR_PORT}/api/browser/embed`, {
+      signal: AbortSignal.timeout(45000),
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -457,10 +502,10 @@ ipcMain.handle("browser:embed", async (_e, { url, browserId, browserPath, rect }
 });
 
 ipcMain.handle("browser:bounds", async (_e, rect) => {
-  let dpr = 1;
-  try { dpr = await win.webContents.executeJavaScript("window.devicePixelRatio"); } catch {}
+  const dpr = rendererScale(rect);
   try {
     const r = await net.fetch(`http://127.0.0.1:${SIDECAR_PORT}/api/browser/bounds`, {
+      signal: AbortSignal.timeout(3500),
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -471,6 +516,7 @@ ipcMain.handle("browser:bounds", async (_e, rect) => {
         visible: Boolean(rect?.visible),
         // 序号一路透传到侧车：拖动时前端连着发很多条，靠它丢掉先发后至的过期请求
         seq: Number(rect?.seq) || 0,
+        session_id: String(rect?.session_id || ""),
       }),
     });
     // 把侧车的回应透给渲染进程：closed=true 表示用户自己把嵌入的浏览器窗口关掉了，
@@ -482,14 +528,17 @@ ipcMain.handle("browser:bounds", async (_e, rect) => {
   }
 });
 
-ipcMain.handle("browser:close", async () => {
+async function closeBrowserSession(shutdown = false) {
   try {
-    await net.fetch(`http://127.0.0.1:${SIDECAR_PORT}/api/browser/close`, { method: "POST" });
-    return { ok: true };
-  } catch (err) {
-    return { ok: false, error: err?.message || "关闭失败" };
-  }
-});
+    const action = shutdown ? "shutdown" : "close";
+    const response = await net.fetch(`http://127.0.0.1:${SIDECAR_PORT}/api/browser/${action}`, {
+      method: "POST", signal: AbortSignal.timeout(7000),
+    });
+    const body = await response.json();
+    return { ...body, ok: response.ok && body.ok === true };
+  } catch (err) { return { ok: false, error: err?.message || "关闭失败" }; }
+}
+ipcMain.handle("browser:close", () => closeBrowserSession());
 
 /* ---------------- 生命周期 ---------------- */
 app.whenReady().then(() => {
@@ -497,10 +546,20 @@ app.whenReady().then(() => {
   createWindow();
 });
 
-app.on("window-all-closed", () => {
-  quitting = true;
-  stopSidecar();
-  app.quit();
-});
+app.on("window-all-closed", () => app.quit());
 
-app.on("render-process-gone", (_e, details) => log("渲染进程退出:", details.reason));
+let shutdownComplete = false;
+app.on("before-quit", (event) => {
+  if (shutdownComplete) return;
+  event.preventDefault();
+  if (quitting) return;
+  quitting = true;
+  // Keep the sidecar alive until pending native launches have been cancelled and closed.
+  closeBrowserSession(true).then(result => {
+    if (!result.ok) log("退出时清理浏览器失败:", result.error);
+  }).finally(() => {
+    shutdownComplete = true;
+    stopSidecar();
+    app.quit();
+  });
+});

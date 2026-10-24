@@ -9,7 +9,7 @@
  *       backend/                 ← FastAPI 代码（sidecar）
  *       frontend/                ← 静态页面（sidecar 静态托管）
  *       python/                  ← 内置 Python 运行时 + 全部依赖
- *   用户数据：%APPDATA%\文枢 LitHub\data（安装目录只读，不能存数据）
+ *   元数据：%APPDATA%\文枢 LitHub\data；新库 PDF 默认放在安装目录的 pdfs/（不可写时回退）
  *
  * 为什么把 Python 运行时整个塞进 resources：
  *   sidecar 是 Python + 一堆 C 扩展（PyMuPDF/onnxruntime/torch…），
@@ -57,6 +57,7 @@ module.exports = {
   },
 
   nsis: {
+    include: "build/preserve-pdfs.nsh",
     oneClick: false,              // 给用户选安装目录的机会
     perMachine: false,            // 只给当前用户装（不需要管理员）
     allowToChangeInstallationDirectory: true,

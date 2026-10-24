@@ -51,13 +51,22 @@ const I = (() => {
 })();
 
 /* ---------------- 全局状态 ---------------- */
+
+/* 一篇文献第一次打开阅读器时的默认状态。
+   阅读中的可变项会按文献各存一份（readerSessions），这里只是初始模板。 */
+const DEFAULT_READER_STATE = Object.freeze({
+  mode: "dual2", zoom: 1, fit: "width",
+  panel: false, notePanel: false, notePanelWidth: 760,
+  webAi: false, webAiWidth: 46,
+});
+
 const state = {
   route: { view: "library", id: null },
   filter: { smart: "all", cat: null, search: "", tag: null },
   sort: "added",
   libView: "list",
   settingsTab: "ai",
-  reader: { mode: "dual2", zoom: 1, fit: "width", panel: false, notePanel: false, notePanelWidth: 760, prompt: "d1", vision: false, webAi: false, webAiWidth: 46 },
+  reader: { ...DEFAULT_READER_STATE, prompt: "d1", vision: false },
   translating: {},          // paperId -> percent（演示模式）
   liveTasks: [],            // 真实模式：sidecar 任务列表
   pendingFiles: [],         // 导入弹窗中选中的文件
@@ -71,6 +80,30 @@ const state = {
   collapsedCats: new Set(), // 侧栏中已折叠的分类 id（点箭头收起子分类）
   db: JSON.parse(JSON.stringify(window.DB)),
 };
+
+/* ---------------- 阅读会话（按文献隔离） ----------------
+ * 网页 AI 是「全局单实例」的原生窗口：同一时间只能有一个浏览器窗口被嵌入。
+ * 所以会话状态分成两层：
+ *   · readerSessions[paperId]：每篇文献自己的阅读状态（模式/缩放/滚动位置/网页 AI
+ *     面板开没开、宽度是多少）。它是纯数据，切走再回来据此恢复。
+ *   · webAiController.owner：当前那个唯一的原生窗口属于哪篇文献。只有 owner 的
+ *     session.webAi 才为 true；切到别的文献时窗口保留但不展示（hidden），
+ *     切回来立刻恢复，不会重新 embed/导航。
+ * 这样多论文之间不会把某篇的网页 AI 面板「串」到另一篇上。
+ */
+const readerSessions = new Map();
+const DEFAULT_READER_SCROLL = Object.freeze({ en: 0, zh: 0, dual2: 0 });
+const readerSession = (paperId) => {
+  if (!paperId) return null;
+  let s = readerSessions.get(paperId);
+  if (!s) {
+    s = { ...DEFAULT_READER_STATE, scroll: { ...DEFAULT_READER_SCROLL }, anchors: {} };
+    readerSessions.set(paperId, s);
+  }
+  return s;
+};
+/* 当前唯一嵌入浏览器窗口的归属文献；null = 没有打开过 */
+
 
 /* AI 总结流式状态 */
 const aiStream = { text: "", meta: null, err: null, streaming: false, ctrl: null };
@@ -550,7 +583,7 @@ const pageHTML = (blocks, num, lang, running = "") => `
   </div>`;
 
 function panesHTML(p) {
-  const r = state.reader;
+  const r = readerSession(p.id) || state.reader;
   const pct = state.translating[p.id];
   const runningTask = LithubAPI.live
     ? state.liveTasks.find((t) => t.paper_id === p.id && (t.status === "running" || t.status === "queued"))
@@ -617,10 +650,10 @@ function panesHTML(p) {
   if (r.mode === "dual2") mainPane = dual2Pane;
   else mainPane = r.mode === "zh" ? zhPane : enPane;
 
-  /* 内嵌网页 AI：与论文并排。这里的 div 只是「占位/定位锚」——
-     真正的网页由 Electron 主进程的原生层（WebContentsView 或用户自己的浏览器窗口）
-     绘制在这个矩形上。浏览器模式（无 Electron）下退化成提示，避免空白。 */
-  if (!r.webAi) return mainPane;
+  return mainPane + (r.webAi ? webAiPaneHTML(p) : "");
+}
+
+function webAiPaneHTML(p) {
   const navBtns = webAiMode() === "view"
     ? `<button class="icon-btn sm" data-action="webai-back" title="后退">${I("left", 14)}</button>
        <button class="icon-btn sm" data-action="webai-reload" title="刷新">${I("refresh", 14)}</button>`
@@ -633,12 +666,11 @@ function panesHTML(p) {
     <button class="btn sm webai-copy-btn" data-action="webai-copy-prompt" data-id="${p.id}"
             title="复制当前提示词模板（配合 PDF 一起发给网页 AI）">${I("sparkle", 13)}<span class="lbl">复制提示词</span></button>`;
   return `
-    ${mainPane}
     <div class="pane-divider" id="webai-divider"></div>
     <section class="pane pane-webai" id="pane-webai">
       <div class="webai-pane-head">
         <span class="webai-pane-title">${I("external", 13)}<b>网页 AI</b></span>
-        <span class="webai-pane-url" id="webai-pane-url"></span>
+        <span class="webai-pane-url" id="webai-pane-url" title="当前论文：${esc(p.title)}">${esc(p.title)}</span>
         <div class="webai-pane-copy">${feedBtns}</div>
         <div class="webai-pane-acts">
           ${navBtns}
@@ -655,6 +687,12 @@ function panesHTML(p) {
 function renderReader(id) {
   const p = paperById(id);
   if (!p) { location.hash = "#/library"; return; }
+  cancelWebAiResize?.();
+  // 载入目标文献自己的阅读会话（模式/缩放/面板开关/网页 AI 状态）。
+  // 同一篇重复渲染（切模式/缩放）是 no-op，不会清掉刚做的改动。
+  captureReaderScroll(activeReaderPaper);
+  disposePdfHosts();
+  activateReaderSession(id);
   const r = state.reader;
   document.body.classList.add("reading");
   const runningTask = LithubAPI.live
@@ -710,8 +748,84 @@ function renderReader(id) {
     <div class="panes ${r.mode}${r.webAi ? " has-webai" : ""}" id="panes" style="--pw:${Math.round(660 * r.zoom)}">
       ${panesHTML(p)}
   </div>`;
+  // 确保 state.reader 就是这篇文献的会话对象（渲染期间新建）
+  if (!readerSessions.has(id)) readerSessions.set(id, r);
+  // 之前开过网页 AI、窗口也还在（离开阅读器只是隐藏）：afterReaderRender 会按
+  // 布局重新上报矩形让原生窗口重新显示，不 embed、不导航，已有会话原地恢复。
   mountPdfHosts(p);
   afterReaderRender();
+  restoreReaderScroll(id);
+}
+
+/* ---------------- 阅读会话：快照 / 恢复 ---------------- */
+
+/* 当前 state.reader 指向哪篇文献的会话（null = 还没进过阅读器） */
+let activeReaderPaper = null;
+
+/* PDF 阅读区不在 window 上滚动，而是各自的 .pane（overflow-y:auto）。
+   记录每个模式的滚动位置；不读 DOM 时返回 null。 */
+/* 把当前阅读器的滚动位置写回指定文献的会话。
+   只有该文献确实是当前正在显示的阅读器时才读 DOM，否则会把别的文献的滚动
+   位置写到它头上（例如在 A 的阅读页里关掉 B 的标签页）。 */
+function captureReaderScroll(paperId) {
+  if (!paperId || paperId !== activeReaderPaper) return;
+  if (state.route.view !== "reader" || state.route.id !== paperId) return;
+  const s = readerSessions.get(paperId);
+  if (!s) return;
+  for (const mode of Object.keys(s.scroll)) {
+    const el = document.querySelector(`#pane-${mode}`);
+    if (el) {
+      s.scroll[mode] = el.scrollTop;
+      const anchor = PdfView.captureAnchor(el);
+      if (anchor) (s.anchors ??= {})[mode] = anchor;
+    }
+  }
+}
+
+/* 把某篇文献的会话对象接到 state.reader 上（引用共享：写 state.reader
+   等于写该文献的会话，不会串到别的文献）。同一篇重复渲染是 no-op。 */
+function activateReaderSession(paperId) {
+  if (!paperId) return state.reader;
+  if (activeReaderPaper === paperId) return state.reader;
+  captureReaderScroll(activeReaderPaper);
+  const prev = state.reader;
+  const next = readerSession(paperId);
+  if (prev && prev !== next) {
+    // 提示词/视觉模式是全局阅读偏好，不随文献隔离
+    next.prompt = prev.prompt || next.prompt;
+    next.vision = prev.vision;
+  }
+  state.reader = next;
+  activeReaderPaper = paperId;
+  return next;
+}
+
+/* 关闭阅读标签 / 删除文献时清理该文献的阅读会话与它独占的原生窗口。 */
+function disposeReaderSession(paperId) {
+  if (!paperId) return;
+  webAiController.dispose(paperId);
+  readerSessions.delete(paperId);
+  if (activeReaderPaper === paperId) activeReaderPaper = null;
+}
+
+/* 重新渲染后把 PDF 面板滚回该文献上次停的位置。
+   PDF 是异步挂载的，所以立刻设一次 + 挂载完成后再设一次 + 下一帧兜底。 */
+function restoreReaderScroll(paperId) {
+  const s = readerSessions.get(paperId);
+  if (!s) return;
+  const pane = document.querySelector(`#pane-${s.mode}`);
+  const top = s.scroll[s.mode] || 0;
+  const apply = () => {
+    // 路由已经切走就不要动别人的 DOM
+    if (state.route.view !== "reader" || state.route.id !== paperId) return;
+    const el = document.querySelector(`#pane-${s.mode}`);
+    if (el && el === pane) {
+      const anchor = s.anchors?.[s.mode];
+      if (!anchor || !PdfView.restoreAnchor(el, anchor)) el.scrollTop = top;
+    }
+  };
+  apply();
+  requestAnimationFrame(apply);
 }
 
 /* 真实模式：把 .pdf-host 挂载为 PDF.js 渲染面板
@@ -730,47 +844,53 @@ function renderReader(id) {
  * 两者都需要「把容器屏幕矩形同步给原生层」，所以统一走 syncWebAiBounds()。
  * ============================================================ */
 let webAiSyncRaf = 0;
-/* 正在打开/切换嵌入窗口期间，不要相信「窗口已被关闭」的回报：
-   换窗口要几秒，这期间旧窗口已被关掉而新窗口还没就位 */
-let webAiOpening = false;
-/* 「窗口被关掉」只提示一次：一次关闭可能同时命中好几个在途的 bounds 回报 */
-let webAiClosedNotified = false;
-
-/* 当前生效的内嵌模式；非桌面环境返回 null（调用方退回系统浏览器）。
-   内嵌方式已经固定为「嵌入我的浏览器」——设置页不再提供选项，所以这里不再读
-   settings.webAiEmbedMode。只有拿不到 browser 通道时（理论上非 Windows 会这样），
-   才退回应用内的 WebContentsView 视图。 */
 function webAiMode() {
-  if (window.lithub?.browser) return "browser";
+  if (window.lithub?.browser && (!window.lithub.platform || window.lithub.platform === "win32")) return "browser";
   if (window.lithub?.webAi) return "view";
   return null;
 }
+
+const webAiController = new WebAiController({
+  adapters: {
+    browser: {
+      open: (url, options) => window.lithub.browser.embed({ url, ...options }),
+      close: () => window.lithub.browser.close(),
+      bounds: rect => window.lithub.browser.setBounds(rect),
+    },
+    view: {
+      open: url => window.lithub.webAi.open(url),
+      close: () => (window.lithub.webAi.close || window.lithub.webAi.hide)(),
+      bounds: rect => window.lithub.webAi.setBounds(rect),
+    },
+  },
+  onClosed: owner => {
+    const session = readerSessions.get(owner);
+    if (session) session.webAi = false;
+    if (state.route.view === "reader" && state.route.id === owner) updateWebAiPanel();
+    toast("嵌入的浏览器窗口已关闭", "err");
+  },
+  onError: message => toast(message, "err"),
+});
 
 function isWebAiEmbedded() {
   return webAiMode() !== null;
 }
 
-/* 把占位 div 的屏幕矩形报给主进程。不可见时传 visible:false 隐藏原生层。
- *
- * ⚠️ 只保留「最新一条」并且**串行**发送（上一发完成才发下一发）：
- *   · 拖动分隔条时每一帧都会调用这里，若并发发出去，主进程 → 侧车（FastAPI 同步端点
- *     跑在线程池里）会乱序落地，窗口最终停在某个**中间**几何上 —— 表现就是拖完面板
- *     后嵌入的网页还错位（实测 41 个并发请求，5/5 次最终尺寸都是中间值）。
- *   · 串行 + 只保留最新，保证最后一个到达的必然是最新矩形；侧车那边还有 seq 兜底。
- */
-let webAiSyncBusy = false;      // 有一发正在路上
-let webAiSyncLatest = null;     // 等着发的最新一条（只保留一条）
-let webAiSyncSeq = 0;           // 单调递增序号，侧车用它丢弃过期请求
+/* 控制器合并并串行发送最新布局；后端按会话 ID 和序号丢弃过期请求。 */
 let webAiOccluded = false;      // 面板被 DOM 浮层（modal / 抽屉）盖住了 → 先藏起原生窗口
 
 function syncWebAiBounds() {
   const mode = webAiMode();
   if (!mode) return;
+  // 只有「当前确实在阅读这篇文献、且面板开着」时才允许原生窗口可见。
+  // 切到文献库/设置/任务/笔记页时 host 不存在，这里统一走隐藏（窗口保留，会话不丢）。
   const host = document.getElementById("webai-host");
-  if (!host) {
-    // 面板不在（关掉了 / 切到别的视图）→ 隐藏原生层
-    webAiSyncLatest = { mode, payload: { x: 0, y: 0, width: 0, height: 0, visible: false } };
-    pumpWebAiSync();
+  const canShow = state.route.view === "reader"
+    && !!state.reader?.webAi
+    && webAiController.owner === state.route.id
+    && !!document.getElementById("pane-webai");
+  if (!host || !canShow) {
+    hideWebAiNative();
     return;
   }
   const rect = host.getBoundingClientRect();
@@ -779,19 +899,26 @@ function syncWebAiBounds() {
   document.body.style.setProperty("--webai-left", Math.round(rect.left) + "px");
   // 面板够宽时才在头部按钮上显示文字（窄的时候只留图标）
   document.body.classList.toggle("webai-wide", rect.width >= 560);
-  webAiSyncLatest = {
-    mode,
-    payload: webAiOccluded
+  webAiController.sync({
+    ...(webAiOccluded
       ? { x: 0, y: 0, width: 0, height: 0, visible: false }
-      : {
-        x: Math.round(rect.left),
-        y: Math.round(rect.top),
-        width: Math.round(rect.width),
-        height: Math.round(rect.height),
-        visible: rect.width > 20 && rect.height > 20 && !!document.getElementById("pane-webai"),
-      },
-  };
-  pumpWebAiSync();
+      : { x: Math.round(rect.left), y: Math.round(rect.top),
+          width: Math.round(rect.width), height: Math.round(rect.height),
+          visible: rect.width > 20 && rect.height > 20 }),
+    dpr: window.devicePixelRatio || 1,
+  });
+}
+
+/* 只隐藏原生窗口，不销毁会话/浏览器进程。
+   browser 模式走 bounds(visible:false)（窗口保留，内容不导航）；
+   view 模式同样通过串行 bounds 隐藏，保留 WebContentsView 实例。 */
+function hideWebAiNative() {
+  const mode = webAiMode();
+  if (!mode) return;
+  document.body.style.removeProperty("--webai-left");
+  document.body.classList.remove("webai-wide");
+  webAiOccluded = false;
+  webAiController.sync({ x: 0, y: 0, width: 0, height: 0, visible: false, dpr: window.devicePixelRatio || 1 });
 }
 
 /* ============================================================
@@ -822,7 +949,7 @@ function scheduleWebAiOcclusionCheck() {
 }
 
 function updateWebAiOcclusion() {
-  if (!state.reader?.webAi) {
+  if (!state.reader?.webAi || state.route.view !== "reader" || webAiController.owner !== state.route.id) {
     if (webAiOccluded) { webAiOccluded = false; }
     return;
   }
@@ -850,34 +977,6 @@ function updateWebAiOcclusion() {
   }
 }
 
-async function pumpWebAiSync() {
-  if (webAiSyncBusy) return;      // 在途时只更新 webAiSyncLatest，由这个循环接着发
-  webAiSyncBusy = true;
-  try {
-    while (webAiSyncLatest) {
-      const job = webAiSyncLatest;
-      webAiSyncLatest = null;
-      const payload = { ...job.payload, seq: ++webAiSyncSeq };
-      try {
-        if (job.mode === "view") {
-          await window.lithub.webAi.setBounds(payload);
-        } else {
-          // browser 模式：侧车会告诉我们「那个浏览器窗口已经没了」（用户自己关掉了它）
-          const res = await window.lithub.browser.setBounds(payload);
-          if (res && res.closed && !webAiOpening && !webAiClosedNotified && state.reader.webAi) {
-            webAiClosedNotified = true;
-            state.reader.webAi = false;
-            if (state.route.view === "reader") renderReader(state.route.id);
-            toast("嵌入的浏览器窗口已关闭", "err");
-          }
-        }
-      } catch {}
-    }
-  } finally {
-    webAiSyncBusy = false;
-  }
-}
-
 /* 合并多次调用到一帧，避免拖动时每个 pointermove 都发 IPC */
 function scheduleWebAiSync() {
   if (webAiSyncRaf) return;
@@ -887,75 +986,67 @@ function scheduleWebAiSync() {
   });
 }
 
-/* 打开内嵌 AI：先建 DOM 面板，再让原生层加载对应网页 */
-async function openWebAiInline(url) {
-  const r = state.reader;
-  const mode = webAiMode();
-  if (!mode) {
-    toast("内嵌网页仅桌面版可用；已改用系统浏览器打开", "err");
-    await openExternalUrl(url || state.db.settings.webAiURL);
-    return;
+/* Only the AI panel is changed; the mounted PDF and its selection remain intact. */
+function updateWebAiPanel() {
+  if (state.route.view !== "reader") return;
+  const p = paperById(state.route.id), panes = document.getElementById("panes");
+  if (!p || !panes) return;
+  cancelWebAiResize?.();
+  const shown = !!state.reader.webAi;
+  panes.classList.toggle("has-webai", shown);
+  const button = document.querySelector('[data-action="webai-toggle"]');
+  button?.classList.toggle("is-on", shown);
+  if (shown && !document.getElementById("pane-webai")) {
+    panes.insertAdjacentHTML("beforeend", webAiPaneHTML(p));
+  } else if (!shown) {
+    document.getElementById("pane-webai")?.remove();
+    document.getElementById("webai-divider")?.remove();
   }
-  const target = url || state.db.settings.webAiURL;
-  webAiOpening = true;
-  webAiClosedNotified = false;
-  try {
-    r.webAi = true;
-    r.webAiURL = target;
-    renderReader(state.route.id);            // 这次渲染会带上 pane-webai
-    // 等一帧让布局稳定后再取矩形
-    await new Promise((res) => requestAnimationFrame(() => requestAnimationFrame(res)));
-    syncWebAiBounds();
-    const hostRect = (() => {
-      const h = document.getElementById("webai-host");
-      if (!h) return { x: 0, y: 0, width: 800, height: 600 };
-      const rc = h.getBoundingClientRect();
-      return { x: Math.round(rc.left), y: Math.round(rc.top), width: Math.round(rc.width), height: Math.round(rc.height) };
-    })();
-
-    let res;
-    if (mode === "view") {
-      res = await window.lithub.webAi.open(target);
-    } else {
-      const browserId = state.db.settings.webAiBrowser || "";
-      // 手动指定的 exe（设置页填的）。空 = 让侧车自动检测
-      const browserPath = (state.db.settings.webAiBrowserPath || "").trim();
-      res = await window.lithub.browser.embed({ url: target, browserId, browserPath, rect: hostRect });
-    }
-
-    if (!res?.ok) {
-      toast(res?.error || "内嵌网页加载失败", "err");
-      // 白名单外 / 浏览器不可用 → 退回系统浏览器
-      if (res?.error && (res.error.includes("不在允许内嵌") || res.error.includes("未检测到"))) {
-        await openExternalUrl(target);
-      }
-      return;
-    }
-    const urlEl = document.getElementById("webai-pane-url");
-    if (urlEl) {
-      const who = mode === "browser" ? (res.browser ? ` · ${res.browser}` : "") : "";
-      urlEl.textContent = target.replace(/^https?:\/\//, "").replace(/\/$/, "") + who;
-    }
-    bindWebAiResize();
-    // 首帧之后网站可能加载完改变布局，再对几次
-    setTimeout(syncWebAiBounds, 300);
-    setTimeout(syncWebAiBounds, 1200);
-    setTimeout(syncWebAiBounds, 2500);
-  } finally {
-    webAiOpening = false;
+  const fallback = document.getElementById("webai-fallback");
+  if (fallback) {
+    fallback.hidden = webAiController.owner === p.id && webAiController.state !== "opening";
+    fallback.textContent = "正在打开网页 AI…";
   }
+  afterReaderRender();
+}
+
+async function openWebAiInline(url, force = false) {
+  if (state.route.view !== "reader") return;
+  const paperId = state.route.id, r = readerSession(paperId);
+  const target = url || state.db.settings.webAiURL, mode = webAiMode();
+  if (!mode) return openExternalUrl(target);
+  for (const [id, session] of readerSessions) if (id !== paperId) session.webAi = false;
+  r.webAi = true;
+  r.webAiURL = target;
+  updateWebAiPanel();
+  const host = document.getElementById("webai-host");
+  const rect = host.getBoundingClientRect();
+  const result = await webAiController.open({ owner: paperId, url: target, mode, force,
+    options: { browserId: state.db.settings.webAiBrowser || "",
+      browserPath: (state.db.settings.webAiBrowserPath || "").trim(),
+      rect: { x: Math.round(rect.left), y: Math.round(rect.top),
+        width: Math.round(rect.width), height: Math.round(rect.height), dpr: window.devicePixelRatio || 1 } },
+  });
+  if (result.cancelled) return;
+  if (!result.ok) {
+    r.webAi = false;
+    toast(result.error, "err");
+  }
+  if (state.route.view === "reader" && state.route.id === paperId) updateWebAiPanel();
+  syncWebAiBounds();
+  scheduleWebAiOcclusionCheck();
 }
 
 function closeWebAiInline() {
   state.reader.webAi = false;
-  try {
-    if (webAiMode() === "browser") window.lithub?.browser?.close();
-    else window.lithub?.webAi?.hide();
-  } catch {}
-  if (state.route.view === "reader") renderReader(state.route.id);
+  hideWebAiNative();
+  const task = webAiController.close();
+  updateWebAiPanel();
+  return task;
 }
 
 /* 中间分隔条拖动：调整网页 AI 面板宽度（占 .panes 的百分比） */
+let cancelWebAiResize = null;
 function bindWebAiResize() {
   const divider = document.getElementById("webai-divider");
   const panes = document.getElementById("panes");
@@ -963,57 +1054,87 @@ function bindWebAiResize() {
   if (!divider || !panes || !pane || divider.dataset.bound) return;
   divider.dataset.bound = "1";
 
+  // 分隔条不在论文的滚动容器内：把这里的滚轮交给相邻论文。
+  // Ctrl/Cmd + 滚轮继续由全局缩放处理，不能同时滚动。
+  divider.addEventListener("wheel", (e) => {
+    if (e.ctrlKey || e.metaKey) return;
+    const paperPane = divider.previousElementSibling;
+    if (!paperPane?.classList.contains("pane")) return;
+    e.preventDefault();
+    const line = parseFloat(getComputedStyle(paperPane).lineHeight) || 16;
+    const unitY = e.deltaMode === 1 ? line : e.deltaMode === 2 ? paperPane.clientHeight : 1;
+    const unitX = e.deltaMode === 1 ? line : e.deltaMode === 2 ? paperPane.clientWidth : 1;
+    paperPane.scrollTop += e.deltaY * unitY;
+    paperPane.scrollLeft += e.deltaX * unitX;
+  }, { passive: false });
+
   let dragging = false;
+  let pointerId = null;
   const onMove = (e) => {
-    if (!dragging) return;
+    if (!dragging || e.pointerId !== pointerId) return;
+    if (!divider.isConnected) { onUp(); return; }
     const rect = panes.getBoundingClientRect();
     if (!rect.width) return;
     // 右侧面板宽度占比（限制 25% ~ 70%）
     const pct = ((rect.right - e.clientX) / rect.width) * 100;
+    // 写进当前文献的会话（宽度跨离开/返回保留，且不污染其它文献）
     state.reader.webAiWidth = Math.min(70, Math.max(25, pct));
     pane.style.flex = `0 0 ${state.reader.webAiWidth}%`;
     scheduleWebAiSync();
   };
-  const onUp = () => {
+  const onUp = (e) => {
     if (!dragging) return;
+    if (e?.pointerId != null && e.pointerId !== pointerId) return;
     dragging = false;
+    if (cancelWebAiResize === onUp) cancelWebAiResize = null;
     divider.classList.remove("dragging");
     document.body.classList.remove("webai-resizing");
     document.removeEventListener("pointermove", onMove);
     document.removeEventListener("pointerup", onUp);
+    document.removeEventListener("pointercancel", onUp);
+    document.removeEventListener("lostpointercapture", onUp);
+    window.removeEventListener("blur", onUp);
+    if (divider.hasPointerCapture(pointerId)) divider.releasePointerCapture(pointerId);
+    pointerId = null;
     syncWebAiBounds();
   };
   divider.addEventListener("pointerdown", (e) => {
-    if (e.button !== 0) return;
+    if (e.button !== 0 || dragging) return;
     e.preventDefault();
     dragging = true;
+    cancelWebAiResize = onUp;
+    pointerId = e.pointerId;
+    divider.setPointerCapture(pointerId);
     divider.classList.add("dragging");
     document.body.classList.add("webai-resizing");
     document.addEventListener("pointermove", onMove);
     document.addEventListener("pointerup", onUp);
+    document.addEventListener("pointercancel", onUp);
+    // 元素在切换页面时移除，lostpointercapture 会发给 document。
+    document.addEventListener("lostpointercapture", onUp);
+    window.addEventListener("blur", onUp);
   });
 }
 
 /* 每次渲染阅读器后调用：恢复内嵌 AI 的宽度，并在需要时重新对齐原生层 */
 function afterReaderRender() {
   const r = state.reader;
-  const mode = webAiMode();
   // body.webai-open 让 CSS 把 toast 挪到「论文那一半」的中间（见 #toast-root 规则）
   document.body.classList.toggle("webai-open", !!r.webAi);
   if (!r.webAi) {
-    document.body.style.removeProperty("--webai-left");
-    document.body.classList.remove("webai-wide");
-    webAiOccluded = false;
-    // 面板没了 → 让原生层隐藏。走 syncWebAiBounds 统一排队，别直接发（会和拖动中的
-    // 那条在途请求抢顺序，把窗口又挪回旧位置）
-    if (mode === "browser") syncWebAiBounds();
-    else {
-      try { window.lithub?.webAi?.hide(); } catch {}
-    }
+    // 面板没了 → 隐藏原生层（窗口与登录会话都保留）。
+    // 走统一队列，别直接发（会和拖动中的那条在途请求抢顺序，把窗口又挪回旧位置）
+    hideWebAiNative();
     return;
   }
   const pane = document.getElementById("pane-webai");
   if (pane) pane.style.flex = `0 0 ${r.webAiWidth || 46}%`;
+  // webAiController.owner 不是当前文献（例如快速切到另一篇还没打开过网页 AI 的文献），
+  // 不能把别人的窗口挪到这个矩形上；先隐藏，等用户在本篇点开时再重新 embed。
+  if (webAiController.owner !== state.route.id) {
+    hideWebAiNative();
+    return;
+  }
   bindWebAiResize();
   scheduleWebAiSync();
   scheduleWebAiOcclusionCheck();
@@ -1035,6 +1156,10 @@ if (window.lithub?.browser && !window.lithub?.webAi) {
   new MutationObserver(() => scheduleWebAiOcclusionCheck()).observe(root, { childList: true });
 })();
 
+function disposePdfHosts() {
+  $$(".pane").forEach((pane) => { if (pane._pdf) PdfView.dispose(pane); });
+}
+
 function mountPdfHosts(p) {
   mountPdfHosts._paper = p;
   $$(".pdf-host").forEach(async (host) => {
@@ -1050,10 +1175,13 @@ function mountPdfHosts(p) {
       } else {
         await PdfView.mount(pane, host.dataset.src, opts);
       }
+      if (state.route.view !== "reader" || state.route.id !== p.id || !pane.isConnected) return;
+      restoreReaderScroll(p.id);
       updateZoomLabel();
       // PDF 就绪后加载该文献的批注并绘制
       await loadAnnotations(p);
     } catch (err) {
+      if (!pane.isConnected || err?.name === "AbortException") return;
       pane.insertAdjacentHTML("beforeend",
         `<div class="pane-placeholder"><div class="ph-ico">${I("alert", 24)}</div><h3>PDF 渲染失败</h3><p>${esc(String(err.message || err))}</p></div>`);
     }
@@ -1094,7 +1222,7 @@ function updateZoomLabel() {
 
 /* 应用缩放：mode = "manual"(按 zoom) | "width" | "page"
    返回是否真正发生了变化（用于判断是否已到上限/下限） */
-function applyReaderZoom(zoom, fit) {
+function applyReaderZoom(zoom, fit, point) {
   const r = state.reader;
   let changed = true;
   if (fit) {
@@ -1110,7 +1238,7 @@ function applyReaderZoom(zoom, fit) {
   if (panes.length) {
     for (const pane of panes) {
       if (fit) PdfView.setFit(pane, fit);
-      else PdfView.setZoom(pane, r.zoom);
+      else PdfView.setZoom(pane, r.zoom, point);
     }
   } else if (mountPdfHosts._paper) {
     // 尚未挂载完成：重新挂载会用新参数
@@ -2382,12 +2510,14 @@ const TABS = [
   { id: "translate", name: "翻译" },
   { id: "prompts", name: "提示词模板" },
   { id: "appearance", name: "外观" },
+  { id: "storage", name: "文件存储" },
 ];
 
 function renderSettings() {
   const s = state.db.settings;
   const tab = state.settingsTab;
   const body = {
+    storage: storageSettingsHTML,
     ai: () => `
       <section class="set-card">
         <h3>模型服务</h3>
@@ -2541,6 +2671,61 @@ function renderSettings() {
   <div class="set-body">${body}</div>`;
   // AI 服务页：探测已安装的浏览器，填入「使用哪个浏览器」下拉
   if (tab === "ai") refreshBrowserSelect();
+  if (tab === "storage" && !pdfStorageState.info && !pdfStorageState.loading) loadPdfStorage();
+}
+
+const pdfStorageState = { info: null, loading: false, error: "", busy: false };
+function storageSettingsHTML() {
+  const info = pdfStorageState.info;
+  if (!LithubAPI.live) return '<section class="set-card"><h3>PDF 文件存储</h3><p class="set-desc">连接本地服务后可设置存储目录。</p></section>';
+  if (!info) return `<section class="set-card"><h3>PDF 文件存储</h3><p class="set-desc">${esc(pdfStorageState.error || "正在读取存储位置…")}</p></section>`;
+  return `<section class="set-card">
+    <h3>PDF 文件存储</h3>
+    <p class="set-desc">原文、译文和双语对照版统一保存在此目录。默认使用程序文件夹下的 pdfs 目录。</p>
+    ${info.warning ? `<p class="muted-note" role="status">${esc(info.warning)}</p>` : ""}
+    <label class="field"><span>存储目录</span><input id="set-pdf-directory" type="text" value="${esc(info.directory)}" spellcheck="false"></label>
+    <div class="set-foot">
+      ${window.lithub?.pdfStorage ? '<button class="btn" data-action="pdf-storage-browse">浏览…</button>' : ""}
+      <button class="btn" data-action="pdf-storage-default">使用默认目录</button>
+      ${window.lithub?.pdfStorage ? '<button class="btn" data-action="pdf-storage-open">打开当前目录</button>' : ""}
+    </div>
+    <p class="set-desc">原文位置：<code>${esc(info.originals_directory)}</code><br>译文与对照版：<code>${esc(info.translated_directory)}</code></p>
+    <p class="set-desc">切换时会复制并校验已有 PDF，成功后立即生效；原目录保留副本。请先等待翻译任务完成。笔记、批注与设置仍保存在 <code>${esc(info.metadata_directory)}</code>。</p>
+    <div class="set-foot"><button class="btn btn-primary" data-action="pdf-storage-apply">迁移并应用</button></div>
+  </section>`;
+}
+async function loadPdfStorage() {
+  if (!LithubAPI.live) return;
+  pdfStorageState.loading = true;
+  try {
+    pdfStorageState.info = await LithubAPI.pdfStorage();
+    pdfStorageState.error = "";
+  } catch (error) { pdfStorageState.error = error.message; }
+  finally {
+    pdfStorageState.loading = false;
+    if (state.route.view === "settings" && state.settingsTab === "storage") {
+      // Render the loaded body directly; a failed request must not trigger a retry loop.
+      const body = document.querySelector(".set-body");
+      if (body) body.innerHTML = storageSettingsHTML();
+    }
+  }
+}
+async function applyPdfStorage() {
+  if (pdfStorageState.busy) return;
+  const directory = document.getElementById("set-pdf-directory")?.value.trim();
+  if (!directory) { toast("请选择存储目录", "err"); return; }
+  pdfStorageState.busy = true;
+  openModal('<header class="modal-head"><h2>正在迁移 PDF</h2></header><div class="modal-body"><p>正在复制并校验文件。完成前请保持应用开启，原文件会保留。</p></div>');
+  try {
+    await flushNoteEditor();
+    pdfStorageState.info = await LithubAPI.setPdfStorage(directory);
+    toast("PDF 存储位置已更新，原目录副本已保留");
+  } catch (error) { toast(error.message || "迁移失败，仍使用原目录", "err"); }
+  finally {
+    pdfStorageState.busy = false;
+    closeModal();
+    if (state.route.view === "settings" && state.settingsTab === "storage") renderSettings();
+  }
 }
 
 /* 探测到的浏览器清单缓存（下拉与提示文案共用一次探测结果） */
@@ -2755,12 +2940,17 @@ const catModal = (parentId = null) => {
 let sidebarDirty = false;
 
 function render(opts = {}) {
+  cancelWebAiResize?.();
   const hash = location.hash || "#/library";
   const [, view, id] = hash.split("/");
   const nextRoute = { view: view || "library", id };
   // 路由切换会清掉 overlay-root / 重建视图，而 saveCurrentNote() 是从编辑器 DOM
   // 读值的 —— 必须在 DOM 还在时先把未保存的笔记刷出去。
   flushNoteEditor();
+  // 离开阅读器之前（旧 DOM 还在）记录滚动位置；之后 state.route 会切到新路由，
+  // 就再也读不到旧 DOM 了。阅读模式/缩放/网页 AI 开关本来就写在会话对象里。
+  if (state.route.view === "reader") captureReaderScroll(state.route.id);
+  disposePdfHosts();
   state.route = nextRoute;
   const noteView = state.route.view === "note";
   // 阅读器与笔记页都是「专注视图」：隐藏文献库侧栏，把宽度全部让给内容
@@ -2768,17 +2958,16 @@ function render(opts = {}) {
   $("#overlay-root").innerHTML = "";
   syncNotePanelLayout(null);   // 上面清空了 overlay-root，笔记面板（若开着）已不在，收回让宽
   if (state.route.view !== "reader") {
+    // 只清理 DOM 与布局标记；阅读会话里的 webAi 开关/宽度、阅读模式、缩放和
+    // 滚动位置全部保留，返回该文献时原样恢复。
     state.reader.panel = false;
     state.reader.notePanel = false;
     closeAnnotationPanel();
-    // 离开阅读器：关闭内嵌网页（原生层会盖住其它视图，必须关掉）
-    if (state.reader.webAi) {
-      state.reader.webAi = false;
-      try {
-        if (webAiMode() === "browser") window.lithub?.browser?.close();
-        else window.lithub?.webAi?.hide();
-      } catch {}
-    }
+    // 离开阅读器：只隐藏原生窗口，不关闭、不销毁。
+    // 浏览器窗口与会话（登录态/对话）原样保留；切回来时按会话恢复面板并重新对齐矩形，
+    // 不会走 embed/导航。显式关闭网页 AI 才真正关闭（closeWebAiInline）。
+    if (state.reader.webAi || webAiController.owner) hideWebAiNative();
+    document.body.classList.remove("webai-open");
   }
 
   const app = $("#app");
@@ -2860,6 +3049,13 @@ function closeTab(key) {
   // 离开笔记标签页前先把未保存的改动刷出去
   if (closed.kind === "note" && state.route.view === "note" && state.route.id === closed.paperId) {
     flushNoteEditor();
+  }
+  // 关掉的是某篇文献的 PDF 阅读标签：该文献的阅读会话与它独占的原生窗口一并清理，
+  // 避免关掉后浏览器窗口还挂在那里、下次重开又莫名恢复旧会话。
+  // （还要看同一篇的笔记标签是否仍开着；笔记页不属于阅读会话。）
+  if (closed.kind === "paper") {
+    captureReaderScroll(closed.paperId);
+    disposeReaderSession(closed.paperId);
   }
   renderTabStrip();
   const stillActive = closed.kind === "note"
@@ -3047,7 +3243,8 @@ document.addEventListener("click", (e) => {
       if (!target) break;
       const mode = t.dataset.action === "open-file" ? "en"
         : t.dataset.action === "open-file-zh" ? "zh" : "dual2";
-      state.reader.mode = mode;
+      // 按「目标文献」写会话，而不是写当前 state.reader（可能是另一篇的）
+      readerSession(id).mode = mode;
       if (state.route.view === "reader" && state.route.id === id) renderReader(id);
       else openTab("paper", id);
       break;
@@ -3218,7 +3415,7 @@ document.addEventListener("click", (e) => {
       // view 模式有 WebContentsView，可以直接 reload；
       // browser 模式是一个真实的浏览器窗口，没法命令它刷新，只能关掉重开一次。
       if (webAiMode() === "view") window.lithub?.webAi?.reload();
-      else openWebAiInline(state.reader.webAiURL || state.db.settings.webAiURL);
+      else openWebAiInline(state.reader.webAiURL || state.db.settings.webAiURL, true);
       break;
     }
     case "webai-back": window.lithub?.webAi?.back(); break;
@@ -3371,6 +3568,9 @@ document.addEventListener("click", (e) => {
         // 该文献的所有标签页（PDF + 笔记）一并关闭
         state.tabs = state.tabs.filter((x) => x.paperId !== id);
         if (noteState.paperId === id) noteState.paperId = null;
+        // 清理该文献的阅读会话；若唯一的内嵌窗口正属于它，也一并关闭
+        captureReaderScroll(id);
+        disposeReaderSession(id);
         renderTabStrip();
         toast("已删除");
         if (state.route.view === "reader" || state.route.view === "note") location.hash = "#/library";
@@ -3565,6 +3765,22 @@ document.addEventListener("click", (e) => {
     }
 
     /* 设置 */
+    case "pdf-storage-browse": {
+      if (pdfStorageState.busy) break;
+      window.lithub?.pdfStorage?.pickDirectory($("#set-pdf-directory")?.value).then(result => {
+        const input = document.getElementById("set-pdf-directory");
+        if (result.ok && input) input.value = result.directory;
+      }).catch(error => toast(error.message, "err"));
+      break;
+    }
+    case "pdf-storage-default":
+      if (!pdfStorageState.busy && pdfStorageState.info) $("#set-pdf-directory").value = pdfStorageState.info.default_directory;
+      break;
+    case "pdf-storage-open":
+      window.lithub?.pdfStorage?.openDirectory().then(result => { if (!result.ok) toast(result.error, "err"); })
+        .catch(error => toast(error.message, "err"));
+      break;
+    case "pdf-storage-apply": applyPdfStorage(); break;
     case "set-tab": state.settingsTab = id; render(); break;
     case "provider": {
       // 切服务商：先把当前输入框里的 Key 暂存到「原服务商」名下，
@@ -4454,7 +4670,7 @@ let zoomLimitHintAt = 0;
 function zoomStep(dir) {
   const r = state.reader;
   // 从「适宽/适页」切到手动时，先落到当前等效倍率再增减，避免突兀跳变
-  const before = r.zoom;
+  const before = r.fit === "manual" ? r.zoom : PdfView.effectiveZoom(readerPanes()[0]);
   const next = dir > 0 ? before * 1.25 : before / 1.25;
   const changed = applyReaderZoom(next);
   if (!changed) {
@@ -4473,15 +4689,17 @@ function zoomStep(dir) {
    到达上下限后停止响应，避免「滚轮没反应但也不知道为什么」 */
 document.addEventListener("wheel", (e) => {
   if (!(e.ctrlKey || e.metaKey) || state.route.view !== "reader") return;
-  if (!e.target.closest(".pane")) return;
+  if (!e.target.closest(".pane, #webai-divider")) return;
   e.preventDefault();
   const r = state.reader;
-  const next = r.zoom * (e.deltaY < 0 ? 1.1 : 1 / 1.1);
+  const currentZoom = r.fit === "manual" ? r.zoom : PdfView.effectiveZoom(readerPanes()[0]);
+  const next = currentZoom * (e.deltaY < 0 ? 1.1 : 1 / 1.1);
   // 越界时直接钳制在边界，不再产生无意义的重复绘制
-  const atMax = next >= PdfView.MAX_ZOOM - 1e-6 && r.zoom >= PdfView.MAX_ZOOM - 1e-6;
-  const atMin = next <= PdfView.MIN_ZOOM + 1e-6 && r.zoom <= PdfView.MIN_ZOOM + 1e-6;
+  const atMax = r.fit === "manual" && next >= PdfView.MAX_ZOOM - 1e-6 && r.zoom >= PdfView.MAX_ZOOM - 1e-6;
+  const atMin = r.fit === "manual" && next <= PdfView.MIN_ZOOM + 1e-6 && r.zoom <= PdfView.MIN_ZOOM + 1e-6;
   if (atMax || atMin) return;
-  applyReaderZoom(next);
+  const inPaper = e.target.closest(".pane");
+  applyReaderZoom(next, null, inPaper ? { x: e.clientX, y: e.clientY } : undefined);
 }, { passive: false });
 
 document.addEventListener("auxclick", (e) => {
@@ -4668,6 +4886,11 @@ function initTitlebar() {
 (async () => {
   initTitlebar();
   await LithubAPI.ping();
+  // A renderer reload loses its controller; retire the previous native session first.
+  if (LithubAPI.live && window.lithub?.browser?.reset) {
+    const result = await window.lithub.browser.reset();
+    if (!result.ok) toast(result.error || "清理旧网页会话失败", "err");
+  }
   if (LithubAPI.live) await loadLiveLibrary();
   render();
   setInterval(pollTasks, 1200);

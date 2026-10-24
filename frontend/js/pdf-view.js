@@ -1,38 +1,26 @@
-/* ============================================================
- * 文枢 · PDF 渲染器（PDF.js）
- * 模式：
- *   - 单栏（原文 / 译文）：单文档逐页渲染
- *   - 双语对照：原文与译文两份文档并排（每行 左原文 · 右译文）
- *
- * 清晰度策略（分辨率与显示尺寸严格像素对齐）：
- *   1. 页宽按「整数设备像素」计算：round(cssW * dpr) / dpr，
- *      保证 canvas 位图尺寸 = CSS 宽度 × dpr，没有非整数重采样
- *   2. 采样倍数按设备 DPR 自适应：max(2, dpr) 兜底，非 1x 屏不再降采样
- *   3. 面积预算（默认 8MP/页）：超出则等比降低采样，避免 OOM 与卡顿
- *   4. 监听 device-pixel-content-box：窗口在 1x/2x 屏之间拖动时自动重绘
- *   5. 缩放支持 适合宽度 / 适合页面 / 50%–400%，快捷键与 Ctrl+滚轮
- *
- * 每页三层：位图 canvas + 透明文本层（可选中/可复制）+ 预留批注层
- * 懒渲染：仅视口附近页面绘制；页对象也在进入视口时才向 PDF.js 请求
- * ============================================================ */
-
+/* PDF.js 阅读视图：整页预览 + 可见区域高精度重绘，有限并发和位图预算。
+ * 文档/加载任务/观察器属于一次挂载；页面、文本层和批注使用同一 viewport。
+ * 离开视口释放资源，保留占位尺寸与实际页型。 */
 "use strict";
 
 window.PdfView = (() => {
   let pdfjsLib = null;
-  const BASE_W = 612;          // PDF 基准宽（pt，Letter 宽）
-  const TARGET_RENDER_SCALE = 2.0; // 目标位图分辨率（相对页面物理尺寸的倍数）
-  const MAX_RENDER_SCALE = 3.0;    // 采样倍数上限（再高对肉眼无收益，只烧内存）
-  const MAX_AREA_PX = 8e6;     // 单页位图面积预算（约 8 百万像素 ≈ 32MB RGBA）
+  const BASE_W = 612;
+  const TARGET_RENDER_SCALE = 2;
+  const MAX_RENDER_SCALE = 3;
+  const MAX_AREA_PX = 8e6;
+  const MAX_BASE_PIXELS = 24e6;
+  const MAX_DETAIL_PIXELS = 32e6;
+  const MAX_TOTAL_PIXELS = 48e6;
+  const MAX_CONCURRENT = 2;
   const MIN_ZOOM = 0.5;
   const MAX_ZOOM = 4;
-  // 经典脚本中的动态 import 相对脚本自身解析，这里显式基于页面地址定位 vendor 目录
   const VENDOR = new URL("vendor/pdfjs/", document.baseURI).href;
-
-  const dprNow = () => {
-    const d = Number(window.devicePixelRatio) || 1;
-    return Math.min(4, Math.max(1, d));
-  };
+  const frame = (fn) => window.requestAnimationFrame ? window.requestAnimationFrame(fn) : setTimeout(fn, 0);
+  const cancelFrame = (id) => window.cancelAnimationFrame ? window.cancelAnimationFrame(id) : clearTimeout(id);
+  const dprNow = () => Math.min(4, Math.max(1, Number(window.devicePixelRatio) || 1));
+  const cancelled = () => Object.assign(new Error("PDF 加载已取消"), { name: "AbortException" });
+  const ignore = (job) => Promise.resolve(job).catch(() => {});
 
   async function ensurePdfjs() {
     if (pdfjsLib) return pdfjsLib;
@@ -40,447 +28,536 @@ window.PdfView = (() => {
     pdfjsLib.GlobalWorkerOptions.workerSrc = VENDOR + "pdf.worker.min.js";
     return pdfjsLib;
   }
-
   function docParams(url) {
-    return {
-      url,
-      cMapUrl: VENDOR + "cmaps/",
-      cMapPacked: true,
-      standardFontDataUrl: VENDOR + "standard_fonts/",
-    };
+    return { url, cMapUrl: VENDOR + "cmaps/", cMapPacked: true,
+      standardFontDataUrl: VENDOR + "standard_fonts/" };
   }
-
-  /* ---------------- 尺寸计算 ---------------- */
-
-  /* 容器可用宽度（减去 pane 左右 padding 与滚动条） */
-  function availWidth(pane) {
-    return Math.max(220, pane.clientWidth - 88);
+  function padding(pane) {
+    const style = window.getComputedStyle?.(pane);
+    return style ? { x: (parseFloat(style.paddingLeft) || 0) + (parseFloat(style.paddingRight) || 0),
+      y: (parseFloat(style.paddingTop) || 0) + (parseFloat(style.paddingBottom) || 0) } : { x: 88, y: 96 };
   }
-
-  /* 单页目标 CSS 宽。fit:
-       width → 铺满容器（单栏清晰度最高的默认值）
-       page  → 整页可见（按容器高度约束）
-       manual→ 按页面物理宽 × zoom 缩放                              */
-  function targetWidth(pane, pdf) {
-    const avail = availWidth(pane);
-    const perRow = pdf.perRow;
-    const slot = avail / perRow - (perRow > 1 ? pdf.gap || 16 : 0);
+  function targetWidth(box, pdf, side) {
+    const slot = Math.max(1, (box.width - box.pad.x - (pdf.perRow - 1) * pdf.gap) / pdf.perRow);
     if (pdf.fit === "width") return slot;
-    if (pdf.fit === "page") {
-      const ratio = pdf.pageRatio || 1.294;
-      const vh = (pane.clientHeight || 600) - 96;
-      return Math.min(slot, vh / ratio);
-    }
-    // manual：按该文档实际页宽（pt）缩放。注意 compare 版页宽是单页的两倍，
-    // 用固定 612 会把 100% 算错，因此以 pdf.pageW 为准
-    const base = (pdf.pageW || BASE_W) * (pdf.zoom || 1);
-    return Math.min(base, slot);
+    if (pdf.fit === "page") return Math.min(slot, Math.max(1, box.height - box.pad.y) / side.ratio);
+    return side.w * pdf.zoom;
   }
-
-  /* 像素对齐：返回 {cssW, k}。
-     - cssW 对齐到整数设备像素（消除非整数缩放导致的文字发虚）
-     - k = canvas 位图宽 / CSS 宽，即「每个 CSS 像素用多少位图像素」。
-       要高分屏上像素级锐利，k 必须 ≥ devicePixelRatio；同时不低于
-       TARGET_RENDER_SCALE（相对页面物理宽 2x）。
-     - 面积预算：canvas 面积 = (cssW·k) × (cssW·ratio·k)，超限时先降 k，
-       降到 1 仍超再收窄 CSS 宽，避免超大 canvas 卡顿/崩溃。 */
+  // 整页预览受面积预算限制；不足的采样由可见区域重绘补足。
   function pixelAligned(cssW, ratio, pageW = BASE_W) {
     const dpr = dprNow();
-    let cssAligned = Math.round(cssW * dpr) / dpr;
-
-    // 目标采样倍率（相对 CSS 像素）
-    const cssScale = cssAligned / pageW;
-    const wantRender = TARGET_RENDER_SCALE / Math.max(cssScale, 1e-6);
-    let k = Math.min(MAX_RENDER_SCALE, Math.max(dpr, wantRender));
-
-    // 面积预算：注意单位是 CSS 像素²·k²，不要再乘 dpr
-    const areaPerK2 = cssAligned * cssAligned * ratio;
-    const maxK = Math.sqrt(MAX_AREA_PX / Math.max(1, areaPerK2));
-    if (k > maxK) {
-      if (maxK >= 1) {
-        k = maxK;                        // 先降采样
-      } else {
-        k = 1;                           // 采样已到 1x，不能再降
-        const shrink = Math.sqrt(MAX_AREA_PX / areaPerK2);
-        cssAligned = Math.max(120, Math.round(cssAligned * shrink * dpr) / dpr);
-      }
-    }
-    return { cssW: cssAligned, k, dpr };
+    const aligned = Math.max(1 / dpr, Math.round(cssW * dpr) / dpr);
+    const want = TARGET_RENDER_SCALE / Math.max(aligned / pageW, 1e-6);
+    const k = Math.min(MAX_RENDER_SCALE, Math.max(dpr, want),
+      Math.sqrt(MAX_AREA_PX / Math.max(1, aligned * Math.ceil(aligned * ratio))));
+    return { cssW: aligned, k, dpr };
   }
-
-  function clearPages(pane) {
-    const pdf = pane._pdf;
-    pdf?.io?.disconnect(); // 重复挂载前断开旧观察器，避免泄漏
-    pdf?.resizeObs?.disconnect?.();
-    // 释放文档句柄与其缓存页（PDF.js worker 侧也一并释放）
-    pdf?.doc?.destroy?.();
-    // 防止此前排队中的 paint() 继续访问已销毁的文档
-    if (pdf) {
-      pdf.dead = true;
-      for (const meta of pdf.metas) {
-        for (const side of meta.sides) {
-          side.dead = true;
-          side.renderTask?.cancel?.();
-          side.textLayer?.cancel?.();
-        }
-      }
+  function allSides(pdf) { return pdf.metas.flatMap((meta) => meta.sides); }
+  function active(pane, pdf) { return !pdf.dead && pane._pdf === pdf; }
+  function destroyEntry(entry) {
+    if (entry.destroyed) return;
+    if (entry.task.destroy) {
+      entry.destroyed = true;
+      return ignore(entry.task.destroy());
     }
+    if (entry.doc) {
+      entry.destroyed = true;
+      return ignore(entry.doc.destroy?.());
+    }
+  }
+  function invalidate(side) {
+    side.revision++;
+    side.rendered = false;
+    side.paintedKey = null;
+    if (side.textDiv) side.textDiv.style.visibility = "hidden";
+    side.renderTask?.cancel?.();
+    side.textLayer?.cancel?.();
+    side.detailTask?.cancel?.();
+    side.detailWanted = null;
+    dropDetail(side);
+    side.failedKey = null;
+  }
+  function release(side) {
+    // cancel() 异步生效，等绘制退出后再改 canvas 或清理 PageProxy。
+    if (side.running) return;
+    if (side.canvas) { side.canvas.width = 0; side.canvas.height = 0; }
+    if (side.textDiv) side.textDiv.innerHTML = "";
+    side.textLayer = null;
+    side.paintedKey = null;
+    side.rendered = false;
+    side.page?.cleanup?.();
+    side.page = null;
+    dropDetail(side);
+  }
+  function dropDetail(side) {
+    const canvas = side.detailCanvas;
+    if (canvas) { canvas.width = canvas.height = 0; canvas.remove(); }
+    side.detailCanvas = null;
+    side.detailPaintedKey = null;
+  }
+  function dispose(pane) {
+    const pdf = pane?._pdf;
+    if (!pdf) return Promise.resolve();
+    pdf.dead = true;
     pane._pdf = null;
+    pdf.io?.disconnect();
+    pdf.resizeObs?.disconnect();
+    pdf.dprQuery?.removeEventListener("change", pdf.onDpr);
+    window.removeEventListener?.("resize", pdf.onResize);
+    pane.removeEventListener?.("scroll", pdf.onScroll);
+    cancelFrame(pdf.resizeRaf);
+    cancelFrame(pdf.scrollRaf);
+    clearInterval(pdf.dprTimer);
+    pdf.queue.clear();
+    for (const side of allSides(pdf)) {
+      side.dead = true;
+      invalidate(side);
+      side.errorEl?.remove();
+      release(side);
+    }
     pane.querySelectorAll(".pdf-row").forEach((el) => el.remove());
+    return Promise.allSettled(pdf.entries.map(destroyEntry));
   }
-
-  /* 懒取页：仅在页面进入视口时才向 PDF.js 请求 PageProxy。 */
-  async function ensurePage(side) {
-    if (side.page || !side.doc || side.pageIndex == null) return side.page;
-    const page = await side.doc.getPage(side.pageIndex + 1);
-    const vp = page.getViewport({ scale: 1 });
-    side.page = page;
-    side.w = vp.width;
-    side.h = vp.height;
-    return page;
+  /* 页内坐标代替整篇文档的滚动像素。viewportX 是视口比例，收窄面板
+     后仍能以新的视口中心保持阅读内容；viewportY 保留鼠标/顶边位置。 */
+  function captureAnchor(pane, point) {
+    const pdf = pane?._pdf;
+    if (!pdf?.metas.length) return null;
+    const rect = pane.getBoundingClientRect();
+    const px = point?.x ?? rect.left + pane.clientWidth / 2;
+    const py = point?.y ?? rect.top + Math.min(24, (pane.clientHeight || 600) / 2);
+    let best = null, distance = Infinity;
+    // 行按文档顺序排列；只二分查找目标行及相邻行，长文滚动不遍历所有 DOM。
+    let low = 0, high = pdf.metas.length - 1;
+    while (low < high) {
+      const mid = (low + high) >> 1;
+      if (pdf.metas[mid].div.getBoundingClientRect().bottom < py) low = mid + 1;
+      else high = mid;
+    }
+    for (const page of [low - 1, low, low + 1]) {
+      const meta = pdf.metas[page];
+      if (!meta) continue;
+      meta.sides.forEach((side, column) => {
+      const r = side.div?.getBoundingClientRect();
+      if (!r?.width || !r.height) return;
+      const dy = Math.max(r.top - py, 0, py - r.bottom);
+      const dx = Math.max(r.left - px, 0, px - r.right);
+      const score = dy * 10000 + dx;
+      if (score < distance) {
+        distance = score;
+        const x = Math.max(0, Math.min(1, (px - r.left) / r.width));
+        const y = Math.max(0, Math.min(1, (py - r.top) / r.height));
+        // 页间空隙是固定像素，不能把它作为负的页内比例随缩放放大。
+        best = { page, column, x, y,
+          viewportX: (r.left + x * r.width - rect.left) / Math.max(1, pane.clientWidth),
+          viewportY: r.top + y * r.height - rect.top };
+      }
+      });
+    }
+    return best;
   }
-
-  /* ---------------- 布局 ---------------- */
-
-  function buildRows(pane) {
-    const pdf = pane._pdf;
+  function restoreAnchor(pane, anchor) {
+    const pdf = pane?._pdf;
+    const side = pdf?.metas[anchor?.page]?.sides[anchor.column || 0];
+    if (!side?.div) return false;
+    const rect = pane.getBoundingClientRect(), r = side.div.getBoundingClientRect();
+    if (!r.width || !r.height) return false;
+    pane.scrollLeft += r.left + anchor.x * r.width - rect.left - anchor.viewportX * pane.clientWidth;
+    pane.scrollTop += r.top + anchor.y * r.height - rect.top - anchor.viewportY;
+    pdf.anchor = captureAnchor(pane);
+    return true;
+  }
+  function applySizes(pane, pdf) {
+    // 一次读取容器几何，再批量写样式，避免逐页读写交错引起反复布局。
+    const box = { width: pane.clientWidth, height: pane.clientHeight || 600, pad: padding(pane) };
+    for (const side of allSides(pdf)) {
+      const { cssW } = pixelAligned(targetWidth(box, pdf, side), side.ratio, side.w);
+      const cssH = Math.round(cssW * side.ratio);
+      const key = `${cssW}:${cssH}:${dprNow()}`;
+      if (key !== side.key) { invalidate(side); side.key = key; }
+      side.cssW = cssW;
+      side.cssH = cssH;
+      side.div.style.width = cssW + "px";
+      side.div.style.height = cssH + "px";
+    }
+  }
+  function layout(pane, anchor) {
+    const pdf = pane?._pdf;
+    if (!pdf || pdf.dead) return;
+    anchor ??= captureAnchor(pane);
+    applySizes(pane, pdf);
+    if (anchor) restoreAnchor(pane, anchor);
+    pdf.anchor = captureAnchor(pane);
+    requestNearby(pane, pdf);
+  }
+  function buildRows(pane, pdf) {
     const flow = pane.querySelector(".pdf-flow") || (() => {
       const el = document.createElement("div");
       el.className = "pdf-flow";
       pane.appendChild(el);
       return el;
     })();
-
-    for (const meta of pdf.metas) {
+    pdf.metas.forEach((meta, pageIndex) => {
       const row = document.createElement("div");
       row.className = "pdf-row";
       meta.sides.forEach((side) => {
-        const div = document.createElement("div");
-        div.className = "pdf-page";
-        const ratio = side.w && side.h && side.page ? side.h / side.w : pdf.pageRatio || 1.294;
-        side.ratio = ratio;
+        side.rowIndex = pageIndex;
+        side.div = document.createElement("div");
+        side.div.className = "pdf-page";
         if (pdf.perRow > 1) {
           const tag = document.createElement("span");
           tag.className = "pdf-tag";
           tag.textContent = side.lang === "zh" ? "译文" : "原文";
-          div.appendChild(tag);
+          side.div.appendChild(tag);
         }
-        const canvas = document.createElement("canvas");
-        div.appendChild(canvas);
-        const textDiv = document.createElement("div");
-        textDiv.className = "textLayer";
-        div.appendChild(textDiv);
-        div.insertAdjacentHTML("beforeend", '<div class="pdf-annot"></div>');
-        row.appendChild(div);
-        side.div = div;
-        side.canvas = canvas;
-        side.textDiv = textDiv;
+        side.canvas = document.createElement("canvas");
+        side.canvas.width = side.canvas.height = 0;
+        side.div.appendChild(side.canvas);
+        side.textDiv = document.createElement("div");
+        side.textDiv.className = "textLayer";
+        side.div.appendChild(side.textDiv);
+        side.div.insertAdjacentHTML("beforeend", '<div class="pdf-annot"></div>');
+        row.appendChild(side.div);
+        pdf.byElement.set(side.div, side);
       });
-      flow.appendChild(row);
       meta.div = row;
-    }
-    applySizes(pane);
+      flow.appendChild(row);
+    });
+    applySizes(pane, pdf);
+    pdf.anchor = captureAnchor(pane);
   }
-
-  /* 统一刷新所有页的 CSS 尺寸（resize / 缩放 / 切换 fit 时调用）。
-     宽高都写成整数 CSS px，与 canvas 位图保持严格比例。 */
-  function applySizes(pane) {
-    const pdf = pane._pdf;
-    if (!pdf) return;
-    const avail = availWidth(pane);
-    const perRow = pdf.perRow;
-    const slot = avail / perRow - (perRow > 1 ? (pdf.gap || 16) : 0);
-    let cssW;
-    if (pdf.fit === "width") cssW = slot;
-    else if (pdf.fit === "page") {
-      const vh = (pane.clientHeight || 600) - (perRow > 1 ? 70 : 110);
-      cssW = Math.min(slot, vh / (pdf.pageRatio || 1.294));
-    } else {
-      cssW = Math.min((pdf.pageW || BASE_W) * (pdf.zoom || 1), slot);
-    }
-    const ratio = pdf.pageRatio || 1.294;
-    const { cssW: aligned } = pixelAligned(cssW, ratio, pdf.pageW || BASE_W);
-    const cssH = Math.round(aligned * ratio);
-    for (const meta of pdf.metas) {
-      for (const side of meta.sides) {
-        if (!side.div) continue;
-        side.cssW = aligned;
-        side.cssH = Math.round(aligned * (side.ratio || ratio));
-        side.div.style.width = aligned + "px";
-        side.div.style.height = side.cssH + "px";
-      }
-    }
-    pdf.appliedW = aligned;
+  async function ensurePage(side) {
+    if (side.page || !side.doc) return false;
+    side.pagePromise ??= side.doc.getPage(side.pageIndex + 1);
+    let page;
+    try { page = await side.pagePromise; } finally { side.pagePromise = null; }
+    if (side.dead || !side.near) { page.cleanup?.(); return false; }
+    const vp = page.getViewport({ scale: 1 });
+    const changed = side.w !== vp.width || side.h !== vp.height;
+    side.page = page;
+    side.w = vp.width;
+    side.h = vp.height;
+    side.ratio = vp.height / vp.width;
+    return changed;
   }
-
-  function observe(pane) {
-    const pdf = pane._pdf;
-    const io = new IntersectionObserver(
-      (entries) => {
-        entries.forEach((en) => {
-          if (!en.isIntersecting) return;
-          for (const meta of pdf.metas) {
-            const hit = meta.sides.filter((s) => s.div === en.target);
-            for (const side of hit) {
-              if (!side.rendered) {
-                side.rendered = true;
-                paint(side, pane).catch((err) => {
-                  side.rendered = false;
-                  if (err?.name !== "RenderingCancelledException") console.error("paint 失败:", err);
-                });
-              }
-            }
-          }
+  function distance(pane, side) {
+    const p = pane.getBoundingClientRect(), r = side.div.getBoundingClientRect();
+    return Math.max(p.top - r.bottom, 0, r.top - p.bottom);
+  }
+  function bitmapPixels(canvas) { return canvas ? canvas.width * canvas.height : 0; }
+  function rasterPixels(side) {
+    return bitmapPixels(side.canvas) + bitmapPixels(side.detailCanvas) + bitmapPixels(side.detailPending);
+  }
+  function reserve(pane, pdf, side, pixels, replaceBase = true) {
+    const sides = allSides(pdf);
+    let used = sides.reduce((n, s) => n + rasterPixels(s), 0) - (replaceBase ? bitmapPixels(side.canvas) : 0);
+    let baseUsed = sides.reduce((n, s) => n + (s === side && replaceBase ? 0 : bitmapPixels(s.canvas)), 0);
+    const fits = () => used + pixels <= MAX_TOTAL_PIXELS && (!replaceBase || baseUsed + pixels <= MAX_BASE_PIXELS);
+    const candidates = sides.filter(s => s !== side && !s.running && s.canvas.width && distance(pane, s) > 0)
+      .sort((a, b) => distance(pane, b) - distance(pane, a));
+    for (const cached of candidates) {
+      if (fits()) break;
+      used -= rasterPixels(cached);
+      baseUsed -= bitmapPixels(cached.canvas);
+      release(cached);
+    }
+    // 通常保留旧的清晰区域直到新区域就绪；预算不够时先释放旧区域。
+    if (!fits() && !replaceBase && side.detailCanvas) {
+      used -= bitmapPixels(side.detailCanvas);
+      dropDetail(side);
+    }
+    return fits();
+  }
+  function updateDetailArea(pane, side) {
+    let area = null;
+    const r = side.div.getBoundingClientRect(), p = pane.getBoundingClientRect();
+    const left = p.left + (pane.clientLeft || 0), top = p.top + (pane.clientTop || 0);
+    const x0 = Math.max(0, left - r.left), y0 = Math.max(0, top - r.top);
+    const x1 = Math.min(side.cssW, left + pane.clientWidth - r.left);
+    const y1 = Math.min(side.cssH, top + pane.clientHeight - r.top);
+    const width = x1 - x0, height = y1 - y0;
+    const preferred = Math.max(2, dprNow());
+    const base = pixelAligned(side.cssW, side.ratio, side.w).k;
+    if (width > 0 && height > 0 && base < preferred * .98) {
+      // 对照页再宽也只绘制可见区域。常见屏幕保持至少 DPR 的采样；
+      // 超大视口仍受单区域预算保护，避免无限制创建巨型 canvas。
+      const limit = MAX_DETAIL_PIXELS - 65536;
+      const k = Math.min(preferred, Math.sqrt(limit / (width * height)));
+      const previous = side.detailWanted;
+      if (previous?.baseKey === side.key && previous.k === k && previous.x <= x0 && previous.y <= y0 &&
+          previous.x + previous.width >= x1 && previous.y + previous.height >= y1) return;
+      const margin = Math.max(0, Math.min(128,
+        (Math.sqrt((width - height) ** 2 + 4 * limit / (k * k)) - width - height) / 4));
+      const dx = Math.floor(Math.max(0, x0 - margin) * k);
+      const dy = Math.floor(Math.max(0, y0 - margin) * k);
+      const dw = Math.ceil(Math.min(side.cssW, x1 + margin) * k) - dx;
+      const dh = Math.ceil(Math.min(side.cssH, y1 + margin) * k) - dy;
+      area = { baseKey: side.key, k, dx, dy, dw, dh, x: dx / k, y: dy / k,
+        width: dw / k, height: dh / k, key: `${side.key}:${k}:${dx}:${dy}:${dw}:${dh}` };
+    }
+    if (area?.key === side.detailWanted?.key) return;
+    side.detailWanted = area;
+    side.detailTask?.cancel?.();
+    if (side.running) side.detailDirty = true;
+    if (!area) dropDetail(side);
+  }
+  function needsPaint(side) {
+    return side.paintedKey !== side.key || (side.detailWanted && side.detailPaintedKey !== side.detailWanted.key);
+  }
+  function requestPaint(pane, pdf, side, dispatch = true) {
+    if (!active(pane, pdf) || !side.doc || !side.near) return;
+    updateDetailArea(pane, side);
+    if (side.running || !needsPaint(side) || side.failedKey === side.key) return;
+    pdf.queue.add(side);
+    if (dispatch) pump(pane, pdf);
+  }
+  function requestNearby(pane, pdf) {
+    for (const side of pdf.near) requestPaint(pane, pdf, side, false);
+    pump(pane, pdf);
+  }
+  function pump(pane, pdf) {
+    if (!active(pane, pdf)) return;
+    while (pdf.running < MAX_CONCURRENT && pdf.queue.size) {
+      const side = [...pdf.queue].sort((a, b) => distance(pane, a) - distance(pane, b))[0];
+      pdf.queue.delete(side);
+      if (!side.near || side.running || !needsPaint(side)) continue;
+      side.running = true;
+      pdf.running++;
+      paint(pane, pdf, side).catch((err) => {
+        if (!active(pane, pdf) || !side.near || err?.name === "RenderingCancelledException" || err?.name === "AbortException") return;
+        side.failedKey = side.key;
+        console.error("PDF 页面渲染失败:", err);
+        side.errorEl?.remove();
+        const retry = document.createElement("button");
+        retry.className = "pdf-page-error";
+        retry.textContent = "此页加载失败，点击重试";
+        retry.addEventListener("click", () => {
+          side.failedKey = null;
+          retry.remove();
+          requestPaint(pane, pdf, side);
         });
-      },
-      { root: pane, rootMargin: "800px 0px" }
-    );
-    pdf.metas.forEach((meta) => meta.sides.forEach((side) => io.observe(side.div)));
-    pdf.io = io;
-  }
-
-  /* ---------------- 渲染 ---------------- */
-
-  /* 渲染单页：像素对齐位图 + 文本层。
-     - canvas 位图 = CSS 宽 × dpr × k，CSS 显示宽 = 对齐后的整数像素宽
-     - 文本层用同一个 CSS scale 渲染，保证选区与位图重合            */
-  async function paint(side, pane) {
-    const pdfjs = await ensurePdfjs();
-    if (side.dead) return;
-    await ensurePage(side);
-    if (!side.page || side.dead) return;
-
-    const ratio = side.h / side.w || 1.294;
-    const target = side.cssW || (pane?._pdf ? targetWidth(pane, pane._pdf) : BASE_W);
-    const { cssW, k } = pixelAligned(target, ratio, side.w || BASE_W);
-
-    // 视图不可见时跳过（尺寸为 0）
-    if (cssW < 1) return;
-
-    side.renderTask?.cancel?.();
-    const scale = (cssW * k) / side.w;          // 位图缩放（PDF pt → 设备像素）
-    const vp = side.page.getViewport({ scale });
-
-    const ctx = side.canvas.getContext("2d", { alpha: false });
-    side.canvas.width = Math.round(vp.width);
-    side.canvas.height = Math.round(vp.height);
-    // CSS 侧精确指定：避免浏览器按 100% 二次缩放
-    side.canvas.style.width = cssW + "px";
-    side.canvas.style.height = Math.round(cssW * ratio) + "px";
-    side.div.style.width = cssW + "px";
-    side.div.style.height = Math.round(cssW * ratio) + "px";
-
-    side.renderTask = side.page.render({ canvasContext: ctx, viewport: vp });
-    await side.renderTask.promise.catch((err) => {
-      if (err?.name === "RenderingCancelledException") return;
-      console.error("page.render 失败:", err);
-      throw err;
-    });
-
-    // 文本层：用 CSS scale（不含 dpr）渲染，由 CSS 变量驱动字号。
-    // 注意：PDF.js 3.x 的文本层宽度/高度由它自己写成
-    //   width: round(down, var(--total-scale-factor) * 612px, var(--scale-round-x))
-    // 这里只设置 --total-scale-factor，**不要**覆盖 width/height，
-    // 否则会打断它的响应式换算（表现为文字溢出/选区错位/AbortException）。
-    const cssScale = cssW / side.w;
-    side.textLayer?.cancel?.();
-    side.textDiv.innerHTML = "";
-    side.textDiv.style.setProperty("--total-scale-factor", String(cssScale));
-    side.textLayer = new pdfjs.TextLayer({
-      textContentSource: side.page.streamTextContent(),
-      container: side.textDiv,
-      viewport: side.page.getViewport({ scale: cssScale }),
-    });
-    await side.textLayer.render().catch((err) => {
-      // 渲染中被下一次 paint 取消属正常流程
-      if (err?.name !== "AbortException" && err?.name !== "RenderingCancelledException") {
-        console.error("textLayer 渲染失败:", err);
-      }
-    });
-    side.paintedW = cssW;
-    side.paintedK = k;
-    // 位图就绪后重绘该页批注（矩形是归一化坐标，与缩放无关）
-    if (pane?._pdf && window.PdfAnnot) {
-      const idx = pane._pdf.metas.findIndex((m) => m.sides.includes(side));
-      if (idx >= 0) window.PdfAnnot.paintPage(pane, idx);
+        side.div.appendChild(retry);
+        side.errorEl = retry;
+      }).finally(() => {
+        side.running = false;
+        pdf.running--;
+        if (side.dead || !side.near) release(side);
+        // 过期绘制只重试最新尺寸；预算不足时等滚动/布局，避免空转。
+        else if (side.obsolete || side.detailDirty) {
+          side.obsolete = side.detailDirty = false;
+          requestPaint(pane, pdf, side);
+        }
+        pump(pane, pdf);
+      });
     }
   }
-
-  /* 重新渲染当前可见页（缩放 / DPR 变化后调用） */
-  function repaintVisible(pane) {
-    const pdf = pane?._pdf;
-    if (!pdf) return;
-    const rect = pane.getBoundingClientRect();
-    for (const meta of pdf.metas) {
-      for (const side of meta.sides) {
-        if (!side.div) continue;
-        const r = side.div.getBoundingClientRect();
-        const visible = r.bottom > rect.top - 800 && r.top < rect.bottom + 800;
-        if (visible) {
-          side.rendered = true;
-          side.renderTask?.cancel?.();
-          paint(side, pane).catch(() => { side.rendered = false; });
-        } else {
-          // 不可见的页：清掉位图，按新尺寸重画占位，滚动回来时再渲染
-          side.rendered = false;
-          side.renderTask?.cancel?.();
-          side.textLayer?.cancel?.();
-          if (side.canvas) { side.canvas.width = 0; side.canvas.height = 0; }
-          if (side.textDiv) side.textDiv.innerHTML = "";
-          if (side.div) {
-            side.div.style.width = "100%";
-            side.div.style.height = "auto";
-          }
+  async function paint(pane, pdf, side) {
+    const changed = await ensurePage(side);
+    if (!active(pane, pdf) || !side.page || !side.near) return;
+    if (changed) layout(pane, captureAnchor(pane));
+    const revision = side.revision, key = side.key;
+    const current = () => active(pane, pdf) && side.near && side.revision === revision;
+    if (side.paintedKey === key) {
+      try { await paintDetail(pane, pdf, side, current); }
+      finally { side.obsolete = active(pane, pdf) && side.near && side.revision !== revision; }
+      return;
+    }
+    const { k } = pixelAligned(side.cssW, side.ratio, side.w);
+    const width = Math.max(1, Math.floor(side.cssW * k));
+    const height = Math.max(1, Math.floor(side.cssH * k));
+    if (!reserve(pane, pdf, side, width * height)) return;
+    side.errorEl?.remove();
+    side.canvas.width = width;
+    side.canvas.height = height;
+    const cssScale = side.cssW / side.w;
+    const vp = side.page.getViewport({ scale: cssScale });
+    const task = side.page.render({ canvasContext: side.canvas.getContext("2d", { alpha: false }),
+      viewport: vp, transform: [width / vp.width, 0, 0, height / vp.height, 0, 0] });
+    side.renderTask = task;
+    try {
+      await task.promise;
+      if (!current()) return;
+      const lib = await ensurePdfjs();
+      if (!current()) return;
+      side.textDiv.innerHTML = "";
+      side.textDiv.style.setProperty("--total-scale-factor", String(cssScale));
+      const text = new lib.TextLayer({ textContentSource: side.page.streamTextContent(),
+        container: side.textDiv, viewport: vp });
+      side.textLayer = text;
+      await text.render();
+      if (!current()) return;
+      side.paintedKey = key;
+      side.paintedW = side.cssW;
+      side.paintedK = k;
+      side.rendered = true;
+      side.textDiv.style.visibility = "";
+      window.PdfAnnot?.paintPage(pane, side.rowIndex);
+      await paintDetail(pane, pdf, side, current);
+    } catch (err) {
+      if (current()) throw err;
+    } finally {
+      side.obsolete = active(pane, pdf) && side.near && side.revision !== revision;
+      if (side.renderTask === task) side.renderTask = null;
+    }
+  }
+  async function paintDetail(pane, pdf, side, current) {
+    updateDetailArea(pane, side);
+    side.detailDirty = false;
+    const area = side.detailWanted;
+    if (!area || !current() || side.detailPaintedKey === area.key) return;
+    if (!reserve(pane, pdf, side, area.dw * area.dh, false)) return;
+    const canvas = document.createElement("canvas");
+    canvas.className = "pdf-detail-canvas";
+    canvas.width = area.dw;
+    canvas.height = area.dh;
+    Object.assign(canvas.style, { left: area.x + "px", top: area.y + "px",
+      width: area.width + "px", height: area.height + "px", visibility: "hidden" });
+    canvas.setAttribute?.("aria-hidden", "true");
+    side.div.appendChild(canvas);
+    side.detailPending = canvas;
+    let task;
+    try {
+      task = side.page.render({ canvasContext: canvas.getContext("2d", { alpha: false }),
+        viewport: side.page.getViewport({ scale: side.cssW / side.w }),
+        transform: [area.k, 0, 0, area.k, -area.dx, -area.dy] });
+      side.detailTask = task;
+      await task.promise;
+      if (!current() || side.detailWanted?.key !== area.key) return;
+      dropDetail(side);
+      side.detailCanvas = canvas;
+      side.detailPaintedKey = area.key;
+      side.detailK = area.k;
+      canvas.style.visibility = "";
+    } catch (err) {
+      if (current() && side.detailWanted?.key === area.key) throw err;
+    } finally {
+      if (side.detailCanvas !== canvas) { canvas.width = canvas.height = 0; canvas.remove(); }
+      if (side.detailTask === task) side.detailTask = null;
+      side.detailPending = null;
+      side.detailDirty = current() && side.detailWanted?.key !== area.key;
+    }
+  }
+  function observe(pane, pdf) {
+    pdf.io = new IntersectionObserver((entries) => {
+      if (!active(pane, pdf)) return;
+      // 先释放离开的页，再排队，避免先入后出导致预算误判。
+      for (const entry of entries) {
+        const side = pdf.byElement.get(entry.target);
+        if (!side?.doc) continue;
+        side.near = entry.isIntersecting;
+        if (side.near) pdf.near.add(side);
+        else {
+          pdf.near.delete(side);
+          pdf.queue.delete(side);
+          invalidate(side);
+          release(side);
         }
       }
-    }
-    applySizes(pane);
-  }
-
-  /* 容器尺寸变化：重排 + 重绘可见页（防抖） */
-  function watchResize(pane) {
-    const pdf = pane._pdf;
-    if (!pdf) return;
-    let raf = 0;
-    const schedule = () => {
-      cancelAnimationFrame(raf);
-      raf = requestAnimationFrame(() => {
-        if (pane._pdf !== pdf) return; // 已被重新挂载
-        const before = pdf.appliedW;
-        applySizes(pane);
-        if (Math.abs((pdf.appliedW || 0) - (before || 0)) >= 1) repaintVisible(pane);
+      requestNearby(pane, pdf);
+    }, { root: pane, rootMargin: "800px 0px" });
+    for (const side of allSides(pdf)) pdf.io.observe(side.div);
+    pdf.onScroll = () => {
+      pdf.anchor = captureAnchor(pane);
+      cancelFrame(pdf.scrollRaf);
+      pdf.scrollRaf = frame(() => {
+        if (!active(pane, pdf)) return;
+        pdf.anchor = captureAnchor(pane);
+        requestNearby(pane, pdf);
       });
     };
-    try {
-      pdf.resizeObs = new ResizeObserver(schedule);
-      pdf.resizeObs.observe(pane);
-    } catch {}
-    // DPR 变化（窗口拖到另一块屏）：device-pixel-content-box 仅 Chromium 支持
-    if ("ResizeObserver" in window) {
-      try {
-        pdf.dprObs = new ResizeObserver(() => repaintVisible(pane));
-        pdf.dprObs.observe(pane, { box: "device-pixel-content-box" });
-      } catch {}
-    }
+    pane.addEventListener?.("scroll", pdf.onScroll, { passive: true });
   }
-
-  /* ---------------- 挂载 ---------------- */
-
-  /* 读取首页的版式信息：宽高比 + 物理页宽（pt）。
-     页宽用于把「100% 缩放」定义成页面本身大小 —— compare 版的页宽是单页的两倍，
-     不能假定 612pt。 */
-  async function readFirstMeta(doc) {
+  function watchResize(pane, pdf) {
+    let last = `${pane.clientWidth}:${pane.clientHeight}:${dprNow()}`;
+    pdf.onResize = () => {
+      cancelFrame(pdf.resizeRaf);
+      pdf.resizeRaf = frame(() => {
+        if (!active(pane, pdf)) return;
+        const key = `${pane.clientWidth}:${pane.clientHeight}:${dprNow()}`;
+        if (key === last) return;
+        last = key;
+        layout(pane, pdf.anchor);
+      });
+    };
+    if (typeof ResizeObserver !== "undefined") {
+      pdf.resizeObs = new ResizeObserver(pdf.onResize);
+      try { pdf.resizeObs.observe(pane, { box: "device-pixel-content-box" }); }
+      catch { pdf.resizeObs.observe(pane); }
+    }
+    let lastDpr = dprNow();
+    pdf.onDpr = () => { lastDpr = dprNow(); pdf.onResize(); watchDpr(); };
+    function watchDpr() {
+      pdf.dprQuery?.removeEventListener("change", pdf.onDpr);
+      pdf.dprQuery = window.matchMedia?.(`(resolution: ${window.devicePixelRatio || 1}dppx)`);
+      pdf.dprQuery?.addEventListener("change", pdf.onDpr);
+    }
+    watchDpr();
+    // Chromium 某些显示切换只更新 DPR 而不派发尺寸/媒体查询事件。
+    // 兜底只比较一个数字；有变化才排版，销毁视图时停止。
+    pdf.dprTimer = setInterval(() => { if (dprNow() !== lastDpr) pdf.onDpr(); }, 500);
+    pdf.dprTimer.unref?.();
+    window.addEventListener?.("resize", pdf.onResize);
+  }
+  async function loadDocument(pane, pdf, lib, url) {
+    if (!active(pane, pdf)) throw cancelled();
+    const entry = { task: lib.getDocument(docParams(url)), doc: null, destroyed: false };
+    pdf.entries.push(entry);
+    const doc = await entry.task.promise;
+    entry.doc = doc;
+    if (!active(pane, pdf)) { destroyEntry(entry); throw cancelled(); }
+    pdf.docs.push(doc);
+    return doc;
+  }
+  async function mountDocuments(pane, urls, opts, bilingual) {
+    dispose(pane);
+    const pdf = { dead: false, entries: [], docs: [], doc: null, metas: [], perRow: bilingual ? 2 : 1,
+      gap: 20, queue: new Set(), near: new Set(), byElement: new Map(), running: 0,
+      fit: opts.fit || (bilingual ? "page" : "width"), zoom: Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, opts.zoom || 1)), bilingual };
+    pane._pdf = pdf;
     try {
-      const first = await doc.getPage(1);
+      const lib = await ensurePdfjs();
+      const docs = await Promise.all(urls.map(url => loadDocument(pane, pdf, lib, url)));
+      const first = await docs[0].getPage(1);
       const vp = first.getViewport({ scale: 1 });
-      const meta = { ratio: vp.height / vp.width, pageW: vp.width };
       first.cleanup?.();
-      return meta;
-    } catch {
-      return { ratio: 1.294, pageW: BASE_W };
+      if (!active(pane, pdf)) throw cancelled();
+      pdf.doc = bilingual ? null : docs[0];
+      pdf.pageRatio = vp.height / vp.width;
+      pdf.pageW = vp.width;
+      const n = Math.max(...docs.map(doc => doc.numPages));
+      pdf.metas = Array.from({ length: n }, (_, i) => ({ sides: docs.map((doc, column) => ({
+        doc: i < doc.numPages ? doc : null, pageIndex: i, page: null, w: vp.width, h: vp.height,
+        ratio: pdf.pageRatio, lang: column ? "zh" : "en", revision: 0, rendered: false, near: false,
+      })) }));
+      buildRows(pane, pdf);
+      observe(pane, pdf);
+      watchResize(pane, pdf);
+      return n;
+    } catch (err) {
+      if (active(pane, pdf)) dispose(pane);
+      throw err;
     }
   }
-
-  /* 单文档挂载（原文 / 译文 / 并排对照）：只记录页索引，页对象进入视口后才请求 */
-  async function mount(pane, url, opts = {}) {
-    clearPages(pane);
-    const lib = await ensurePdfjs();
-    const doc = await lib.getDocument(docParams(url)).promise;
-    const { ratio: pageRatio, pageW } = await readFirstMeta(doc);
-
-    const metas = [];
-    for (let i = 0; i < doc.numPages; i++) {
-      metas.push({
-        sides: [{
-          doc, pageIndex: i, page: null, w: 1, h: pageRatio, ratio: pageRatio, lang: "en",
-          div: null, canvas: null, textDiv: null, textLayer: null,
-          rendered: false, renderTask: null,
-        }],
-        div: null,
-      });
-    }
-
-    pane._pdf = {
-      doc, metas, perRow: 1, io: null,
-      fit: opts.fit || "width",       // width | page | manual
-      zoom: opts.zoom || 1,
-      pageRatio, pageW,
-    };
-    buildRows(pane);
-    observe(pane);
-    watchResize(pane);
-    return doc.numPages;
-  }
-
-  /* 双语对照挂载：原文 + 译文两份文档并排 */
-  async function mountBilingual(pane, enUrl, zhUrl, opts = {}) {
-    clearPages(pane);
-    const lib = await ensurePdfjs();
-    const [enDoc, zhDoc] = await Promise.all([
-      lib.getDocument(docParams(enUrl)).promise,
-      lib.getDocument(docParams(zhUrl)).promise.catch(() => null),
-    ]);
-    const { ratio: pageRatio, pageW } = await readFirstMeta(enDoc);
-
-    const n = Math.max(enDoc.numPages, zhDoc?.numPages || 0);
-    const metas = [];
-    for (let i = 0; i < n; i++) {
-      const sides = [];
-      for (const [doc, lang] of [[enDoc, "en"], [zhDoc, "zh"]]) {
-        if (!doc || i >= doc.numPages) {
-          sides.push({
-            doc: null, pageIndex: null, page: null, w: 612, h: 792, ratio: pageRatio, lang,
-            div: null, canvas: null, textDiv: null, textLayer: null,
-            rendered: true, renderTask: null,
-          });
-          continue;
-        }
-        sides.push({
-          doc, pageIndex: i, page: null, w: 1, h: pageRatio, ratio: pageRatio, lang,
-          div: null, canvas: null, textDiv: null, textLayer: null,
-          rendered: false, renderTask: null,
-        });
-      }
-      metas.push({ sides, div: null });
-    }
-
-    pane._pdf = {
-      doc: null, metas, perRow: 2, gap: 16, io: null,
-      fit: opts.fit || "page",
-      zoom: opts.zoom || 1,
-      pageRatio, pageW, bilingual: true,
-      docs: [enDoc, zhDoc].filter(Boolean),
-    };
-    buildRows(pane);
-    observe(pane);
-    watchResize(pane);
-    return metas.length;
-  }
-
-  /* ---------------- 对外控制 ---------------- */
-
+  function mount(pane, url, opts = {}) { return mountDocuments(pane, [url], opts, false); }
+  function mountBilingual(pane, enUrl, zhUrl, opts = {}) { return mountDocuments(pane, [enUrl, zhUrl], opts, true); }
   function setFit(pane, fit) {
-    const pdf = pane?._pdf;
-    if (!pdf) return;
-    pdf.fit = fit;
-    repaintVisible(pane);
+    if (!pane?._pdf || !["width", "page"].includes(fit)) return;
+    const anchor = captureAnchor(pane);
+    pane._pdf.fit = fit;
+    layout(pane, anchor);
   }
-
-  function setZoom(pane, zoom) {
-    const pdf = pane?._pdf;
-    if (!pdf) return;
-    pdf.zoom = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, zoom));
-    // 手动缩放即退出自动适配
-    if (pdf.fit !== "manual") pdf.fit = "manual";
-    applySizes(pane);
-    repaintVisible(pane);
+  function setZoom(pane, zoom, point) {
+    if (!pane?._pdf || !Number.isFinite(zoom)) return;
+    const anchor = captureAnchor(pane, point);
+    pane._pdf.zoom = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, zoom));
+    pane._pdf.fit = "manual";
+    layout(pane, anchor);
   }
-
-  function layout(pane) {
+  function effectiveZoom(pane) {
     const pdf = pane?._pdf;
-    if (!pdf) return;
-    applySizes(pane);
+    const side = pdf?.metas[pdf.anchor?.page || 0]?.sides[0];
+    return side ? side.cssW / side.w : pdf?.zoom || 1;
   }
-
-  return { mount, mountBilingual, setZoom, setFit, layout, MIN_ZOOM, MAX_ZOOM };
+  return { mount, mountBilingual, dispose, setZoom, setFit, layout, captureAnchor, restoreAnchor,
+    effectiveZoom, MIN_ZOOM, MAX_ZOOM };
 })();
