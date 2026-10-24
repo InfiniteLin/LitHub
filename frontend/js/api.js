@@ -44,10 +44,11 @@ window.LithubAPI = {
     return r.json();
   },
 
-  async importFile(file, cat = "local") {
+  async importFile(file, cat = "local", autoTitle = true) {
     const fd = new FormData();
     fd.append("file", file);
     fd.append("cat", cat);
+    fd.append("auto_title", String(autoTitle));
     const r = await fetch(`${API_BASE}/api/import`, { method: "POST", body: fd });
     if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || "导入失败");
     return r.json();
@@ -75,7 +76,7 @@ window.LithubAPI = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(fields),
     });
-    if (!r.ok) throw new Error("更新失败");
+    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || "更新失败");
     return r.json();
   },
 

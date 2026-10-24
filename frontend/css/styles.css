@@ -462,6 +462,7 @@ body:not(.desktop) .tb-drag { display: none; }
 .row:hover .row-go { opacity: 1; transform: translateX(0); }
 .row-acts { display: flex; gap: 2px; flex: none; opacity: 0; transition: opacity 0.15s var(--ease); }
 .row:hover .row-acts, .row-acts.has-fav { opacity: 1; }
+.row:focus-within .row-acts { opacity: 1; }
 .faved svg { fill: var(--gold); color: var(--gold); }
 .gcard { position: relative; }
 .gcard-acts {
@@ -471,6 +472,7 @@ body:not(.desktop) .tb-drag { display: none; }
   opacity: 0; transition: opacity 0.15s var(--ease);
 }
 .gcard:hover .gcard-acts { opacity: 1; }
+.gcard:focus-within .gcard-acts { opacity: 1; }
 .gcard-acts .icon-btn { color: #fff8f0; width: 26px; height: 26px; }
 .gcard-acts .icon-btn:hover { background: color-mix(in srgb, var(--ink) 35%, transparent); color: #fff; }
 .gcard-acts .faved svg { fill: var(--gold); color: var(--gold); }
@@ -665,6 +667,15 @@ body.reading #sidebar { display: none; }
 .reader-title { min-width: 0; max-width: 34%; flex: 0 1 auto; }
 .reader-title h1 { font-family: var(--serif); font-size: 15.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .reader-title span { display: block; font-size: 11px; color: var(--ink-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.paper-title-input {
+  display: block; width: 100%; min-width: 0; box-sizing: border-box;
+  font: inherit; line-height: inherit; color: var(--ink);
+  background: var(--surface); border: 1px solid var(--accent);
+  border-radius: 4px; padding: 0 4px; outline: none;
+}
+.paper-title-input[aria-busy="true"] { opacity: .65; cursor: progress; }
+.gcard-body h3.paper-title-editing { display: block; -webkit-line-clamp: unset; }
+.reader-title:has(.paper-title-input) { flex: 1 1 28%; }
 /* 分段控件与右侧操作栏不允许被压缩：否则批注侧栏打开后按钮文字会折行 */
 .seg-modes { margin-left: auto; flex: none; }
 .seg-modes .seg-btn { white-space: nowrap; }

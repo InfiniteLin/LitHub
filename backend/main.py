@@ -20,6 +20,8 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from pypdf import PdfReader
+from paper_title import clean_title, detect_title
+from paper_authors import detect_authors
 
 from store import store
 from paths import DATA_DIR, FRONTEND_DIR
@@ -90,7 +92,7 @@ def papers():
 
 
 @app.post("/api/import")
-async def import_pdf(file: UploadFile = File(...), cat: str = Form("local")):
+async def import_pdf(file: UploadFile = File(...), cat: str = Form("local"), auto_title: bool = Form(True)):
     if not (file.filename or "").lower().endswith(".pdf"):
         raise HTTPException(400, "仅支持 PDF 文件")
     data = await file.read()
@@ -113,17 +115,16 @@ async def import_pdf(file: UploadFile = File(...), cat: str = Form("local")):
     try:
         reader = PdfReader(str(tmp_path))
         pages = len(reader.pages)
-        meta_title = None
-        try:
-            if reader.metadata and reader.metadata.title:
-                meta_title = reader.metadata.title.strip() or None
-        except Exception:
-            pass
     except Exception:
+        tmp_path.unlink(missing_ok=True)
         raise HTTPException(400, "无法解析的 PDF 文件")
 
-    paper = store.add_paper(tmp_path, file.filename, pages, meta_title, digest, cat)
-    tmp_path.unlink(missing_ok=True)
+    try:
+        title = await asyncio.to_thread(detect_title, tmp_path, file.filename) if auto_title else None
+        authors = await asyncio.to_thread(detect_authors, tmp_path, file.filename)
+        paper = store.add_paper(tmp_path, file.filename, pages, title, digest, cat, authors=authors)
+    finally:
+        tmp_path.unlink(missing_ok=True)
     # 全文索引：提取旁车 txt 并入 FTS（翻译完成后中文译文会在重建时补充索引）
     try:
         await asyncio.to_thread(search_index.index_paper, paper["id"], store.paper_file(paper["id"]), "en")
@@ -238,10 +239,12 @@ def paper_file(pid: str, kind: str = "original"):
         path = store.paper_file(pid)
     if not path or not path.exists():
         raise HTTPException(404, "文件缺失")
-    return FileResponse(path, media_type="application/pdf", filename=path.name)
+    suffix = {"translated": "-译文", "compare": "-双语对照"}.get(kind, "")
+    return FileResponse(path, media_type="application/pdf", filename=_safe_file_stem(paper.get("title")) + suffix + ".pdf")
 
 
 class PaperUpdateBody(BaseModel):
+    title: str | None = None
     fav: bool | None = None
     tags: list[str] | None = None
     cat: str | None = None
@@ -373,6 +376,11 @@ def update_paper(pid: str, body: PaperUpdateBody):
     if not paper:
         raise HTTPException(404, "文献不存在")
     fields = {k: v for k, v in body.model_dump().items() if v is not None}
+    if "title" in fields:
+        title = clean_title(fields["title"])
+        if not title or len(title) > 500:
+            raise HTTPException(400, "文献名称不能为空，且不能超过 500 个字符")
+        fields["title"] = title
     if "tags" in fields:
         # 规整：去空白、去重、限长限量
         clean: list[str] = []

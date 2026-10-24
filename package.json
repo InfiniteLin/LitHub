@@ -1,7 +1,7 @@
 {
   "name": "lithub",
   "productName": "文枢 LitHub",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "文献管理与 AI 翻译对照阅读桌面应用",
   "author": "LitHub",
   "main": "electron/main.js",
@@ -13,6 +13,7 @@
     "dist:dir": "electron-builder --config electron-builder.config.js --dir",
     "test": "node tests/pdf-view.lazy.test.mjs && node tests/pdf-view.lifecycle.test.mjs && node tests/pdf-render.quality.test.mjs && node tests/webai-controller.test.mjs && node tests/webai-electron.test.mjs",
     "verify:pdf-view": "node tests/verify-pdf-view.mjs",
+    "verify:paper-titles": "python tests/verify-paper-titles.py",
     "test:browser-backend": "python -m unittest discover -s tests -p test_browser_session.py",
     "test:pdf-storage": "python -m unittest discover -s tests -p test_pdf_storage.py",
     "verify:pdf-storage": "python tests/verify-pdf-storage.py",

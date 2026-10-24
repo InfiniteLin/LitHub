@@ -192,7 +192,7 @@ class Store:
         return None
 
     def add_paper(self, src: Path, orig_name: str, pages: int, title: str | None,
-                  digest: str | None = None, cat: str = "local") -> dict:
+                  digest: str | None = None, cat: str = "local", *, authors: str = "") -> dict:
         with _lock:
             pid = uuid.uuid4().hex[:12]
             dst = self.files_dir / f"{pid}.pdf"
@@ -200,7 +200,7 @@ class Store:
             paper = {
                 "id": pid,
                 "title": title or Path(orig_name).stem,
-                "authors": "",
+                "authors": authors,
                 "venue": "本地导入",
                 "year": None,
                 "type": "PDF",

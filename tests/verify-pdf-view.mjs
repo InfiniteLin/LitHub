@@ -111,6 +111,46 @@ try {
     window.anchor = point => PdfView.captureAnchor(pane(), point);
   `);
   await until('real PDF bitmap and text layer render', `pane()?._pdf?.metas[0]?.sides[0].rendered && document.querySelector('.textLayer span')`);
+  await evaluate(`
+    window.renamePdf = pane()._pdf;
+    window.renameCanvas = side(0).canvas;
+    window.wasLive = LithubAPI.live;
+    window.oldUpdate = LithubAPI.updatePaper;
+    LithubAPI.live = true;
+    LithubAPI.updatePaper = async (id, fields) => ({ title: fields.title });
+    document.querySelector('.reader-bar [data-action="rename-paper"]').click();
+    document.querySelector('.paper-title-input').value = '  Updated Paper Title  ';
+  `);
+  await check('rename edits the existing heading without a modal', `document.querySelector('.reader-title h1 .paper-title-input')===document.activeElement && !document.querySelector('.modal-mask')`);
+  mkdirSync('tests/.shots/pdf-view', { recursive: true });
+  writeFileSync('tests/.shots/pdf-view/rename-inline.png', Buffer.from((await send('Page.captureScreenshot', { format: 'png' })).result.data, 'base64'));
+  await send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
+  await send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
+  await until('reader rename updates heading and tab without replacing PDF', `!document.querySelector('.paper-title-input')
+    && document.querySelector('.reader-title h1').textContent==='Updated Paper Title'
+    && document.querySelector('.tab.active .tab-title').textContent==='Updated Paper Title'
+    && pane()._pdf===renamePdf && side(0).canvas===renameCanvas && !renamePdf.dead`);
+  await evaluate(`
+    LithubAPI.updatePaper = async () => { throw new Error('Test save failed'); };
+    document.querySelector('.reader-bar [data-action="rename-paper"]').click();
+    document.querySelector('.paper-title-input').value = 'Should not be saved';
+    document.querySelector('.paper-title-input').dispatchEvent(new KeyboardEvent('keydown', {key:'Enter',bubbles:true}));
+  `);
+  await until('rename API failure retains old title and editable input', `document.querySelector('.paper-title-input')
+    && !document.querySelector('.paper-title-input').readOnly && testPaper.title==='Updated Paper Title'`);
+  await send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
+  await check('Escape cancels inline rename without affecting reader', `!document.querySelector('.paper-title-input') && testPaper.title==='Updated Paper Title' && pane()._pdf===renamePdf`);
+  await evaluate(`
+    LithubAPI.updatePaper=async (id, fields) => ({title:fields.title});
+    document.querySelector('.reader-bar [data-action="rename-paper"]').click();
+    const input=document.querySelector('.paper-title-input');
+    input.value='IME draft';
+    input.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',isComposing:true,bubbles:true}));
+  `);
+  await check('IME Enter does not submit an unfinished title', `!!document.querySelector('.paper-title-input') && testPaper.title==='Updated Paper Title'`);
+  await evaluate(`document.querySelector('.paper-title-input').value='  '; document.querySelector('.paper-title-input').blur();`);
+  await check('empty blur restores original title', `!document.querySelector('.paper-title-input') && testPaper.title==='Updated Paper Title'`);
+  await evaluate(`LithubAPI.live=wasLive; LithubAPI.updatePaper=oldUpdate;`);
   await check('fit width has no horizontal overflow and all portrait slots match', `pane().scrollWidth<=pane().clientWidth+1 && side(0).cssW===side(5).cssW`);
   await check('real canvas contains paper content', `(() => {
     const c = side(0).canvas, pixels = c.getContext('2d').getImageData(0, 0, c.width, c.height).data;
@@ -161,6 +201,30 @@ try {
   await sleep(80);
   await evaluate(`window.savedAnchor=anchor(); window.oldPdf=pane()._pdf; location.hash='#/library'`);
   await until('route exit disposes document and every bitmap', `oldPdf.dead && oldPdf.entries.every(e=>e.destroyed) && !oldPdf.running && oldPdf.metas.every(m=>m.sides.every(s=>s.canvas.width===0))`);
+  await check('library list and grid expose rename and updated attachment name', `rowHTML(testPaper).includes('data-action="rename-paper"')
+    && gcardHTML(testPaper).includes('data-action="rename-paper"') && attachmentsHTML(testPaper).includes('Updated Paper Title.pdf')`);
+  for (const layout of ['list', 'grid']) {
+    await evaluate(`state.libView='${layout}'; renderLibrary(); document.querySelector('[data-action="rename-paper"][data-id="'+testPaper.id+'"]').click();`);
+    await check(`${layout} inline editor prevents opening the paper`, `(() => {
+      const input=document.querySelector('.paper-title-input'); input.click();
+      input.value='Updated Paper Title';
+      return state.route.view==='library' && !document.querySelector('.modal-mask') && document.activeElement===input;
+    })()`);
+    await evaluate(`LithubAPI.live=true; LithubAPI.updatePaper=async (id,fields)=>({title:fields.title});
+      document.querySelector('.paper-title-input').value='Temporary Library Title'; document.querySelector('.paper-title-input').blur();`);
+    await until(`${layout} saves on blur in place`, `!document.querySelector('.paper-title-input') && testPaper.title==='Temporary Library Title'
+      && document.querySelector('[data-paper-title="'+testPaper.id+'"]').textContent==='Temporary Library Title'`);
+    await evaluate(`document.querySelector('[data-action="rename-paper"][data-id="'+testPaper.id+'"]').click();
+      document.querySelector('.paper-title-input').value='Updated Paper Title'; document.querySelector('.paper-title-input').blur();`);
+    await until(`${layout} repeated rename succeeds`, `testPaper.title==='Updated Paper Title' && !document.querySelector('.paper-title-input')`);
+    await evaluate(`LithubAPI.live=wasLive; LithubAPI.updatePaper=oldUpdate;`);
+  }
+  await evaluate(`importModal()`);
+  await check('import title recognition enabled by default and can be disabled', `(() => {
+    const input=document.querySelector('#import-auto-title');
+    if (!input.checked) return false; input.click(); return !input.checked;
+  })()`);
+  await evaluate(`closeModal()`);
   await evaluate(`location.hash='#/reader/'+testPaper.id`);
   await until('return to paper restores page anchor', `pane()?._pdf?.metas.length && anchor().page===savedAnchor.page && Math.abs(anchor().y-savedAnchor.y)<.01`);
   await evaluate(`window.oldMode=pane()._pdf; document.querySelector('[data-action="mode"][data-id="zh"]').click()`);

@@ -136,6 +136,7 @@ const badge = (p) => {
 
 const rowActs = (p) => `
   <div class="row-acts ${p.fav ? "has-fav" : ""}">
+    <button class="icon-btn sm" data-action="rename-paper" data-id="${p.id}" title="重命名文献">${I("pencil", 15)}</button>
     ${p.cat && p.cat !== "local" ? `<button class="icon-btn sm" data-action="cat-remove" data-id="${p.id}" title="移出当前分类（回到本地文献）">${I("external", 14)}</button>` : ""}
     <button class="icon-btn sm ${p.fav ? "faved" : ""}" data-action="toggle-fav" data-id="${p.id}" title="${p.fav ? "取消收藏" : "收藏"}">${I("star", 15)}</button>
     <button class="icon-btn sm danger" data-action="del-paper" data-id="${p.id}" title="删除">${I("trash", 15)}</button>
@@ -173,11 +174,11 @@ function attachmentsHTML(p) {
   const rows = [];
   if (p.live) {
     // Zotero 风格：原文附件显示文件名（CSS 负责溢出省略），title 给出全名
-    const origLabel = p.origName || "PDF 原文";
+    const origLabel = `${p.title}.pdf`;
     rows.push(attachRow({
       icon: "file", label: origLabel, meta: p.pages ? `${p.pages} 页` : "",
       action: "open-file", id: p.id, extra: `<span class="att-kind">PDF</span>`, cls: "att-file",
-      title: p.origName || "原文 PDF",
+      title: `${origLabel}${p.origName ? `（导入文件：${p.origName}）` : ""}`,
     }));
     if (p.translated) {
       rows.push(attachRow({
@@ -218,7 +219,7 @@ const rowHTML = (p, ftOnly = new Set()) => {
       </button>
       ${cover(p, true)}
       <div class="row-main">
-        <h3>${esc(p.title)}</h3>
+        <h3 data-paper-title="${p.id}">${esc(p.title)}</h3>
         <p>${esc(p.authors)} · <i>${esc(p.venue)}</i> ${p.year} · ${esc(p.type)}</p>
         ${snip ? `<p class="row-snippet">${esc(snip).replace(/\[\[/g, "<mark>").replace(/\]\]/g, "</mark>")}</p>` : ""}
       </div>
@@ -237,11 +238,12 @@ const gcardHTML = (p, ftOnly = new Set()) => {
   <article class="gcard" data-action="open" data-id="${p.id}" draggable="true" title="拖动到左侧分类可移动">
     ${cover(p)}
     <span class="gcard-acts">
+      <button class="icon-btn sm" data-action="rename-paper" data-id="${p.id}" title="重命名文献">${I("pencil", 15)}</button>
       <button class="icon-btn sm ${p.fav ? "faved" : ""}" data-action="toggle-fav" data-id="${p.id}" title="${p.fav ? "取消收藏" : "收藏"}">${I("star", 15)}</button>
       <button class="icon-btn sm danger" data-action="del-paper" data-id="${p.id}" title="删除">${I("trash", 15)}</button>
     </span>
     <div class="gcard-body">
-      <h3>${esc(p.title)}</h3>
+      <h3 data-paper-title="${p.id}">${esc(p.title)}</h3>
       <p class="gcard-meta">${esc(p.authors)}</p>
       ${snip ? `<p class="row-snippet">${esc(snip).replace(/\[\[/g, "<mark>").replace(/\]\]/g, "</mark>")}</p>` : ""}
     </div>
@@ -709,9 +711,10 @@ function renderReader(id) {
     <header class="reader-bar">
       <button class="icon-btn" data-action="route" data-id="library" title="返回文献库">${I("arrowLeft", 18)}</button>
       <div class="reader-title">
-        <h1>${esc(p.title)}</h1>
+        <h1 data-paper-title="${p.id}">${esc(p.title)}</h1>
         <span>${esc(p.authors)} · ${esc(p.venue)} ${p.year}</span>
       </div>
+      <button class="icon-btn sm" data-action="rename-paper" data-id="${p.id}" title="重命名文献">${I("pencil", 15)}</button>
       <div class="seg seg-modes">
         ${p.live ? `<button class="seg-btn ${r.mode === "dual2" ? "active" : ""}" data-action="mode" data-id="dual2" title="pdf2zh 双语对照版：左原文 · 右译文并排">${I("book", 14)}双语对照</button>` : ""}
         <button class="seg-btn ${r.mode === "en" ? "active" : ""}" data-action="mode" data-id="en">原文</button>
@@ -2832,6 +2835,96 @@ function confirmModal(title, text, confirmAction, dataId) {
     </footer>`);
 }
 
+let activePaperRename = null;
+const paperRenameSaving = new Set();
+
+function renamePaperInline(id) {
+  const p = paperById(id);
+  const heading = document.querySelector(`[data-paper-title="${CSS.escape(id)}"]`);
+  if (!p || !heading) return;
+  if (activePaperRename?.input.isConnected && activePaperRename.id === id) {
+    activePaperRename.input.focus();
+    return;
+  }
+  if (paperRenameSaving.has(id)) return;
+  activePaperRename?.save();
+  const input = document.createElement("input");
+  input.className = "paper-title-input";
+  input.type = "text";
+  input.maxLength = 500;
+  input.value = p.title;
+  input.setAttribute("aria-label", "文献名称");
+  input.title = "回车保存 · Esc 取消 · 点击其他位置保存";
+  heading.classList.add("paper-title-editing");
+  heading.replaceChildren(input);
+  let done = false;
+  const finish = () => {
+    done = true;
+    heading.classList.remove("paper-title-editing");
+    heading.textContent = p.title;
+    if (activePaperRename?.input === input) activePaperRename = null;
+  };
+  const save = async () => {
+    if (done || paperRenameSaving.has(id)) return;
+    const title = input.value.replace(/\s+/g, " ").trim();
+    if (!title) { finish(); toast("文献名称不能为空，已保留原名称", "err"); return; }
+    if (title === p.title) { finish(); return; }
+    paperRenameSaving.add(id);
+    input.readOnly = true;
+    input.setAttribute("aria-busy", "true");
+    try {
+      const updated = LithubAPI.live && p.live ? await LithubAPI.updatePaper(id, { title }) : { title };
+      p.title = updated.title;
+      delete p._pages;
+      finish();
+      // Patch titles without rebuilding the view: blur must not swallow a navigation
+      // click or tear down the current PDF/browser session.
+      document.querySelectorAll(`[data-paper-title="${CSS.escape(id)}"]`).forEach(el => {
+        if (!el.querySelector("input")) el.textContent = p.title;
+      });
+      document.querySelectorAll(`.row[data-id="${CSS.escape(id)}"], .gcard[data-id="${CSS.escape(id)}"]`).forEach(el => {
+        const initial = el.querySelector(".cover b");
+        if (initial) initial.textContent = p.title[0];
+      });
+      document.querySelectorAll(`#tab-strip .tab[data-id="${CSS.escape(id)}"]`).forEach(tab => {
+        const label = tab.dataset.action === "open-note" ? noteTabLabel(id) : p.title;
+        tab.querySelector(".tab-title").textContent = label;
+        tab.title = label;
+      });
+      const row = document.querySelector(`[data-row-id="${CSS.escape(id)}"]`);
+      const attachment = row?.querySelector('[data-action="open-file"]');
+      if (attachment) {
+        attachment.querySelector(".att-label").textContent = `${p.title}.pdf`;
+        attachment.title = `${p.title}.pdf${p.origName ? `（导入文件：${p.origName}）` : ""}`;
+      }
+      const webTitle = state.route.id === id && $("#webai-pane-url");
+      if (webTitle) { webTitle.textContent = p.title; webTitle.title = `当前论文：${p.title}`; }
+      toast("文献名称已更新");
+    } catch (error) {
+      input.readOnly = false;
+      input.removeAttribute("aria-busy");
+      if (input.isConnected && document.activeElement === input) input.select();
+      else finish();
+      toast(esc(error.message || "重命名失败"), "err");
+    } finally {
+      paperRenameSaving.delete(id);
+    }
+  };
+  activePaperRename = { id, input, save };
+  // Keep text selection and editing separate from the surrounding open/drag actions.
+  ["click", "dblclick", "pointerdown"].forEach(type => input.addEventListener(type, e => e.stopPropagation()));
+  input.addEventListener("dragstart", e => { e.preventDefault(); e.stopPropagation(); });
+  input.addEventListener("keydown", e => {
+    e.stopPropagation();
+    if (e.isComposing || e.keyCode === 229) return;
+    if (e.key === "Enter") { e.preventDefault(); save(); }
+    if (e.key === "Escape") { e.preventDefault(); if (!paperRenameSaving.has(id)) finish(); }
+  });
+  input.addEventListener("blur", () => save());
+  input.focus();
+  input.select();
+}
+
 function importModal() {
   state.pendingFiles = []; // 清空上次会话残留的选择
   openModal(`
@@ -2839,7 +2932,7 @@ function importModal() {
     <div class="modal-body">
       <div class="dropzone big" data-action="pick-files" id="import-drop">
         ${I("upload", 24)}<b>拖拽 PDF 到此处，或点击选择文件</b>
-        <span>支持批量导入 · 自动解析 DOI / arXiv 元数据</span>
+        <span>支持批量导入 · 从 PDF 元数据与首页识别标题和作者</span>
         <input type="file" id="import-file" multiple accept=".pdf" hidden>
       </div>
       <ul class="picked-list" id="picked-list"></ul>
@@ -2849,8 +2942,9 @@ function importModal() {
         </select>
       </label>
       <div class="switch-row">
-        <label class="switch"><input type="checkbox" checked><span class="switch-track"></span><span class="switch-label">导入后自动抓取摘要与引用信息</span></label>
+        <label class="switch"><input id="import-auto-title" type="checkbox" checked><span class="switch-track"></span><span class="switch-label">自动识别论文标题并用作文献名称</span></label>
       </div>
+      <p class="muted">识别失败时保留文件名；导入后可随时重命名。直接拖入文献库时默认自动识别。</p>
     </div>
     <footer class="modal-foot">
       <button class="btn" data-action="modal-close">取消</button>
@@ -3622,6 +3716,7 @@ document.addEventListener("click", (e) => {
 
     /* 弹层 */
     case "import": importModal(); break;
+    case "rename-paper": renamePaperInline(id); break;
     case "pick-files": $("#import-file").click(); break;
     case "mask-close": if (e.target === t) closeModal(); break;
     case "modal-close": closeModal(); break;
@@ -3629,10 +3724,14 @@ document.addEventListener("click", (e) => {
       if (LithubAPI.live) {
         if (!state.pendingFiles.length) { toast("请先选择要导入的 PDF 文件", "err"); break; }
         const targetCat = $("#import-cat")?.value || "local";
+        const autoTitle = $("#import-auto-title")?.checked !== false;
+        const files = [...state.pendingFiles];
+        if (t.disabled) break;
+        t.disabled = true;
         (async () => {
           let ok = 0, fail = 0;
-          for (const f of state.pendingFiles) {
-            try { await LithubAPI.importFile(f, targetCat); ok++; }
+          for (const f of files) {
+            try { await LithubAPI.importFile(f, targetCat, autoTitle); ok++; }
             catch (e) { fail++; toast(`${f.name}：${e.message}`, "err"); }
           }
           closeModal();
