@@ -13,13 +13,8 @@
 "use strict";
 
 window.PdfAnnot = (() => {
-  /* 高亮配色。
-     关键：fill 用**不透明**纯色，透明度统一由 .pdf-annot 层的 opacity 控制。
-     若每个色块自己带 alpha，重叠区域会按 1-(1-α)ⁿ 累积加深（两层 0.38 → 0.62），
-     用户看到的就是「重复高亮颜色变深」。改成整层统一 opacity 后，
-     重叠区仍是同一透明度，视觉上没有叠加加深。
-     stroke 用于下划线，保持不透明即可。 */
-  const HIGHLIGHT_OPACITY = 0.38;
+  /* Opaque palette values; CSS controls fill opacity after same-color geometry is merged.
+     Selection is drawn separately, so it never darkens an entire color group. */
   const COLORS = {
     yellow: { fill: "#ffd640", stroke: "#c69400" },
     green: { fill: "#78c878", stroke: "#3a8c3a" },
@@ -27,6 +22,11 @@ window.PdfAnnot = (() => {
     pink: { fill: "#ff8abe", stroke: "#c44682" },
     purple: { fill: "#b294ff", stroke: "#704ec8" },
   };
+
+  function viewFor(pane) {
+    return pane?.dataset?.annotationView || ({'pane-en':'en','pane-zh':'zh','pane-dual2':'dual2'}[pane?.id]) || 'en';
+  }
+  const belongs = (pane, ann) => ann?.view === viewFor(pane);
 
   /* 在页面容器上记录：pageIndex(0-based) -> [{annotation}] */
   function storeFor(pane) {
@@ -79,7 +79,7 @@ window.PdfAnnot = (() => {
       pageIndex = pdf.metas.findIndex((m) => m.sides.some((s) => s.div === pageEl));
       if (pageIndex < 0) pageIndex = 0;
     }
-    return { pageEl, pageIndex, rects, text };
+    return { pageEl, pageIndex, rects, text, view: viewFor(pageEl.closest('.pane')) };
   }
 
   const clamp01 = (v) => Math.max(0, Math.min(1, v));
@@ -111,7 +111,8 @@ window.PdfAnnot = (() => {
         const dy = Math.abs(l.centerY - it.centerY);
         const hMin = Math.min(l.height, it.height);
         const hMax = Math.max(l.height, it.height);
-        return dy < Math.max(2, hMin * 0.45) && hMax <= hMin * 1.9;
+        const gap = Math.max(0, it.left - l.right, l.left - it.right);
+        return dy < Math.max(2, hMin * 0.45) && hMax <= hMin * 1.9 && gap <= Math.max(8, hMin * .75);
       });
       if (hit) {
         hit.left = Math.min(hit.left, it.left);
@@ -236,11 +237,10 @@ window.PdfAnnot = (() => {
       for (const [key, rects] of mergedHighlights) {
         const color = COLORS[key] || COLORS.yellow;
         const anns = highlightGroups.get(key) || [];
-        const selected = anns.some((a) => storeFor(pane).selected === a.id);
         for (const r of rects) {
           const d = document.createElement("div");
           d.className = "annot-rect annot-highlight";
-          // 合并后的矩形可能来自多条批注，用第一条作为代表（删除/选中按组处理）
+          // Decorative paint group only; hitTest uses each annotation's original geometry.
           d.dataset.annotId = anns[0]?.id || "";
           d.dataset.annotIds = anns.map((a) => a.id).join(",");
           d.style.left = `${r.x * 100}%`;
@@ -248,7 +248,18 @@ window.PdfAnnot = (() => {
           d.style.width = `${r.w * 100}%`;
           d.style.height = `${r.h * 100}%`;
           d.style.background = color.fill;
-          if (selected) d.classList.add("is-selected");
+          layer.appendChild(d);
+        }
+      }
+
+      // Selection belongs to one annotation, independent of the merged color paint.
+      const selectedAnnotation = list.find(a => a.id === storeFor(pane).selected);
+      if (selectedAnnotation?.kind === "highlight") {
+        for (const r of selectedAnnotation.rects || []) {
+          const d = document.createElement("div");
+          d.className = "annot-rect annot-selection is-selected";
+          d.dataset.annotId = selectedAnnotation.id;
+          Object.assign(d.style, { left: `${r.x*100}%`, top: `${r.y*100}%`, width: `${r.w*100}%`, height: `${r.h*100}%` });
           layer.appendChild(d);
         }
       }
@@ -278,8 +289,9 @@ window.PdfAnnot = (() => {
           mark.dataset.annotId = ann.id;
           mark.title = ann.comment || "批注";
           const spot = ann.rects?.[0] || { x: 0.96, y: 0.08, w: 0, h: 0 };
-          mark.style.left = `${(spot.x + spot.w) * 100}%`;
-          mark.style.top = `${spot.y * 100}%`;
+          const gap = 16 / Math.max(1, side.div.clientWidth || 600);
+          mark.style.left = `${Math.min(.985, spot.x + spot.w + gap) * 100}%`;
+          mark.style.top = `${(spot.y + spot.h / 2) * 100}%`;
           mark.textContent = "✎";
           layer.appendChild(mark);
           continue;
@@ -307,6 +319,7 @@ window.PdfAnnot = (() => {
         const last = rects.reduce((a, b) => (b.y > a.y || (b.y === a.y && b.x > a.x) ? b : a), rects[0]);
         const del = document.createElement("button");
         del.className = "annot-del-float";
+        if (storeFor(pane).selected === ann.id) del.classList.add("is-selected");
         del.dataset.annotId = ann.id;
         del.title = "删除高亮";
         del.textContent = "×";
@@ -324,6 +337,7 @@ window.PdfAnnot = (() => {
         const last = rects.reduce((a, b) => (b.y > a.y || (b.y === a.y && b.x > a.x) ? b : a), rects[0]);
         const del = document.createElement("button");
         del.className = "annot-del-float";
+        if (storeFor(pane).selected === ann.id) del.classList.add("is-selected");
         del.dataset.annotId = ann.id;
         del.title = "删除划线";
         del.textContent = "×";
@@ -349,6 +363,7 @@ window.PdfAnnot = (() => {
     const st = storeFor(pane);
     st.byPage.clear();
     for (const a of annotations || []) {
+      if (!belongs(pane,a)) continue;
       const idx = (a.page || 1) - 1;
       if (!st.byPage.has(idx)) st.byPage.set(idx, []);
       st.byPage.get(idx).push(a);
@@ -357,6 +372,7 @@ window.PdfAnnot = (() => {
   }
 
   function add(pane, ann) {
+    if (!belongs(pane,ann)) return;
     const st = storeFor(pane);
     const idx = (ann.page || 1) - 1;
     if (!st.byPage.has(idx)) st.byPage.set(idx, []);
@@ -378,6 +394,7 @@ window.PdfAnnot = (() => {
   }
 
   function update(pane, ann) {
+    if (!belongs(pane,ann)) return false;
     const st = storeFor(pane);
     for (const [idx, list] of st.byPage) {
       const i = list.findIndex((a) => a.id === ann.id);
@@ -409,8 +426,17 @@ window.PdfAnnot = (() => {
     repaint(pane);
   }
 
+  function hitTest(pane, pageEl, clientX, clientY) {
+    const idx = pane?._pdf?.metas.findIndex(m => m.sides.some(s => s.div === pageEl));
+    if (idx == null || idx < 0) return null;
+    const box = pageEl.getBoundingClientRect();
+    const x = (clientX - box.left) / box.width, y = (clientY - box.top) / box.height;
+    return [...(storeFor(pane).byPage.get(idx) || [])].reverse().find(a =>
+      (a.rects || []).some(r => x >= r.x && x <= r.x+r.w && y >= r.y && y <= r.y+r.h)) || null;
+  }
+
   return {
-    COLORS, selectionToRects, paintPage, repaint,
+    COLORS, selectionToRects, paintPage, repaint, hitTest, viewFor,
     setAll, add, remove, update, get, all, select,
   };
 })();

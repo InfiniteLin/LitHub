@@ -121,5 +121,36 @@ with tempfile.TemporaryDirectory(prefix="lithub-title-test-") as temporary, cont
     from store import Store
     assert Store().get_paper(pid)["title"] == "新的论文名称 Test"
     assert Store().get_paper(pid)["authors"] == "Alice Example, Bob Example"
+    annotation = client.post(f"/api/papers/{pid}/annotations", json={"kind":"note", "page":1,
+        "rects":[{"x":.1,"y":.2,"w":.3,"h":.02}], "text":"source", "comment":"preserve comment", "color":"blue"}).json()
+    aid = annotation["id"]
+    assert client.delete(f"/api/papers/{pid}/annotations/{aid}").status_code == 200
+    assert client.get(f"/api/papers/{pid}/annotations").json() == []
+    restored = client.post(f"/api/papers/{pid}/annotations/{aid}/restore")
+    assert restored.status_code == 200 and restored.json() == annotation, restored.text
+    assert client.post(f"/api/papers/{pid}/annotations/{aid}/restore").status_code == 404
+    client.delete(f"/api/papers/{pid}/annotations/{aid}")
+    timestamp, original = store._annotation_trash[(pid, aid)]
+    store._annotation_trash[(pid, aid)] = (timestamp - 61, original)
+    assert client.post(f"/api/papers/{pid}/annotations/{aid}/restore").status_code == 404
+    print("PASS annotation undo preserves ID, geometry, comment and timestamp; duplicate/expired undo rejected")
+    scoped = []
+    for view in ["en", "zh", "dual2"]:
+        item = client.post(f"/api/papers/{pid}/annotations", json={"view":view,"kind":"highlight","page":1,
+            "rects":[{"x":.1,"y":.2,"w":.3,"h":.02}],"text":view}).json()
+        assert item["view"] == view
+        scoped.append(item)
+    legacy = store.add_annotation(pid,{"kind":"note","comment":"old unscoped note"})
+    for view in ["en", "zh", "dual2"]:
+        items = client.get(f"/api/papers/{pid}/annotations?view={view}").json()
+        assert {a["view"] for a in items} == {view,"legacy"}
+        assert {a["id"] for a in items} == {next(a["id"] for a in scoped if a["view"]==view),legacy["id"]}
+    assigned = client.patch(f'/api/papers/{pid}/annotations/{legacy["id"]}',json={"view":"dual2"}).json()
+    assert assigned["view"] == "dual2" and assigned["comment"] == "old unscoped note"
+    assert all(a["view"]=="zh" for a in client.get(f"/api/papers/{pid}/annotations?view=zh").json())
+    assert client.get(f"/api/papers/{pid}/annotations?view=invalid").status_code == 422
+    persisted = Store().list_annotations(pid)
+    assert {a["view"] for a in persisted} == {"en","zh","dual2"}
+    print("PASS per-version annotation storage/query/persistence and explicit legacy assignment")
     assert upload(b"invalid pdf").status_code == 400
     print("PASS import toggle/fallback, duplicate detection, validated persistent rename, PDF/note preservation, export name")

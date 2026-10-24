@@ -151,18 +151,215 @@ try {
   await evaluate(`document.querySelector('.paper-title-input').value='  '; document.querySelector('.paper-title-input').blur();`);
   await check('empty blur restores original title', `!document.querySelector('.paper-title-input') && testPaper.title==='Updated Paper Title'`);
   await evaluate(`LithubAPI.live=wasLive; LithubAPI.updatePaper=oldUpdate;`);
+  await evaluate(`window.fullToolbarWidth=document.querySelector('.reader-bar').getBoundingClientRect().width; mountNotePanel(testPaper);`);
+  await until('note panel and actual Markdown editor mount', `!!document.querySelector('#note-panel') && NoteEditor.isMounted()`);
+  await until('notes start below toolbar and only PDF gives up width', `(() => {
+    const bar=document.querySelector('.reader-bar').getBoundingClientRect(), panel=document.querySelector('#note-panel').getBoundingClientRect();
+    return Math.abs(panel.top-bar.bottom)<1 && Math.abs(bar.width-fullToolbarWidth)<1
+      && getComputedStyle(document.querySelector('.reader')).paddingRight==='0px'
+      && parseFloat(getComputedStyle(document.querySelector('#panes')).paddingRight)>0;
+  })()`);
+  await check('toolbar AI and note buttons remain clickable with notes open', `['ai-panel','note-panel','webai-toggle'].every(action => {
+    const el=document.querySelector('.reader-bar [data-action="'+action+'"]'); if (!el) return true;
+    const r=el.getBoundingClientRect(); return el.contains(document.elementFromPoint(r.x+r.width/2,r.y+r.height/2));
+  })`);
+  await evaluate(`setNotePanelWidth(1100)`);
+  await check('wide notes keep the full toolbar visible', `document.querySelector('#note-panel').getBoundingClientRect().width===1100
+    && document.querySelector('.reader-bar').getBoundingClientRect().width===fullToolbarWidth`);
+  await evaluate(`document.querySelector('.reader-bar').style.paddingBottom='30px'`);
+  await until('notes follow toolbar height changes', `Math.abs(document.querySelector('#note-panel').getBoundingClientRect().top-document.querySelector('.reader-bar').getBoundingClientRect().bottom)<1`);
+  await evaluate(`document.querySelector('.reader-bar').style.paddingBottom=''; setNotePanelWidth(760);`);
+  await until('notes realign after toolbar height restored', `Math.abs(document.querySelector('#note-panel').getBoundingClientRect().top-document.querySelector('.reader-bar').getBoundingClientRect().bottom)<1`);
+  writeFileSync('tests/.shots/pdf-view/note-toolbar.png', Buffer.from((await send('Page.captureScreenshot', {format:'png'})).result.data,'base64'));
+  await send('Emulation.setDeviceMetricsOverride', {width:1000,height:800,deviceScaleFactor:1,mobile:false});
+  await until('narrow window note overlay still stays below toolbar', `document.querySelector('#note-panel').getBoundingClientRect().width<=innerWidth
+    && Math.abs(document.querySelector('#note-panel').getBoundingClientRect().top-document.querySelector('.reader-bar').getBoundingClientRect().bottom)<1
+    && getComputedStyle(document.querySelector('#panes')).paddingRight==='0px'`);
+  await evaluate(`closeNotePanel()`);
+  await check('closing notes releases layout and observer', `!document.body.classList.contains('note-open')
+    && !document.body.style.getPropertyValue('--note-top') && !notePanelLayoutObserver`);
+  await send('Emulation.setDeviceMetricsOverride', {width:1500,height:1000,deviceScaleFactor:1,mobile:false});
+  await until('PDF returns to full width after notes close', `pane().clientWidth>1400 && side(0).rendered`);
+  await evaluate(`openAnnotationPanel(testPaper)`);
+  await until('annotation sidebar has resize handle below toolbar', `!!document.querySelector('[data-annot-grip]')
+    && Math.abs(document.querySelector('#annot-panel').getBoundingClientRect().top-document.querySelector('.reader-bar').getBoundingClientRect().bottom)<1`);
+  await evaluate(`
+    window.oldAnnotationAPI={update:LithubAPI.updateAnnotation,list:LithubAPI.annotations,live:LithubAPI.live};
+    window.sidebarAnnotation={id:'sidebar-note',view:'en',kind:'note',page:1,rects:[],color:'yellow',text:'Selected original passage',comment:'',created:'2026-10-24T12:00:00'};
+    annotListState.items=[sidebarAnnotation]; renderAnnotationList();
+    PdfAnnot.add(pane(),sidebarAnnotation);
+    LithubAPI.live=true;
+    LithubAPI.annotations=()=>new Promise(resolve=>window.resolveOldAnnotationList=resolve);
+    refreshAnnotationList(testPaper);
+    LithubAPI.updateAnnotation=async(id,annId,fields)=>({...sidebarAnnotation,...fields});
+    const textarea=document.createElement('textarea'); textarea.id='annot-comment';
+    textarea.value='First comment line\\nSecond comment line <b>plain text</b>'; document.body.appendChild(textarea);
+    saveAnnotationComment(pane(),'sidebar-note');
+  `);
+  await until('saved comment immediately appears in sidebar with line breaks', `document.querySelector('.annot-comment')?.textContent==='First comment line\\nSecond comment line <b>plain text</b>'
+    && !document.querySelector('.annot-comment b') && getComputedStyle(document.querySelector('.annot-comment')).whiteSpace==='pre-wrap'`);
+  await check('sidebar distinguishes selected passage and written comment', `document.querySelector('.annot-text').textContent==='Selected original passage'
+    && [...document.querySelectorAll('.annot-content-label')].map(el=>el.textContent).join(',')==='原文摘录,批注内容'`);
+  await evaluate(`resolveOldAnnotationList([{...sidebarAnnotation,comment:''}]);`);
+  await check('older list response cannot erase saved comment', `annotListState.items[0].comment.startsWith('First comment line') && !!document.querySelector('.annot-comment')`);
+  await evaluate(`(async()=>{document.querySelector('#annot-comment').value=''; await saveAnnotationComment(pane(),'sidebar-note');})()`);
+  await check('cleared comment is also removed from sidebar', `!document.querySelector('.annot-comment') && annotListState.items[0].comment===''`);
+  await evaluate(`(async()=>{document.querySelector('#annot-comment').value='这是写下的批注内容。\\n第二行备注，会在右侧完整显示。'; await saveAnnotationComment(pane(),'sidebar-note');
+    document.querySelector('#annot-comment').remove();
+    LithubAPI.updateAnnotation=oldAnnotationAPI.update; LithubAPI.annotations=oldAnnotationAPI.list; LithubAPI.live=oldAnnotationAPI.live;})()`);
+  await evaluate(`
+    window.annotationControlAPI={live:LithubAPI.live,update:LithubAPI.updateAnnotation,del:LithubAPI.deleteAnnotation,restore:LithubAPI.restoreAnnotation};
+    LithubAPI.live=true;
+    window.pendingAnnotationWrites=[];
+    LithubAPI.updateAnnotation=(id,aid,fields)=>new Promise(resolve=>pendingAnnotationWrites.push({fields,resolve}));
+    openAnnotationEditor(pane(),sidebarAnnotation);
+    document.querySelector('#annot-comment').value='First draft';
+    document.querySelector('#annot-comment').dispatchEvent(new Event('input'));
+  `);
+  await until('idle annotation typing automatically saves', `pendingAnnotationWrites.length===1`);
+  await evaluate(`
+    document.querySelector('#annot-comment').value='Newer draft'; document.querySelector('#annot-comment').dispatchEvent(new Event('input'));
+    document.querySelector('[data-annot-color]').value='purple'; document.querySelector('[data-annot-color]').dispatchEvent(new Event('change'));
+    void saveAnnotationComment(pane(),'sidebar-note',{close:false,silent:true});
+  `);
+  await check('annotation writes serialize per ID', `pendingAnnotationWrites.length===1`);
+  await evaluate(`pendingAnnotationWrites[0].resolve({...sidebarAnnotation,...pendingAnnotationWrites[0].fields})`);
+  await until('queued newer draft starts after older save', `pendingAnnotationWrites.length===2`);
+  await check('older save cannot clear newer annotation draft', `readAnnotationDraft(testPaper.id,'sidebar-note')?.comment==='Newer draft'`);
+  await evaluate(`pendingAnnotationWrites[1].resolve({...sidebarAnnotation,...pendingAnnotationWrites[1].fields})`);
+  await until('latest draft and color reach PDF and sidebar', `!readAnnotationDraft(testPaper.id,'sidebar-note')
+    && PdfAnnot.get(pane(),'sidebar-note').comment==='Newer draft' && PdfAnnot.get(pane(),'sidebar-note').color==='purple'`);
+  await evaluate(`LithubAPI.updateAnnotation=async()=>{throw new Error('Simulated offline')};
+    document.querySelector('#annot-comment').value='Recover after failed save';
+    document.querySelector('#annot-comment').dispatchEvent(new Event('input'));
+    closeAnnotationEditor();
+  `);
+  await until('failed close save retains local draft', `!annotationSaves.size && !!readAnnotationDraft(testPaper.id,'sidebar-note')`);
+  await evaluate(`annotationDrafts.clear(); openAnnotationEditor(pane(),sidebarAnnotation);`);
+  await check('annotation draft survives reopening from local storage', `document.querySelector('#annot-comment').value==='Recover after failed save'`);
+  await evaluate(`LithubAPI.updateAnnotation=async(id,aid,fields)=>({...sidebarAnnotation,...fields});
+    saveAnnotationComment(pane(),'sidebar-note');`);
+  await until('retry saves and clears recovered draft', `!document.querySelector('#annot-pop') && !readAnnotationDraft(testPaper.id,'sidebar-note')`);
+  await evaluate(`window.undoAnnotation=PdfAnnot.get(pane(),'sidebar-note');
+    LithubAPI.deleteAnnotation=async()=>({ok:true}); LithubAPI.restoreAnnotation=async()=>undoAnnotation;
+    deleteAnnotationById(pane(),testPaper,'sidebar-note');`);
+  await until('annotation deletion offers undo and removes sidebar item', `!PdfAnnot.get(pane(),'sidebar-note') && !!document.querySelector('.annot-undo-toast button')`);
+  await evaluate(`document.querySelector('.annot-undo-toast button').click()`);
+  await until('undo restores same annotation to PDF and sidebar', `PdfAnnot.get(pane(),'sidebar-note')?.comment==='Recover after failed save'
+    && annotListState.items.some(a=>a.id==='sidebar-note') && !document.querySelector('.annot-undo-toast')`);
+  await evaluate(`Object.assign(LithubAPI,{live:annotationControlAPI.live,updateAnnotation:annotationControlAPI.update,deleteAnnotation:annotationControlAPI.del,restoreAnnotation:annotationControlAPI.restore});
+    window.independentHighlights=[{id:'highlight-a',view:'en',kind:'highlight',color:'yellow',page:1,rects:[{x:.1,y:.1,w:.2,h:.02}]},
+      {id:'highlight-b',view:'en',kind:'highlight',color:'yellow',page:1,rects:[{x:.1,y:.2,w:.2,h:.02}]}];
+    PdfAnnot.setAll(pane(),[...independentHighlights,undoAnnotation]); PdfAnnot.select(pane(),'highlight-b');`);
+  await check('same-color highlight selection and delete control are independent', `side(0).div.querySelectorAll('.annot-selection').length===1
+    && side(0).div.querySelector('.annot-selection').dataset.annotId==='highlight-b'
+    && side(0).div.querySelectorAll('.annot-del-float.is-selected').length===1
+    && side(0).div.querySelector('.annot-del-float.is-selected').dataset.annotId==='highlight-b'`);
+  await check('text-layer hit testing resolves the correct annotation', `(() => {
+    const r=side(0).div.getBoundingClientRect(); return PdfAnnot.hitTest(pane(),side(0).div,r.x+r.width*.15,r.y+r.height*.21)?.id==='highlight-b';
+  })()`);
+  await evaluate(`annotListState.items=[...independentHighlights,undoAnnotation]; renderAnnotationList(); getSelection().removeAllRanges();`);
+  const annotationPoint = await evaluate(`(()=>{const r=side(0).div.getBoundingClientRect();return {x:r.x+r.width*.15,y:r.y+r.height*.21};})()`);
+  await send('Input.dispatchMouseEvent',{type:'mousePressed',...annotationPoint,button:'left',clickCount:1});
+  await send('Input.dispatchMouseEvent',{type:'mouseReleased',...annotationPoint,button:'left',clickCount:1});
+  await until('clicking painted highlight opens its own editor and selects sidebar row', `document.querySelector('#annot-pop')?.dataset.annotId==='highlight-b'
+    && document.querySelector('.annot-item.is-active')?.dataset.id==='highlight-b'`);
+  await check('highlight controls contain no comment input or type conversion', `!document.querySelector('#annot-pop textarea')
+    && !document.querySelector('#annot-pop [data-annot-kind]') && document.querySelectorAll('#annot-pop [data-mark-color]').length===5`);
+  await check('highlight controls are a compact single row without header or text buttons', `(() => {
+    const pop=document.querySelector('#annot-pop'), r=pop.getBoundingClientRect();
+    const page=side(0).div.getBoundingClientRect();
+    return r.width<=200 && r.height<=42 && r.bottom<page.top+page.height*.2
+      && !pop.querySelector('.annot-pop-head') && pop.querySelector('[data-annot-del]').textContent.trim()==='';
+  })()`);
+  await sleep(250);
+  writeFileSync('tests/.shots/pdf-view/annotation-editor.png',Buffer.from((await send('Page.captureScreenshot',{format:'png'})).result.data,'base64'));
+  await evaluate(`closeAnnotationEditor()`);
+  await evaluate(`
+    window.separateKindsAPI={live:LithubAPI.live,update:LithubAPI.updateAnnotation}; LithubAPI.live=true;
+    window.underlineFixture={id:'underline-only',view:'en',kind:'underline',color:'yellow',page:1,text:'Underline selection',rects:[{x:.1,y:.3,w:.2,h:.02}],comment:''};
+    PdfAnnot.add(pane(),underlineFixture);
+    LithubAPI.updateAnnotation=async(id,aid,fields)=>{window.lastKindPayload=fields;return {...underlineFixture,...fields};};
+    openAnnotationEditor(pane(),underlineFixture);
+    document.querySelector('#annot-pop [data-mark-color="green"]').click();
+  `);
+  await until('underline recoloring preserves kind and sends no comment', `PdfAnnot.get(pane(),'underline-only').color==='green'
+    && PdfAnnot.get(pane(),'underline-only').kind==='underline' && Object.keys(lastKindPayload).join(',')==='color'`);
+  await check('underline controls contain no writing or type conversion', `!document.querySelector('#annot-pop textarea') && !document.querySelector('#annot-pop select')`);
+  await evaluate(`closeAnnotationEditor();openAnnotationEditor(pane(),undoAnnotation);`);
+  await check('only notes offer description editing and drafts', `!!document.querySelector('#annot-pop #annot-comment')
+    && !!document.querySelector('#annot-pop .annot-save-state') && !document.querySelector('#annot-pop [data-annot-kind]')`);
+  await evaluate(`closeAnnotationEditor();LithubAPI.live=separateKindsAPI.live;LithubAPI.updateAnnotation=separateKindsAPI.update;`);
+  await sleep(250); // Wait for the opening transform before hitting the physical grip.
+  const gripPoint = await evaluate(`(() => { const r=document.querySelector('[data-annot-grip]').getBoundingClientRect(); return {x:r.x+r.width/2,y:r.y+150}; })()`);
+  await send('Input.dispatchMouseEvent', {type:'mouseMoved',...gripPoint});
+  await send('Input.dispatchMouseEvent', {type:'mousePressed',...gripPoint,button:'left',clickCount:1});
+  await until('annotation grip captures real pointer', `document.body.classList.contains('annot-resizing')`);
+  await send('Input.dispatchMouseEvent', {type:'mouseMoved',x:gripPoint.x-180,y:gripPoint.y,button:'left',buttons:1});
+  await until('dragging annotations resizes sidebar and PDF together', `document.querySelector('#annot-panel').getBoundingClientRect().width===540
+    && getComputedStyle(document.querySelector('#panes')).paddingRight==='540px'
+    && document.querySelector('.reader-bar').getBoundingClientRect().width===fullToolbarWidth`);
+  await send('Input.dispatchMouseEvent', {type:'mouseReleased',x:gripPoint.x-180,y:gripPoint.y,button:'left',clickCount:1});
+  await check('releasing annotation drag clears cursor state', `!document.body.classList.contains('annot-resizing')`);
+  writeFileSync('tests/.shots/pdf-view/annotation-resize.png', Buffer.from((await send('Page.captureScreenshot',{format:'png'})).result.data,'base64'));
+  await evaluate(`closeAnnotationPanel(); openAnnotationPanel(testPaper);`);
+  await check('annotation width is restored on reopen', `document.querySelector('#annot-panel').getBoundingClientRect().width===540`);
+  await evaluate(`document.querySelector('[data-annot-grip]').dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowLeft',bubbles:true}));`);
+  await check('annotation separator supports keyboard resizing', `annotListState.width===564`);
+  await evaluate(`document.querySelector('[data-annot-grip]').dispatchEvent(new MouseEvent('dblclick',{bubbles:true}));`);
+  await check('double click resets annotation width', `annotListState.width===360`);
+  await evaluate(`setAnnotationPanelWidth(-10000)`);
+  await check('annotation minimum width is bounded', `annotListState.width===280`);
+  await evaluate(`setAnnotationPanelWidth(10000)`);
+  await check('annotation maximum width preserves PDF space', `annotListState.width===900`);
+  await send('Emulation.setDeviceMetricsOverride', {width:700,height:800,deviceScaleFactor:1,mobile:false});
+  await until('annotation width clamps to a smaller window', `document.querySelector('#annot-panel').getBoundingClientRect().width<=676
+    && getComputedStyle(document.querySelector('#panes')).paddingRight==='0px'`);
+  await evaluate(`closeAnnotationPanel()`);
+  await check('annotation close releases width and resize observers', `!document.body.classList.contains('annot-open')
+    && !document.body.style.getPropertyValue('--annot-w') && !disposeAnnotationPanelLayout`);
+  await send('Emulation.setDeviceMetricsOverride', {width:1500,height:1000,deviceScaleFactor:1,mobile:false});
+  await until('closing annotations restores full PDF width', `pane().clientWidth>1400 && side(0).rendered`);
+  await evaluate(`openAnnotationPanel(testPaper); setAnnotationPanelWidth(360);`);
+  await sleep(250);
+  for (const ending of ['cancel', 'close']) {
+    const point = await evaluate(`(() => { const grip=document.querySelector('[data-annot-grip]');
+      grip.addEventListener('pointerdown',e=>window.annotTestPointer=e.pointerId,{once:true});
+      const r=grip.getBoundingClientRect(); return {x:r.x+r.width/2,y:r.y+150}; })()`);
+    await send('Input.dispatchMouseEvent',{type:'mouseMoved',...point});
+    await send('Input.dispatchMouseEvent',{type:'mousePressed',...point,button:'left',clickCount:1});
+    await until(`annotation ${ending} test has active pointer`, `document.body.classList.contains('annot-resizing')`);
+    await evaluate(ending==='cancel'
+      ? `document.querySelector('[data-annot-grip]').dispatchEvent(new PointerEvent('pointercancel',{pointerId:annotTestPointer}))`
+      : `closeAnnotationPanel()`);
+    await check(`annotation ${ending} during drag cleans capture and cursor`, `!document.body.classList.contains('annot-resizing')`);
+    await send('Input.dispatchMouseEvent',{type:'mouseReleased',...point,button:'left',clickCount:1});
+  }
   await check('fit width has no horizontal overflow and all portrait slots match', `pane().scrollWidth<=pane().clientWidth+1 && side(0).cssW===side(5).cssW`);
   await check('real canvas contains paper content', `(() => {
     const c = side(0).canvas, pixels = c.getContext('2d').getImageData(0, 0, c.width, c.height).data;
     for (let i = 0; i < pixels.length; i += 68) if (pixels[i] < 180) return true;
     return false;
   })()`);
+  await sleep(250);
+  await until('text layer is ready after sidebar resizing', `!pane()._pdf.running && !!side(0).textDiv.querySelector('span')`);
+  await evaluate(`(()=>{const span=side(0).textDiv.querySelector('span'), range=document.createRange();
+    range.setStart(span.firstChild,0); range.setEnd(span.firstChild,1);
+    const selection=getSelection();selection.removeAllRanges();selection.addRange(range);
+    span.dispatchEvent(new MouseEvent('mouseup',{bubbles:true}));})()`);
+  await check('single character selection opens toolbar below reader controls', `!!document.querySelector('.sel-pop')
+    && document.querySelector('.sel-pop').getBoundingClientRect().top>=document.querySelector('.reader-bar').getBoundingClientRect().bottom`);
+  await evaluate(`document.querySelector('[data-selcolor="purple"]').click(); document.querySelector('.sel-pop').remove();
+    side(0).textDiv.querySelector('span').dispatchEvent(new MouseEvent('mouseup',{bubbles:true}));`);
+  await check('selection color preference persists to next toolbar', `document.querySelector('.sel-pop .sel-dot.active')?.dataset.selcolor==='purple'
+    && localStorage.getItem('lithub-annotation-color')==='purple'`);
+  await evaluate(`document.querySelector('.sel-pop').remove();getSelection().removeAllRanges();`);
   await check('text selection and normalized annotations work', `(() => {
     const span = side(0).textDiv.querySelector('span'), range = document.createRange();
     range.selectNodeContents(span); const sel = getSelection(); sel.removeAllRanges(); sel.addRange(range);
     const info = PdfAnnot.selectionToRects(); sel.removeAllRanges();
     if (!info || !info.text.includes('Synthetic paper')) return false;
-    PdfAnnot.setAll(pane(), [{ id:'test', kind:'highlight', page:1, color:'yellow', rects:info.rects }]);
+    PdfAnnot.setAll(pane(), [{ id:'test', view:'en', kind:'highlight', page:1, color:'yellow', rects:info.rects }]);
     return !!side(0).div.querySelector('.annot-highlight');
   })()`);
   mkdirSync('tests/.shots/pdf-view', { recursive: true });
@@ -280,6 +477,42 @@ try {
     const p=document.querySelector('#pane-dual2'), s=p._pdf.metas[0].sides[0];
     return s.paintedW===2448 && s.paintedKey===s.key && !p._pdf.running;
   })()`);
+  await evaluate(`(async()=>{
+    window.scopedAPIs={live:LithubAPI.live,list:LithubAPI.annotations,create:LithubAPI.createAnnotation,update:LithubAPI.updateAnnotation};
+    window.scopedFixtures=['en','zh','dual2'].map(view=>({id:'scoped-'+view,view,kind:'highlight',page:1,color:'yellow',text:view,rects:[{x:.1,y:.1,w:.15,h:.02}]}));
+    scopedFixtures.push({id:'legacy-unscoped',view:'legacy',kind:'note',page:1,comment:'Old annotation without version',rects:[{x:.2,y:.2,w:.1,h:.02}]});
+    LithubAPI.live=true;
+    // Return all records intentionally: rendering and list code must also isolate views.
+    LithubAPI.annotations=async()=>scopedFixtures;
+    await loadAnnotations(testPaper);openAnnotationPanel(testPaper);
+  })()`);
+  await check('comparison draws only comparison annotations and keeps legacy unpainted', `PdfAnnot.all(activePdfPane()).length===1
+    && PdfAnnot.all(activePdfPane())[0].view==='dual2' && document.querySelectorAll('.annot-item').length===1
+    && !!document.querySelector('.annot-legacy')`);
+  await evaluate(`(async()=>{
+    LithubAPI.createAnnotation=async(id,fields)=>{window.scopedCreatePayload=fields;const ann={id:'new-comparison',...fields};scopedFixtures.push(ann);return ann;};
+    pendingSelection={view:'dual2',pageIndex:0,text:'New comparison mark',rects:[{x:.2,y:.3,w:.1,h:.02}]};
+    await createAnnotation('highlight','blue');
+  })()`);
+  await check('new annotations persist the actual PDF view', `scopedCreatePayload.view==='dual2' && PdfAnnot.get(activePdfPane(),'new-comparison')?.view==='dual2'`);
+  for (const view of ['en','zh','dual2']) {
+    await evaluate(`document.querySelector('[data-action="mode"][data-id="${view}"]').click()`);
+    await until(`${view} annotation layer and sidebar are isolated`, `currentAnnotationView()==='${view}' && annotListState.view==='${view}'
+      && activePdfPane()?._pdf?.metas.length && PdfAnnot.all(activePdfPane()).length===${view==='dual2'?2:1}
+      && PdfAnnot.all(activePdfPane()).every(a=>a.view==='${view}') && document.querySelectorAll('.annot-item').length===${view==='dual2'?2:1}`);
+  }
+  await evaluate(`LithubAPI.annotations=(id,view)=>view==='dual2'?new Promise(resolve=>window.resolveOldScoped=resolve):Promise.resolve(scopedFixtures);
+    void loadAnnotations(testPaper);document.querySelector('[data-action="mode"][data-id="en"]').click();`);
+  await until('original view loads while comparison request is pending', `currentAnnotationView()==='en' && annotListState.view==='en'
+    && PdfAnnot.all(activePdfPane()).length===1`);
+  await evaluate(`resolveOldScoped(scopedFixtures)`);
+  await check('late comparison response cannot contaminate original view', `annotListState.view==='en'
+    && PdfAnnot.all(activePdfPane()).every(a=>a.view==='en')`);
+  await evaluate(`LithubAPI.updateAnnotation=async(id,aid,fields)=>{const item=scopedFixtures.find(a=>a.id===aid);Object.assign(item,fields);return {...item};};
+    document.querySelector('[data-action="annot-assign-current"]').click();`);
+  await until('legacy annotation only draws after explicit version assignment', `PdfAnnot.get(activePdfPane(),'legacy-unscoped')?.view==='en'
+    && !document.querySelector('.annot-legacy')`);
+  await evaluate(`Object.assign(LithubAPI,{live:scopedAPIs.live,annotations:scopedAPIs.list,createAnnotation:scopedAPIs.create,updateAnnotation:scopedAPIs.update});`);
   assert.deepEqual(errors, [], 'no uncaught errors or page render failures');
   console.log('PASS real PDF.js lifecycle, geometry, selection, budgets and route integration');
 } finally {

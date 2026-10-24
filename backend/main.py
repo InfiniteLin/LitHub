@@ -13,6 +13,7 @@ import tempfile
 import threading
 import uuid
 from pathlib import Path
+from typing import Literal
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -925,6 +926,7 @@ ANNOT_KINDS = ("highlight", "underline", "note")
 
 
 class AnnotationBody(BaseModel):
+    view: Literal["en", "zh", "dual2"] = "en"
     kind: str = "highlight"
     page: int = 1
     rects: list[dict] = []
@@ -934,16 +936,18 @@ class AnnotationBody(BaseModel):
 
 
 class AnnotationPatch(BaseModel):
+    view: Literal["en", "zh", "dual2"] | None = None
     kind: str | None = None
     color: str | None = None
     comment: str | None = None
 
 
 @app.get("/api/papers/{pid}/annotations")
-def list_annotations(pid: str):
+def list_annotations(pid: str, view: Literal["en", "zh", "dual2"] | None = None):
     if not store.get_paper(pid):
         raise HTTPException(404, "文献不存在")
-    return store.list_annotations(pid)
+    items = store.list_annotations(pid)
+    return [a for a in items if a["view"] in (view, "legacy")] if view else items
 
 
 @app.post("/api/papers/{pid}/annotations")
@@ -975,6 +979,14 @@ def remove_annotation(pid: str, aid: str):
     if not store.delete_annotation(pid, aid):
         raise HTTPException(404, "批注不存在")
     return {"ok": True}
+
+
+@app.post("/api/papers/{pid}/annotations/{aid}/restore")
+def restore_annotation(pid: str, aid: str):
+    ann = store.restore_annotation(pid, aid)
+    if not ann:
+        raise HTTPException(404, "批注无法恢复，撤销时间已过或文献已删除")
+    return ann
 
 
 # ---------- 嵌入用户自己的浏览器（Chrome / Edge，复用真实登录态） ----------

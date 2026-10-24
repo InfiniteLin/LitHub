@@ -147,6 +147,7 @@ class Store:
 
     def __init__(self):
         self._db = _load()
+        self._annotation_trash = {}
         program = Path(os.environ.get("LITHUB_PROGRAM_DIR") or Path(__file__).resolve().parent.parent)
         default = os.environ.get("LITHUB_PDF_DEFAULT_DIR")
         if not default and os.environ.get("LITHUB_DATA_DIR") and not os.environ.get("LITHUB_PROGRAM_DIR"):
@@ -528,10 +529,11 @@ class Store:
             items = list(self._db["annotations"].get(paper_id, []))
         # 按页码、页内纵向位置排序，便于侧栏按文序展示
         items.sort(key=lambda a: (a.get("page") or 0, (a.get("rects") or [{}])[0].get("y", 0)))
-        return [dict(a) for a in items]
+        return [dict(a, view=a.get("view") or "legacy") for a in items]
 
     def add_annotation(self, paper_id, data: dict):
         ann = {
+            "view": data.get("view") or "legacy",
             "id": "a" + uuid.uuid4().hex[:10],
             "kind": data.get("kind") or "highlight",   # highlight | underline | note
             "page": int(data.get("page") or 1),        # 1-based 页码
@@ -551,7 +553,7 @@ class Store:
             for a in self._db["annotations"].get(paper_id, []):
                 if a["id"] != ann_id:
                     continue
-                for k in ("kind", "color", "comment"):
+                for k in ("kind", "color", "comment", "view"):
                     if k in fields and fields[k] is not None:
                         a[k] = str(fields[k])[:4000] if k == "comment" else str(fields[k])
                 self._flush()
@@ -563,12 +565,30 @@ class Store:
             items = self._db["annotations"].get(paper_id, [])
             for i, a in enumerate(items):
                 if a["id"] == ann_id:
+                    now = time.monotonic()
+                    self._annotation_trash = {key: value for key, value in self._annotation_trash.items() if now - value[0] < 60}
+                    if len(self._annotation_trash) >= 100:
+                        self._annotation_trash.pop(next(iter(self._annotation_trash)))
+                    self._annotation_trash[(paper_id, ann_id)] = (now, dict(a))
                     items.pop(i)
                     if not items:
                         self._db["annotations"].pop(paper_id, None)
                     self._flush()
                     return True
         return False
+
+    def restore_annotation(self, paper_id, ann_id):
+        with _lock:
+            item = self._annotation_trash.get((paper_id, ann_id))
+            if not item or time.monotonic() - item[0] >= 60 or paper_id not in self._db["papers"]:
+                return None
+            annotations = self._db["annotations"].setdefault(paper_id, [])
+            if any(a["id"] == ann_id for a in annotations):
+                return None
+            annotations.append(dict(item[1]))
+            self._flush()
+            self._annotation_trash.pop((paper_id, ann_id), None)
+            return dict(item[1])
 
 
 store = Store()

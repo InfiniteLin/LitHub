@@ -1648,21 +1648,37 @@ function setNotePanelWidth(px) {
   return w;
 }
 
-/* 面板是 position:fixed 浮在阅读器上的，只改面板宽度会让它「盖住更多 PDF」而不是
-   「把 PDF 挤窄」。所以同时给阅读器一个 padding-right，让 PDF 面板真正让出空间。
+/* The fixed note panel starts below the shared toolbar. Only PDF content gives up width.
    宽度通过 CSS 变量传递，避免每次拖动都写一条内联样式。
    这个函数以「DOM 里是否真有 #note-panel」为唯一判据，所以面板被别的路径
    移除（清空 overlay-root、切到 AI 面板）之后调用一次就能自动收干净。 */
+let notePanelLayoutObserver = null;
 function syncNotePanelLayout(w) {
   const panel = $("#note-panel");
   if (!panel) {
     document.body.classList.remove("note-open");
     document.body.style.removeProperty("--note-w");
+    document.body.style.removeProperty("--note-top");
+    notePanelLayoutObserver?.disconnect();
+    notePanelLayoutObserver = null;
     return;
   }
   const width = Math.round(w ?? panel.getBoundingClientRect().width);
   document.body.style.setProperty("--note-w", width + "px");
   document.body.classList.add("note-open");
+  const bar = $(".reader-bar");
+  const alignTop = () => {
+    if (bar?.isConnected && $("#note-panel")) {
+      document.body.style.setProperty("--note-top", `${bar.getBoundingClientRect().bottom}px`);
+    }
+  };
+  alignTop();
+  if (bar && !notePanelLayoutObserver) {
+    notePanelLayoutObserver = new ResizeObserver(alignTop);
+    notePanelLayoutObserver.observe(bar, { box: "border-box" });
+    const titlebar = $("#titlebar");
+    if (titlebar) notePanelLayoutObserver.observe(titlebar, { box: "border-box" });
+  }
 }
 
 function makeNotePanelResizable(panel) {
@@ -2069,6 +2085,8 @@ const promptName = () => state.db.prompts.find((x) => x.id === state.reader.prom
    用户偏好：AI 总结是有成本的调用，不该点开就跑。
    如果该提示词已有缓存，直接展示缓存内容（省一次请求），但仍可用「重新生成」覆盖。 */
 function mountAiPanel(p, opts = {}) {
+  closeAnnotationPanel();
+  $('[data-action="annot-panel"]')?.classList.remove("is-on");
   $("#overlay-root").innerHTML = aiPanelHTML(p);
   syncNotePanelLayout(null);   // AI 面板顶掉了笔记面板，收回让出的宽度
   if (!p?.live) return;
@@ -3034,6 +3052,7 @@ const catModal = (parentId = null) => {
 let sidebarDirty = false;
 
 function render(opts = {}) {
+  closeAnnotationEditor();
   cancelWebAiResize?.();
   const hash = location.hash || "#/library";
   const [, view, id] = hash.split("/");
@@ -3434,6 +3453,27 @@ document.addEventListener("click", (e) => {
       const ann = annotListState.items.find((a) => a.id === id);
       if (!pane || !ann) break;
       scrollToAnnotation(pane, ann);
+      break;
+    }
+    case "annot-assign-current": {
+      const paperId = state.route.id;
+      const view = currentAnnotationView();
+      const old = annotListState.items.find(a=>a.id===id);
+      if (!old || (old.view && old.view!=='legacy') || t.disabled) break;
+      t.disabled = true;
+      (async()=>{
+        try {
+          const ann = await LithubAPI.updateAnnotation(paperId,id,{view});
+          annotListRevision++;
+          if (annotListState.paperId===paperId) {
+            annotListState.items=annotListState.items.filter(a=>a.id!==id);
+            if (annotListState.view===view) annotListState.items.push(ann);
+            renderAnnotationList();
+          }
+          if (state.route.id===paperId && currentAnnotationView()===view) PdfAnnot.add(activePdfPane(),ann);
+          toast('已归属当前版本');
+        } catch(error) { t.disabled=false; toast(esc(error.message || '归属失败'),'err'); }
+      })();
       break;
     }
     case "annot-del": {
@@ -4084,6 +4124,44 @@ document.addEventListener("drop", (e) => {
 /* ---------------- PDF 批注：划词 → 高亮 / 划线 / 批注 ---------------- */
 
 const ANNOT_COLOR_LIST = ["yellow", "green", "blue", "pink", "purple"];
+let lastAnnotationColor = "yellow";
+try { const saved = localStorage.getItem("lithub-annotation-color"); if (ANNOT_COLOR_LIST.includes(saved)) lastAnnotationColor = saved; } catch {}
+const annotationDrafts = new Map();
+const annotationSaves = new Map();
+const annotationDeleting = new Set();
+const annotationKey = (paperId, annId) => `lithub-annotation-draft:${paperId}:${annId}`;
+
+function readAnnotationDraft(paperId, annId) {
+  const key = annotationKey(paperId, annId);
+  if (annotationDrafts.has(key)) return annotationDrafts.get(key);
+  try {
+    const draft = JSON.parse(localStorage.getItem(key) || "null");
+    if (draft && typeof draft.comment === "string" && ANNOT_COLOR_LIST.includes(draft.color) && draft.kind === "note") return draft;
+  } catch {}
+  return annotationDrafts.get(key) || null;
+}
+
+function rememberAnnotationDraft(pop) {
+  const input = pop?.querySelector("#annot-comment");
+  if (!input) return null;
+  const fields = { comment: input.value, kind: "note", color: pop.querySelector('[data-annot-color]').value };
+  const key = annotationKey(pop.dataset.paperId, pop.dataset.annotId);
+  annotationDrafts.set(key, fields);
+  try { localStorage.setItem(key, JSON.stringify(fields)); } catch {}
+  return fields;
+}
+
+function closeAnnotationEditor({ save = true } = {}) {
+  const pop = $("#annot-pop");
+  if (!pop) return;
+  clearTimeout(pop._saveTimer);
+  if (save && pop._dirty) {
+    rememberAnnotationDraft(pop);
+    saveAnnotationComment(pop._pane, pop.dataset.annotId, { silent:true, close:false, pop });
+  }
+  pop.remove();
+  if (pop._pane?._pdf && !pop._pane._pdf.dead) PdfAnnot.select(pop._pane, null);
+}
 const ANNOT_KIND_META = {
   highlight: { label: "高亮", icon: "sparkle" },
   underline: { label: "划线", icon: "list" },
@@ -4091,7 +4169,81 @@ const ANNOT_KIND_META = {
 };
 let pendingSelection = null;   // 划词浮条打开时冻结的选区信息
 /* 批注列表的运行时状态（与 pdf-annot 面板内的绘制数据分开维护） */
-const annotListState = { paperId: null, items: [], filter: "all", open: false };
+const annotListState = { paperId: null, view: null, items: [], filter: "all", open: false, width: 360 };
+const currentAnnotationView = () => PdfAnnot.viewFor(activePdfPane());
+const annotationFitsCache = (ann, paperId) => annotListState.paperId === paperId &&
+  (ann.view === annotListState.view || ann.view === 'legacy');
+let annotListRevision = 0;
+let annotListRequest = 0;
+let disposeAnnotationPanelLayout = null;
+
+function setAnnotationPanelWidth(width) {
+  const max = Math.max(1, Math.min(900, window.innerWidth > 1100 ? window.innerWidth - 320 : window.innerWidth - 24));
+  const min = Math.min(280, max);
+  const value = Math.round(Math.max(min, Math.min(max, width)));
+  annotListState.width = value;
+  const panel = $("#annot-panel");
+  if (panel) {
+    panel.style.width = `${value}px`;
+    document.body.style.setProperty("--annot-w", `${value}px`);
+    const grip = panel.querySelector("[data-annot-grip]");
+    grip?.setAttribute("aria-valuenow", value);
+    grip?.setAttribute("aria-valuemin", min);
+    grip?.setAttribute("aria-valuemax", max);
+  }
+  return value;
+}
+
+function makeAnnotationPanelResizable(panel) {
+  const grip = panel.querySelector("[data-annot-grip]");
+  const bar = $(".reader-bar");
+  let drag = null;
+  const align = () => {
+    if (bar?.isConnected) document.body.style.setProperty("--annot-top", `${bar.getBoundingClientRect().bottom}px`);
+  };
+  const stop = () => {
+    const current = drag;
+    drag = null;
+    document.body.classList.remove("annot-resizing");
+    grip.classList.remove("dragging");
+    if (current && grip.hasPointerCapture(current.id)) grip.releasePointerCapture(current.id);
+  };
+  grip.addEventListener("pointerdown", e => {
+    if (e.button !== 0 || drag) return;
+    e.preventDefault();
+    drag = { id: e.pointerId, x: e.clientX, width: panel.getBoundingClientRect().width };
+    grip.setPointerCapture(e.pointerId);
+    grip.classList.add("dragging");
+    document.body.classList.add("annot-resizing");
+  });
+  grip.addEventListener("pointermove", e => {
+    if (drag && e.pointerId === drag.id) setAnnotationPanelWidth(drag.width + drag.x - e.clientX);
+  });
+  ["pointerup", "pointercancel", "lostpointercapture"].forEach(type => grip.addEventListener(type, stop));
+  grip.addEventListener("dblclick", () => setAnnotationPanelWidth(360));
+  grip.addEventListener("keydown", e => {
+    if (!["ArrowLeft", "ArrowRight", "Home"].includes(e.key)) return;
+    e.preventDefault();
+    setAnnotationPanelWidth(e.key === "Home" ? 360 : annotListState.width + (e.key === "ArrowLeft" ? 24 : -24));
+  });
+  const resize = () => { stop(); setAnnotationPanelWidth(annotListState.width); align(); };
+  window.addEventListener("resize", resize);
+  window.addEventListener("blur", stop);
+  const observer = new ResizeObserver(align);
+  if (bar) observer.observe(bar, { box: "border-box" });
+  const titlebar = $("#titlebar");
+  if (titlebar) observer.observe(titlebar, { box: "border-box" });
+  setAnnotationPanelWidth(annotListState.width);
+  align();
+  disposeAnnotationPanelLayout = () => {
+    stop();
+    observer.disconnect();
+    window.removeEventListener("resize", resize);
+    window.removeEventListener("blur", stop);
+    document.body.style.removeProperty("--annot-w");
+    document.body.style.removeProperty("--annot-top");
+  };
+}
 
 /* 当前可见的 PDF 面板（阅读器同一时刻只有一个） */
 function activePdfPane() {
@@ -4103,11 +4255,16 @@ async function loadAnnotations(p) {
   if (!LithubAPI.live || !p?.live) return;
   const pane = activePdfPane();
   if (!pane) return;
+  const revision = annotListRevision;
+  const view = PdfAnnot.viewFor(pane);
   try {
-    const list = await LithubAPI.annotations(p.id);
+    const list = await LithubAPI.annotations(p.id, view);
+    if (state.route.id !== p.id || activePdfPane() !== pane) return;
+    if (revision !== annotListRevision) return loadAnnotations(p);
     PdfAnnot.setAll(pane, list);
     // 同步到侧栏列表
     annotListState.paperId = p.id;
+    annotListState.view = view;
     annotListState.items = list;
     renderAnnotationList();
   } catch (err) {
@@ -4117,22 +4274,32 @@ async function loadAnnotations(p) {
 
 /* 该文献的批注数量：优先用已加载的列表，未加载时返回 0（打开面板后才精确） */
 function annotCountOf(paperId) {
-  return annotListState.paperId === paperId ? (annotListState.items || []).length : 0;
+  return annotListState.paperId === paperId && annotListState.view === currentAnnotationView()
+    ? annotListState.items.filter(a=>a.view===annotListState.view).length : 0;
 }
 
 /* 侧栏列表局部刷新（新建/修改/删除后调用，避免重新请求） */
 async function refreshAnnotationList(p) {
   if (!annotListState.open || !LithubAPI.live || !p?.live) return;
+  const request = ++annotListRequest;
+  const revision = annotListRevision;
+  const view = currentAnnotationView();
   try {
-    annotListState.items = await LithubAPI.annotations(p.id);
+    const items = await LithubAPI.annotations(p.id, view);
+    if (!annotListState.open || annotListState.paperId !== p.id || view !== currentAnnotationView() || request !== annotListRequest || revision !== annotListRevision) return;
+    annotListState.view = view;
+    annotListState.items = items;
     renderAnnotationList();
   } catch {}
 }
 
 /* 打开/关闭批注列表侧栏 */
 function openAnnotationPanel(p) {
+  disposeAnnotationPanelLayout?.();
+  if (annotListState.paperId !== p.id || annotListState.view !== currentAnnotationView()) annotListState.items = [];
   annotListState.open = true;
   annotListState.paperId = p.id;
+  annotListState.view = currentAnnotationView();
   // 批注侧栏与笔记面板都占右侧：同时开两个会叠在一起，所以批注优先，
   // 顺手收起笔记面板（内容已自动保存，再点「笔记」就能回来）。
   if ($("#note-panel")) {
@@ -4147,10 +4314,14 @@ function openAnnotationPanel(p) {
   aside.id = "annot-panel";
   aside.innerHTML = annotationPanelHTML(p);
   $("#overlay-root").appendChild(aside);
+  makeAnnotationPanelResizable(aside);
+  renderAnnotationList();
   refreshAnnotationList(p);
 }
 
 function closeAnnotationPanel() {
+  disposeAnnotationPanelLayout?.();
+  disposeAnnotationPanelLayout = null;
   annotListState.open = false;
   document.body.classList.remove("annot-open");
   $("#annot-panel")?.remove();
@@ -4158,6 +4329,9 @@ function closeAnnotationPanel() {
 
 function annotationPanelHTML(p) {
   return `
+    <div class="annot-panel-grip" data-annot-grip role="separator" tabindex="0"
+      aria-orientation="vertical" aria-label="调整批注侧栏宽度" aria-controls="annot-panel"
+      title="拖动调整批注宽度（双击恢复默认；方向键微调）"></div>
     <header class="annot-head">
       <div class="ai-head-title">${I("list", 16)}<h2>批注</h2>
         <span class="annot-total" id="annot-total">0</span>
@@ -4180,9 +4354,18 @@ function annotationPanelHTML(p) {
 
 /* 渲染批注列表（按页分组） */
 function renderAnnotationList() {
+  const badge = $('[data-action="annot-panel"] .annot-count');
+  if (badge) { const count=annotCountOf(state.route.id); badge.textContent=count || ''; badge.hidden=!count; }
   const body = $("#annot-body");
   if (!body) return;
-  const all = annotListState.items || [];
+  const scrollTop = body.scrollTop;
+  const view = currentAnnotationView();
+  const all = annotListState.items.filter(a=>a.view===view);
+  const legacy = annotListState.items.filter(a=>!a.view || a.view==='legacy');
+  const legacyHTML = legacy.length ? `<section class="annot-legacy"><p>未分版本的旧标记（${legacy.length}）</p>
+    <small>旧标记没有记录阅读版本，暂不定位到 PDF。确认后可归属当前${{en:'原文',zh:'译文',dual2:'双语对照'}[view]}。</small>
+    ${legacy.map(a=>`<div class="annot-legacy-item"><span>${esc(a.comment || a.text || '未命名标记')}</span>
+      <button class="btn sm" data-action="annot-assign-current" data-id="${a.id}">归属当前版本</button></div>`).join('')}</section>` : '';
   const filter = annotListState.filter;
   const items = filter === "all" ? all : all.filter((a) => a.kind === filter);
 
@@ -4196,7 +4379,7 @@ function renderAnnotationList() {
       ${I("list", 26)}
       <p>${all.length ? "当前筛选下没有批注" : "还没有批注"}</p>
       <span>${all.length ? "切换到「全部」查看" : "在 PDF 中选中文字即可添加高亮、划线或批注"}</span>
-    </div>`;
+    </div>${legacyHTML}`;
     return;
   }
 
@@ -4213,7 +4396,8 @@ function renderAnnotationList() {
     <section class="annot-group">
       <div class="annot-page-head">第 ${pg} 页<span>${byPage.get(pg).length} 条</span></div>
       ${byPage.get(pg).map((a) => annotationItemHTML(a)).join("")}
-    </section>`).join("");
+    </section>`).join("") + legacyHTML;
+  body.scrollTop = scrollTop;
 }
 
 function annotationItemHTML(a) {
@@ -4221,15 +4405,15 @@ function annotationItemHTML(a) {
   const color = PdfAnnot.COLORS[a.color] || PdfAnnot.COLORS.yellow;
   const swatch = color.fill;   // 纯色（fill 已改为不透明）
   return `
-  <article class="annot-item" data-action="annot-jump" data-id="${a.id}">
+  <article class="annot-item ${activePdfPane()?._annot?.selected === a.id ? "is-active" : ""}" data-action="annot-jump" data-id="${a.id}">
     <span class="annot-kind-dot" style="background:${swatch}" title="${kind.label}"></span>
     <div class="annot-item-main">
       <div class="annot-item-top">
         <span class="annot-kind">${kind.label}</span>
         <span class="annot-date">${esc((a.created || "").replace("T", " "))}</span>
       </div>
-      ${a.text ? `<blockquote class="annot-text">${esc(a.text.slice(0, 180))}${a.text.length > 180 ? "…" : ""}</blockquote>` : ""}
-      ${a.comment ? `<p class="annot-comment">${esc(a.comment)}</p>` : ""}
+      ${a.text ? `<div class="annot-content-label">原文摘录</div><blockquote class="annot-text" title="${esc(a.text)}">${esc(a.text)}</blockquote>` : ""}
+      ${a.kind === "note" && a.comment ? `<div class="annot-content-label">批注内容</div><p class="annot-comment">${esc(a.comment)}</p>` : ""}
     </div>
     <button class="icon-btn sm danger annot-del" data-action="annot-del" data-id="${a.id}" title="删除">${I("trash", 13)}</button>
   </article>`;
@@ -4237,6 +4421,7 @@ function annotationItemHTML(a) {
 
 /* 滚动到某条批注所在页，并高亮它 */
 function scrollToAnnotation(pane, ann) {
+  closeAnnotationEditor();
   const pdf = pane._pdf;
   const idx = (ann.page || 1) - 1;
   const meta = pdf?.metas?.[idx];
@@ -4258,7 +4443,7 @@ function scrollToAnnotation(pane, ann) {
 /* 把当前文献的全部批注按页序导出为一条 Markdown 笔记 */
 async function exportAnnotationsToNote() {
   const p = paperById(state.route.id);
-  const items = annotListState.items || [];
+  const items = annotListState.items.filter(a=>a.view===currentAnnotationView());
   if (!p) return;
   if (!items.length) { toast("还没有批注可导出", "warn"); return; }
   if (!LithubAPI.live) { toast("演示模式无法导出", "err"); return; }
@@ -4292,8 +4477,6 @@ async function exportAnnotationsToNote() {
   try {
     const note = await LithubAPI.createNote(p.id, { title: `阅读批注（${items.length} 条）`, content });
     toast(`已导出为笔记「${note.title}」`);
-    // 若笔记面板正开着，提示可切换查看
-    annotListState.items = items;
   } catch (err) {
     toast("导出失败：" + err.message, "err");
   }
@@ -4309,6 +4492,7 @@ async function createAnnotation(kind, color) {
   const p = paperById(state.route.id);
   const pane = activePdfPane();
   if (!p || !pane) return;
+  if (sel.view && sel.view !== PdfAnnot.viewFor(pane)) return;
 
   if (!LithubAPI.live) {
     toast("演示模式：批注需连接本地服务", "warn");
@@ -4316,6 +4500,7 @@ async function createAnnotation(kind, color) {
   }
 
   const payload = {
+    view: PdfAnnot.viewFor(pane),
     kind,
     page: sel.pageIndex + 1,
     rects: sel.rects,
@@ -4325,9 +4510,11 @@ async function createAnnotation(kind, color) {
   };
   try {
     const ann = await LithubAPI.createAnnotation(p.id, payload);
+    annotListRevision++;
     PdfAnnot.add(pane, ann);
-    window.getSelection()?.removeAllRanges();
-    if (kind === "note") {
+    const stillCurrent = state.route.id === p.id && activePdfPane() === pane;
+    if (stillCurrent) window.getSelection()?.removeAllRanges();
+    if (kind === "note" && stillCurrent) {
       // 批注：立刻弹出输入框写备注
       openAnnotationEditor(pane, ann);
     } else {
@@ -4341,29 +4528,106 @@ async function createAnnotation(kind, color) {
 }
 
 /* 批注气泡编辑：修改备注 / 换色 / 删除 */
+function openMarkControls(pane, ann, paperId) {
+  const pop = document.createElement('div');
+  pop.id = 'annot-pop';
+  pop.className = 'annot-pop annot-mark-controls';
+  pop.dataset.annotId = ann.id;
+  pop.dataset.paperId = paperId;
+  pop._pane = pane;
+  pop.setAttribute('role','toolbar');
+  pop.setAttribute('aria-label',`${ANNOT_KIND_META[ann.kind].label}操作`);
+  pop.innerHTML = `<span class="annot-save-state" role="status"></span>
+    <div class="annot-mark-actions"><div class="annot-mark-colors" aria-label="颜色">
+    ${ANNOT_COLOR_LIST.map((color,i)=>`<button class="sel-dot ${color===ann.color ? 'active' : ''}" type="button" data-mark-color="${color}"
+      title="${['黄色','绿色','蓝色','粉色','紫色'][i]}" aria-label="${['黄色','绿色','蓝色','粉色','紫色'][i]}" aria-pressed="${color===ann.color}" style="--mark-color:${PdfAnnot.COLORS[color].fill}"><span aria-hidden="true"></span></button>`).join('')}
+    </div><span class="annot-mark-separator" aria-hidden="true"></span><button class="icon-btn sm danger" data-annot-del title="删除" aria-label="删除${ANNOT_KIND_META[ann.kind].label}">${I('trash',14)}</button></div>`;
+  $('#overlay-root').appendChild(pop);
+  PdfAnnot.select(pane,ann.id);
+  $$('.annot-item').forEach(el=>el.classList.toggle('is-active',el.dataset.id===ann.id));
+  document.querySelector(`.annot-item[data-id="${CSS.escape(ann.id)}"]`)?.scrollIntoView({block:'nearest'});
+  positionAnnotPopNearSelection(pop,pane,ann);
+  pop.querySelectorAll('[data-mark-color]').forEach(button=>button.addEventListener('click',async()=>{
+    if (!LithubAPI.live) { toast('请连接本地服务后修改颜色','err'); return; }
+    const color = button.dataset.markColor;
+    const status = pop.querySelector('.annot-save-state');
+    status.textContent = '保存中…';
+    pop.querySelectorAll('[data-mark-color]').forEach(el=>el.disabled=true);
+    const key = annotationKey(paperId,ann.id);
+    const previous = annotationSaves.get(key);
+    const operation = (previous || Promise.resolve()).catch(()=>{}).then(()=>LithubAPI.updateAnnotation(paperId,ann.id,{color}));
+    annotationSaves.set(key,operation);
+    try {
+      const updated = await operation;
+      annotListRevision++;
+      if (state.route.id===paperId && activePdfPane()) PdfAnnot.update(activePdfPane(),updated);
+      if (annotListState.paperId===paperId) {
+        annotListState.items=annotListState.items.map(item=>item.id===ann.id ? updated : item);
+        renderAnnotationList();
+      }
+      pop.querySelectorAll('[data-mark-color]').forEach(el=>{
+        el.classList.toggle('active',el.dataset.markColor===updated.color);
+        el.setAttribute('aria-pressed',el.dataset.markColor===updated.color);
+      });
+      status.textContent='已保存';
+    } catch (error) {
+      status.textContent='保存失败';
+      toast(esc(error.message || '修改颜色失败'),'err');
+    } finally {
+      if (annotationSaves.get(key)===operation) annotationSaves.delete(key);
+      pop.querySelectorAll('[data-mark-color]').forEach(el=>el.disabled=false);
+    }
+  }));
+}
+
 function openAnnotationEditor(pane, ann) {
   const cur = PdfAnnot.get(pane, ann.id) || ann;
-  $("#annot-pop")?.remove();
+  closeAnnotationEditor();
+  const paperId = state.route.id;
+  if (cur.kind !== "note") {
+    openMarkControls(pane,cur,paperId);
+    return;
+  }
+  const draft = readAnnotationDraft(paperId, cur.id);
+  const fields = draft || cur;
   const pop = document.createElement("div");
   pop.className = "annot-pop";
   pop.id = "annot-pop";
-  // 色彩选择已移除：批注颜色在划词时用浮条选定，气泡里不必再选一次
   pop.innerHTML = `
     <div class="annot-pop-head">
       <span class="annot-pop-grip" title="拖动可移动此框">⋮⋮</span>
       <span>批注</span>
+      <span class="annot-save-state" role="status">${draft ? "已恢复草稿" : "已保存"}</span>
       <button class="icon-btn sm" data-annot-reset-pos title="回到批注文字旁">${I("refresh", 13)}</button>
       <button class="icon-btn sm" data-annot-close title="关闭">${I("x", 13)}</button>
     </div>
     ${cur.text ? `<blockquote class="annot-quote">${esc(cur.text.slice(0, 240))}${cur.text.length > 240 ? "…" : ""}</blockquote>` : ""}
-    <textarea id="annot-comment" placeholder="写下你的想法…（Ctrl+Enter 保存）">${esc(cur.comment || "")}</textarea>
+    <div class="annot-edit-tools">
+      <label>颜色<select data-annot-color>${ANNOT_COLOR_LIST.map((key,i)=>`<option value="${key}" ${fields.color===key ? "selected" : ""}>${["黄色","绿色","蓝色","粉色","紫色"][i]}</option>`).join("")}</select></label>
+    </div>
+    <textarea id="annot-comment" maxlength="4000" placeholder="写下你的想法…（自动保存，Ctrl+Enter 立即保存）">${esc(fields.comment || "")}</textarea>
     <div class="annot-pop-foot">
       <button class="btn sm danger" data-annot-del>${I("trash", 13)}删除</button>
       <button class="btn sm btn-primary" data-annot-save>${I("check", 13)}保存</button>
     </div>`;
   pop.dataset.annotId = cur.id;
+  pop.dataset.paperId = paperId;
+  pop._pane = pane;
+  pop._dirty = !!draft && JSON.stringify(draft) !== JSON.stringify({comment:cur.comment || "",kind:cur.kind,color:cur.color});
   $("#overlay-root").appendChild(pop);
   PdfAnnot.select(pane, cur.id);
+  $$(".annot-item").forEach(el=>el.classList.toggle("is-active",el.dataset.id===cur.id));
+  document.querySelector(`.annot-item[data-id="${CSS.escape(cur.id)}"]`)?.scrollIntoView({block:"nearest"});
+  const changed = () => {
+    rememberAnnotationDraft(pop);
+    pop._dirty = true;
+    pop.querySelector('.annot-save-state').textContent = "草稿已暂存";
+    clearTimeout(pop._saveTimer);
+    pop._saveTimer = setTimeout(()=>saveAnnotationComment(pane,cur.id,{silent:true,close:false,pop}),800);
+  };
+  pop.querySelector('textarea').addEventListener('input',changed);
+  pop.querySelectorAll('select').forEach(el=>el.addEventListener('change',changed));
+  if (pop._dirty) pop._saveTimer = setTimeout(()=>saveAnnotationComment(pane,cur.id,{silent:true,close:false,pop}),800);
   // 定位到批注文字附近（下方优先，空间不足翻到上方）
   positionAnnotPopNearSelection(pop, pane, cur);
   // 支持按住气泡头部拖动；位置按批注 id 记住，重新打开时沿用
@@ -4490,6 +4754,14 @@ function positionAnnotPopNearSelection(pop, pane, ann) {
 
   const pw = pop.offsetWidth || 320;
   const ph = pop.offsetHeight || 240;
+  if (pop.classList.contains('annot-mark-controls')) {
+    const minTop = ($('.reader-bar')?.getBoundingClientRect().bottom || 0) + 8;
+    const above = anchorTop - ph - 8;
+    const top = above >= minTop ? above : anchorBottom + 8;
+    pop.style.left = `${Math.round(Math.max(8,Math.min(innerWidth-pw-8,anchorX-pw/2)))}px`;
+    pop.style.top = `${Math.round(Math.max(minTop,Math.min(innerHeight-ph-8,top)))}px`;
+    return;
+  }
   const GAP = 12;
   const M = 10;
 
@@ -4543,18 +4815,49 @@ function positionAnnotPopNearSelection(pop, pane, ann) {
   }
 }
 
-async function saveAnnotationComment(pane, annId) {
-  const p = paperById(state.route.id);
-  const comment = $("#annot-comment")?.value ?? "";
+async function saveAnnotationComment(pane, annId, options = {}) {
+  const pop = options.pop || $("#annot-pop");
+  const paperId = pop?.dataset.paperId || state.route.id;
+  const p = paperById(paperId);
+  const fields = pop ? rememberAnnotationDraft(pop) : {comment:$("#annot-comment")?.value ?? ""};
   if (!p || !LithubAPI.live) return;
+  const key = annotationKey(p.id, annId);
+  if (!fields || annotationDeleting.has(key)) return;
+  clearTimeout(pop?._saveTimer);
+  const snapshot = JSON.stringify(fields);
+  const status = pop?.querySelector('.annot-save-state');
+  if (status) status.textContent = "保存中…";
+  const previous = annotationSaves.get(key);
+  const operation = (previous || Promise.resolve()).catch(()=>{}).then(()=>LithubAPI.updateAnnotation(p.id,annId,fields));
+  annotationSaves.set(key, operation);
   try {
-    const ann = await LithubAPI.updateAnnotation(p.id, annId, { comment });
-    PdfAnnot.update(pane, ann);
-    $("#annot-pop")?.remove();
-    PdfAnnot.select(pane, null);
-    toast("批注已保存");
+    const ann = await operation;
+    annotListRevision++;
+    if (annotationFitsCache(ann,p.id)) {
+      const index = annotListState.items.findIndex(item => item.id === ann.id);
+      if (index >= 0) annotListState.items[index] = ann;
+      else annotListState.items.push(ann);
+      renderAnnotationList();
+    }
+    const currentPane = state.route.id === p.id ? activePdfPane() : null;
+    if (currentPane) PdfAnnot.update(currentPane, ann);
+    const currentDraft = readAnnotationDraft(p.id, annId);
+    if (!currentDraft || JSON.stringify(currentDraft) === snapshot) {
+      annotationDrafts.delete(key);
+      try { localStorage.removeItem(key); } catch {}
+      if (pop) pop._dirty = false;
+      if (status) status.textContent = "已保存";
+      if (options.close !== false && pop?.isConnected) {
+        pop.remove();
+        if (currentPane) PdfAnnot.select(currentPane, null);
+      }
+    }
+    if (!options.silent) toast("批注已保存");
   } catch (err) {
-    toast("保存失败：" + err.message, "err");
+    if (status) status.textContent = "保存失败，草稿已保留";
+    if (!options.silent) toast("保存失败：" + esc(err.message), "err");
+  } finally {
+    if (annotationSaves.get(key) === operation) annotationSaves.delete(key);
   }
 }
 
@@ -4562,10 +4865,15 @@ async function saveAnnotationComment(pane, annId) {
    保证「后端 → 页面绘制 → 侧栏列表 → 工具栏角标」四处同步。 */
 async function deleteAnnotationById(pane, paper, annId) {
   if (!LithubAPI.live) return;
+  const key = annotationKey(paper.id, annId);
+  if (annotationDeleting.has(key)) return;
+  annotationDeleting.add(key);
   try {
+    if ($("#annot-pop")?.dataset.annotId === annId) closeAnnotationEditor({save:false});
+    await annotationSaves.get(key)?.catch(()=>{});
     await LithubAPI.deleteAnnotation(paper.id, annId);
+    annotListRevision++;
     PdfAnnot.remove(pane, annId);
-    $("#annot-pop")?.remove();
     // 同步侧栏列表
     if (annotListState.paperId === paper.id) {
       annotListState.items = annotListState.items.filter((a) => a.id !== annId);
@@ -4573,15 +4881,50 @@ async function deleteAnnotationById(pane, paper, annId) {
     }
     // 同步工具栏角标
     const badge = $('[data-action="annot-panel"] .annot-count');
-    if (badge) {
+    if (badge && state.route.id === paper.id) {
       const n = annotCountOf(paper.id);
       badge.textContent = n || "";
       badge.hidden = !n;
     }
-    toast("已删除批注");
+    showAnnotationUndo(paper.id, annId);
   } catch (err) {
-    toast("删除失败：" + err.message, "err");
+    toast("删除失败：" + esc(err.message), "err");
+  } finally {
+    annotationDeleting.delete(key);
   }
+}
+
+function showAnnotationUndo(paperId, annId) {
+  const el = document.createElement('div');
+  el.className = 'toast toast-ok annot-undo-toast';
+  el.innerHTML = '<span>已删除批注</span><button type="button">撤销</button>';
+  $('#toast-root').appendChild(el);
+  const timer = setTimeout(()=>el.remove(), 8000);
+  const button = el.querySelector('button');
+  button.addEventListener('click', async()=>{
+    clearTimeout(timer);
+    button.disabled = true;
+    try {
+      const ann = await LithubAPI.restoreAnnotation(paperId,annId);
+      annotListRevision++;
+      if (state.route.id === paperId) {
+        const current = activePdfPane();
+        if (current) PdfAnnot.add(current,ann);
+      }
+      if (annotationFitsCache(ann,paperId)) {
+        if (!annotListState.items.some(item=>item.id===ann.id)) annotListState.items.push(ann);
+        renderAnnotationList();
+        const badge = $('[data-action="annot-panel"] .annot-count');
+        if (badge && state.route.id === paperId) { badge.textContent=annotCountOf(paperId); badge.hidden=false; }
+      }
+      el.remove();
+      toast('已恢复批注');
+    } catch (error) {
+      button.disabled=false;
+      setTimeout(()=>el.remove(),8000);
+      toast(esc(error.message || '撤销失败'),'err');
+    }
+  });
 }
 
 async function deleteAnnotation(pane, annId) {
@@ -4607,7 +4950,7 @@ document.addEventListener("mouseup", (e) => {
 
   const sel = window.getSelection();
   const text = sel?.toString().trim();
-  if (!text || text.length < 2 || !sel.rangeCount) return;
+  if (!text || !sel.rangeCount) return;
 
   // 真实 PDF：抽出归一化矩形，供持久化批注使用
   let rectsInfo = null;
@@ -4635,8 +4978,8 @@ document.addEventListener("mouseup", (e) => {
       <button data-selact="note">${I("pencil", 13)}批注</button>
       <span class="sel-sep"></span>
       <span class="sel-colors">
-        ${ANNOT_COLOR_LIST.map((c, i) => `<button class="sel-dot ${i === 0 ? "active" : ""}"
-          data-selcolor="${c}" title="${c}"
+        ${ANNOT_COLOR_LIST.map((c, i) => `<button class="sel-dot ${c === lastAnnotationColor ? "active" : ""}"
+          data-selcolor="${c}" title="${["黄色","绿色","蓝色","粉色","紫色"][i]}"
           style="background:${PdfAnnot.COLORS[c].fill}"></button>`).join("")}
       </span>`
     : `
@@ -4644,6 +4987,11 @@ document.addEventListener("mouseup", (e) => {
       <button data-selact="explain">${I("sparkle", 13)}解释</button>
       <button data-selact="note">${I("pencil", 13)}摘录</button>`;
   $("#overlay-root").appendChild(pop);
+  const size = pop.getBoundingClientRect();
+  const minTop = ($('.reader-bar')?.getBoundingClientRect().bottom || 0) + 8;
+  pop.style.left = `${Math.max(8,Math.min(innerWidth-size.width-8,rect.left+rect.width/2-size.width/2))}px`;
+  const above = rect.top-size.height-8;
+  pop.style.top = `${Math.max(minTop,Math.min(innerHeight-size.height-8,above>=minTop ? above : rect.bottom+8))}px`;
 });
 
 document.addEventListener("mousedown", (e) => {
@@ -4651,7 +4999,7 @@ document.addEventListener("mousedown", (e) => {
   if (pop && !pop.contains(e.target)) pop.remove();
   const annotPop = $("#annot-pop");
   if (annotPop && !annotPop.contains(e.target) && !e.target.closest(".annot-mark, .annot-rect")) {
-    annotPop.remove();
+    closeAnnotationEditor();
   }
 });
 
@@ -4660,6 +5008,8 @@ document.addEventListener("click", (e) => {
   const dot = e.target.closest("[data-selcolor]");
   if (dot) {
     $$(".sel-pop .sel-dot").forEach((d) => d.classList.toggle("active", d === dot));
+    lastAnnotationColor = dot.dataset.selcolor;
+    try { localStorage.setItem('lithub-annotation-color',lastAnnotationColor); } catch {}
     return;
   }
 
@@ -4699,7 +5049,7 @@ document.addEventListener("click", (e) => {
     if (ann && pane) openAnnotationEditor(pane, ann);
     return;
   }
-  if (e.target.closest("[data-annot-close]")) { $("#annot-pop")?.remove(); return; }
+  if (e.target.closest("[data-annot-close]")) { closeAnnotationEditor(); return; }
   if (e.target.closest("[data-annot-reset-pos]")) {
     // 复位到批注文字旁（清掉手动拖动的位置）
     $("#annot-pop")?._resetPosition?.();
@@ -4717,7 +5067,13 @@ document.addEventListener("click", (e) => {
     if (pop && pane) deleteAnnotation(pane, pop.dataset.annotId);
     return;
   }
-  // 批注颜色在创建时已确定（划词浮条选择），气泡内不再提供换色
+  // Hit testing keeps the text layer selectable: annotation rectangles never eat drag selection.
+  const page = e.target.closest('.pdf-page');
+  if (page && !getSelection()?.toString().trim()) {
+    const pane = activePdfPane();
+    const ann = pane && PdfAnnot.hitTest(pane,page,e.clientX,e.clientY);
+    if (ann) openAnnotationEditor(pane,ann);
+  }
 });
 
 /* 批注备注：Ctrl/Cmd + Enter 保存 */
@@ -4733,6 +5089,7 @@ document.addEventListener("keydown", (e) => {
 /* 键盘快捷键 */
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") {
+    closeAnnotationEditor();
     closeModal();
     aiStream.ctrl?.abort(); // 中止流式请求，避免空跑消耗 token
     document.getElementById("tag-pop")?.classList.add("hidden");

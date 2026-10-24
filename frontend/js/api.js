@@ -306,8 +306,8 @@ window.LithubAPI = {
 
   /* ---------- PDF 批注 ---------- */
 
-  async annotations(paperId) {
-    const r = await fetch(`${API_BASE}/api/papers/${paperId}/annotations`);
+  async annotations(paperId, view) {
+    const r = await fetch(`${API_BASE}/api/papers/${paperId}/annotations${view ? `?view=${encodeURIComponent(view)}` : ""}`);
     if (!r.ok) throw new Error("获取批注失败");
     return r.json();
   },
@@ -333,6 +333,12 @@ window.LithubAPI = {
   async deleteAnnotation(paperId, annId) {
     const r = await fetch(`${API_BASE}/api/papers/${paperId}/annotations/${annId}`, { method: "DELETE" });
     if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || "删除批注失败");
+    return r.json();
+  },
+
+  async restoreAnnotation(paperId, annId) {
+    const r = await fetch(`${API_BASE}/api/papers/${paperId}/annotations/${annId}/restore`, {method:"POST"});
+    if (!r.ok) throw new Error((await r.json().catch(()=>({}))).detail || "撤销失败");
     return r.json();
   },
 };

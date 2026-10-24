@@ -920,25 +920,21 @@ body.webai-resizing * { cursor: col-resize !important; }
   pointer-events: none;
   transition: outline-color 0.12s var(--ease);
 }
-/* 高亮块用不透明纯色 + 自身 opacity。
-   之前用 rgba 半透明色时，重叠区域会按 1-(1-α)ⁿ 累积加深（两层 0.38 → 0.62），
-   表现为「重复高亮颜色越来越深」。改成 opacity 后，每个块独立合成、互不叠加。
-   注：块之间仍会有轻微叠加（这是 opacity 合成的固有行为），但已不再随层数剧增；
-   若要完全无叠加，需要把同页的重叠矩形先做并集再绘制，见 paintPage 的分组逻辑。 */
-.annot-rect.annot-highlight { opacity: 0.38; }
+/* Same-color rectangles are merged before painting; a separate outline marks selection. */
+.annot-rect.annot-highlight { opacity: 0.30; }
 .annot-rect.annot-underline,
 .annot-rect.annot-note-line { background: transparent !important; }
 /* 批注（note）自动划线：和划线同款，但颜色跟批注自身颜色走（边框色由 JS 内联） */
-.annot-rect.is-selected { outline: 1.5px solid var(--accent); outline-offset: 1px; opacity: 1; }
-.annot-rect.is-selected.annot-highlight { opacity: 0.55; }
+.annot-rect.is-selected { outline: 1.5px solid #467bb3; outline-offset: 1px; opacity: 1; }
+.annot-selection { background: transparent; }
 /* 划线/批注划线的选中态：不要整框 outline（一条线被框住很怪），改为加粗+发光 */
 .annot-rect.is-selected.annot-underline,
 .annot-rect.is-selected.annot-note-line {
   outline: none;
-  box-shadow: 0 2px 0 0 var(--accent);
+  border-bottom-color: #467bb3 !important;
 }
 
-/* 高亮/划线的悬停删除按钮：默认极淡，悬停到该批注或按钮上时清晰可见 */
+/* Show only the selected annotation's delete button, or a focused/hovered button. */
 .annot-del-float {
   position: absolute; transform: translate(-50%, -50%);
   width: 15px; height: 15px; padding: 0;
@@ -947,18 +943,17 @@ body.webai-resizing * { cursor: col-resize !important; }
   font-size: 13px; line-height: 1; font-weight: 600;
   background: color-mix(in srgb, var(--ink) 62%, transparent);
   color: #fff8f0; cursor: pointer;
-  pointer-events: auto;
+  pointer-events: none; visibility: hidden;
   opacity: 0; transition: opacity 0.12s var(--ease), transform 0.12s var(--ease), background 0.12s var(--ease);
   z-index: 3;
 }
-/* 悬停到批注矩形 → 显示同一批注的删除按钮；选中态的批注也常驻显示 */
-.pdf-annot:has(.annot-rect:hover) .annot-del-float,
-.pdf-annot:has(.annot-rect.is-selected) .annot-del-float,
+.annot-del-float.is-selected,
 .annot-del-float:hover,
 .annot-del-float:focus-visible {
-  opacity: 1;
+  opacity: 1; visibility: visible; pointer-events: auto;
 }
 .annot-del-float:hover { background: var(--err); transform: translate(-50%, -50%) scale(1.15); }
+.textLayer ::selection { background: rgba(73, 132, 203, .25); }
 /* 批注标记：页边的小铅笔按钮 */
 .annot-mark {
   position: absolute; transform: translate(-50%, -50%);
@@ -1078,8 +1073,8 @@ body.webai-resizing * { cursor: col-resize !important; }
 
 /* ---------- 批注列表侧栏 ---------- */
 .annot-panel {
-  position: fixed; top: var(--titlebar-h); right: 0; bottom: 0; z-index: 60;
-  width: 360px; max-width: 92vw;
+  position: fixed; top: var(--annot-top, calc(var(--titlebar-h) + 62px)); right: 0; bottom: 0; z-index: 60;
+  width: 360px; max-width: calc(100vw - 24px);
   display: flex; flex-direction: column;
   background: var(--surface);
   border-left: 1px solid var(--line);
@@ -1088,13 +1083,12 @@ body.webai-resizing * { cursor: col-resize !important; }
 }
 @keyframes annotPanelIn { from { transform: translateX(20px); opacity: 0; } }
 
-/* 侧栏打开时阅读器整体让出宽度，避免工具栏被挤到换行。
-   用 body 上的标记类（而不是 :has，兼容性更稳）。 */
-body.annot-open .reader { padding-right: 360px; transition: padding-right 0.22s var(--ease); }
+/* PDF content follows the adjustable sidebar; the shared toolbar stays full width. */
+body.annot-open .panes { padding-right: var(--annot-w, 360px); }
 /* 让出宽度后 PDF 面板需要重新布局，否则 pageWidth 仍按旧宽度计算 */
-body.annot-open .panes { transition: none; }
+body.annot-resizing .panes { transition: none; }
 @media (max-width: 1100px) {
-  body.annot-open .reader { padding-right: 0; }
+  body.annot-open .panes { padding-right: 0; }
   body.annot-open .annot-panel { box-shadow: -8px 0 28px rgba(33, 29, 21, 0.18); }
 }
 .annot-head { padding: 16px 18px 10px; border-bottom: 1px solid var(--line); }
@@ -1137,6 +1131,7 @@ body.annot-open .panes { transition: none; }
 .annot-item-top { display: flex; align-items: baseline; gap: 7px; }
 .annot-kind { font-size: 11px; font-weight: 600; color: var(--ink-2); }
 .annot-date { font-size: 10px; color: var(--ink-3); margin-left: auto; font-variant-numeric: tabular-nums; }
+.annot-content-label { margin-top: 8px; font-size: 10.5px; color: var(--ink-3); }
 .annot-text {
   margin: 4px 0 0; padding: 0 0 0 8px; border-left: 2px solid var(--line-2);
   font-size: 12px; line-height: 1.6; color: var(--ink-2);
@@ -1145,7 +1140,23 @@ body.annot-open .panes { transition: none; }
 .annot-comment {
   margin: 5px 0 0; font-size: 12.5px; line-height: 1.6; color: var(--ink);
   padding: 5px 8px; border-radius: 6px; background: var(--surface-2);
+  white-space: pre-wrap; overflow-wrap: anywhere;
 }
+.annot-edit-tools { display: flex; gap: 12px; margin: 8px 0; }
+.annot-mark-controls { width:max-content; max-width:calc(100vw - 16px); padding:5px 7px; border-radius:8px; box-shadow:0 3px 12px #211d151a; }
+.annot-mark-controls .annot-save-state { position:absolute; width:1px; height:1px; overflow:hidden; clip-path:inset(50%); white-space:nowrap; }
+.annot-mark-actions { display:flex; align-items:center; gap:6px; }
+.annot-mark-colors { display:flex; align-items:center; gap:3px; }
+.annot-mark-colors .sel-dot { width:22px; height:22px; padding:0; border-radius:50%; border:0; background:transparent; cursor:pointer; display:grid; place-items:center; }
+.annot-mark-colors .sel-dot span { width:14px; height:14px; border-radius:50%; background:var(--mark-color); }
+.annot-mark-colors .sel-dot.active { box-shadow:inset 0 0 0 1px var(--ink-2); }
+.annot-mark-colors .sel-dot:hover { background:var(--surface-2); }
+.annot-mark-separator { width:1px; height:16px; background:var(--line); }
+.annot-edit-tools label { display:flex; align-items:center; gap:5px; font-size:11px; color:var(--ink-2); }
+.annot-edit-tools select { max-width:100px; padding:3px 5px; border:1px solid var(--line); border-radius:4px; color:var(--ink); background:var(--surface); }
+.annot-save-state { margin-left:auto; font-size:10.5px; color:var(--ink-3); }
+.annot-undo-toast button { border:0; border-radius:4px; padding:3px 8px; color:inherit; background:#ffffff22; cursor:pointer; }
+.sel-pop { max-width:calc(100vw - 16px); flex-wrap:wrap; }
 .annot-item .annot-del { opacity: 0; flex: none; align-self: flex-start; }
 .annot-item:hover .annot-del { opacity: 1; }
 
@@ -1156,6 +1167,11 @@ body.annot-open .panes { transition: none; }
 .annot-empty svg { opacity: 0.4; }
 .annot-empty p { font-size: 13px; color: var(--ink-2); margin: 4px 0 0; }
 .annot-empty span { font-size: 11.5px; line-height: 1.6; }
+.annot-legacy { margin-top:12px; padding:12px 6px; border-top:1px solid var(--line); color:var(--ink-2); }
+.annot-legacy p { font-size:12px; font-weight:600; }
+.annot-legacy small { display:block; margin:6px 0; line-height:1.5; color:var(--ink-3); }
+.annot-legacy-item { display:flex; align-items:center; gap:8px; padding:8px 0; font-size:11px; }
+.annot-legacy-item span { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 
 .annot-foot {
   display: flex; align-items: center; justify-content: space-between; gap: 10px;
@@ -1168,9 +1184,6 @@ body.annot-open .panes { transition: none; }
   font-size: 10px; font-weight: 700; min-width: 16px; height: 16px;
   display: inline-grid; place-items: center; padding: 0 4px;
   border-radius: 99px; background: var(--accent); color: #fff8f0;
-}
-@media (max-width: 860px) {
-  .annot-panel { width: 100vw; max-width: 100vw; }
 }
 /* PDF.js 文本层：透明文字覆盖位图 → 可选中/可复制（未来高亮批注的选区来源，样式取自 pdf_viewer.css 精简版） */
 .textLayer {
@@ -1387,43 +1400,48 @@ body.annot-open .panes { transition: none; }
 /* ---------- Markdown 笔记面板 ---------- */
 /* 比 AI 面板宽：分栏编辑需要左右两栏都有可用宽度。
    宽度由 JS 内联设置（state.reader.notePanelWidth），这里只给个兜底值 */
-.note-panel { width: 760px; max-width: 96vw; }
+.note-panel {
+  width: 760px; max-width: 96vw;
+  top: var(--note-top, calc(var(--titlebar-h) + 62px));
+  transition: transform .25s var(--ease), opacity .25s var(--ease);
+}
 
 /* 左边缘拖拽把手：视觉上是一条 1px 线，热区左右各扩 5px（约 11px 好点中） */
-.note-panel-grip {
+.note-panel-grip, .annot-panel-grip {
   position: absolute; top: 0; bottom: 0; left: 0; z-index: 2;
   width: 11px; margin-left: -5px;
   cursor: col-resize; touch-action: none;
 }
-.note-panel-grip::after {
+.note-panel-grip::after, .annot-panel-grip::after {
   content: ""; position: absolute; top: 0; bottom: 0; left: 5px;
   width: 1px; background: var(--line);
   transition: background 0.15s var(--ease), box-shadow 0.15s var(--ease);
 }
 /* hover / 拖动中：加粗高亮，明确「这条边可以拖」 */
 .note-panel-grip:hover::after,
-.note-panel-grip.dragging::after {
+.note-panel-grip.dragging::after,
+.annot-panel-grip:hover::after,
+.annot-panel-grip:focus-visible::after,
+.annot-panel-grip.dragging::after {
   background: var(--accent);
   box-shadow: 0 0 0 1.5px color-mix(in srgb, var(--accent) 35%, transparent);
 }
 /* 拖动期间：禁止选中文字 + 保持 col-resize 光标（指针移出把手也不会闪回箭头） */
-body.note-resizing { user-select: none; cursor: col-resize; }
-body.note-resizing * { cursor: col-resize !important; }
+body.note-resizing, body.annot-resizing { user-select: none; cursor: col-resize; }
+body.note-resizing *, body.annot-resizing * { cursor: col-resize !important; }
 /* 拖动中关掉面板的 transition：.ai-panel 上有 transition:all，
    否则每次 width 变化都会被 0.25s 动画吃掉，拖动会明显滞后于鼠标 */
 body.note-resizing .note-panel { transition: none; }
 
-/* 笔记面板占位让宽：面板是 fixed 浮层，必须同时给阅读器 padding-right，
-   否则拖宽只是「盖住更多 PDF」。宽度由 JS 写入 --note-w。 */
-body.note-open .reader {
+/* Only the reading content gives up space. The shared toolbar keeps its full width. */
+body.note-open .panes {
   padding-right: var(--note-w, 760px);
   transition: padding-right 0.22s var(--ease);
 }
-body.note-open .panes { transition: none; }
-body.note-resizing .reader { transition: none; }   /* 拖动时实时跟随，不要动画 */
+body.note-resizing .panes { transition: none; }
 @media (max-width: 1100px) {
   /* 窄屏放不下「让宽」：退回浮层，避免 PDF 被挤到无法阅读 */
-  body.note-open .reader { padding-right: 0; }
+  body.note-open .panes { padding-right: 0; }
   body.note-open .note-panel { box-shadow: -8px 0 28px rgba(33, 29, 21, 0.18); }
 }
 
