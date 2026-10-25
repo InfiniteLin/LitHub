@@ -3,6 +3,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import zipfile
 
@@ -20,7 +21,8 @@ with tempfile.TemporaryDirectory(prefix='lithub-filenames-') as temp:
     folder = Path(temp)
     output = folder / '中文安装目录'
     payload = folder / 'payload.zip'
-    binary = (root / 'release/install-optimized/win-unpacked' / name).read_bytes()
+    unpacked = Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else root / 'release/install-optimized/win-unpacked'
+    binary = (unpacked / name).read_bytes()
     with zipfile.ZipFile(payload, 'w', zipfile.ZIP_DEFLATED) as archive:
         archive.writestr(name, binary)
     script = folder / 'fixture.nsi'

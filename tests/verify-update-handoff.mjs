@@ -31,7 +31,7 @@ writeFileSync(entry,`const {launchInstallerAfterExit}=require(${JSON.stringify(p
  if(require('node:fs').existsSync(${JSON.stringify(marker)})) throw Error('Installer ran before parent exit');
 })().then(()=>process.exit(0)).catch(e=>{console.error(e);process.exit(1)});`);
 try {
-  const child=spawn(require('electron'),[entry],{env:{...process.env,ELECTRON_RUN_AS_NODE:'1'},windowsHide:true,stdio:['ignore','pipe','pipe']});
+  const child=spawn(process.env.LITHUB_TEST_ELECTRON || require('electron'),[entry],{env:{...process.env,ELECTRON_RUN_AS_NODE:'1'},windowsHide:true,stdio:['ignore','pipe','pipe']});
   let output='';child.stdout.on('data',b=>output+=b);child.stderr.on('data',b=>output+=b);
   const timer=setTimeout(()=>child.kill(),20000);
   const code=await new Promise((resolve,reject)=>{child.once('exit',resolve);child.once('error',reject);});

@@ -1,7 +1,7 @@
 {
   "name": "lithub",
   "productName": "文枢 LitHub",
-  "version": "0.2.0",
+  "version": "0.2.2",
   "description": "文献管理与 AI 翻译对照阅读桌面应用",
   "author": "LitHub",
   "main": "electron/main.js",

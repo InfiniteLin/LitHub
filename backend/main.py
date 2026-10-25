@@ -38,7 +38,7 @@ try:
 except Exception:  # 非 Windows / 缺依赖时不影响其它接口
     browser_embed = None
 
-SERVICE_VERSION = "0.2.1"
+SERVICE_VERSION = "0.2.2"
 
 
 @contextlib.asynccontextmanager
