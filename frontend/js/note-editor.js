@@ -31,6 +31,9 @@ const NoteEditor = (() => {
   let loading = null;         // 资源加载的共享 Promise
   let lastValue = "";         // read 模式切换回来时用来回填内容
   let pendingValue = null;    // 实例就绪前 setValue 进来的内容，after 里补挂
+  let lifecycle = 0, binding = null, pendingBookmark = null;
+  let commandMenu = null, formatBar = null;
+  let editable = true;
 
   const MODES = ["live", "source", "read"];
   const isMounted = () => Boolean(container && container.isConnected);
@@ -44,7 +47,7 @@ const NoteEditor = (() => {
       Object.assign(el, attrs);
       el.dataset.noteDep = marker;
       el.onload = () => resolve();
-      el.onerror = () => reject(new Error(`${marker} 加载失败`));
+      el.onerror = () => { el.remove(); reject(new Error(`${marker} 加载失败`)); };
       (tag === "link" ? document.head : document.head).appendChild(el);
     });
   }
@@ -74,14 +77,7 @@ const NoteEditor = (() => {
   async function uploadImages(files) {
     const list = [...files].filter((f) => (f.type || "").startsWith("image/"));
     if (!list.length) return null;
-    const parts = [];
-    for (const file of list) {
-      const md = await uploadNoteImage(file, file.name || "pasted.png");
-      parts.push(md);
-    }
-    // 前后各留一个换行：否则光标会落在图片节点内部（右侧链接处），
-    // 此时按回车只会在图片源码里插 <br>，不会生成图片下一行的新段落。
-    insertValue("\n" + parts.join("\n") + "\n");
+    await handleNoteImageFiles(list);
     return null;   // 已自行插入，不再让 Vditor 处理
   }
 
@@ -157,22 +153,23 @@ const NoteEditor = (() => {
 
   /* 尺寸 → Markdown 源码：把 ![](url) 替换成 <img src=... style="width..;height..">。
      只处理当前正在缩放的这一张；同一 URL 的其它引用不动。 */
-  function persistImageSize({ src, alt, w, h }) {
+  function persistImageSize({ src, alt, w, h, occurrence = 0, reset = false }) {
     const cur = getValue();
     // 转义 URL 里可能干扰正则的字符
     const esc = src.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     // 匹配这个 URL 的 markdown 图（无论当前 alt/已有尺寸），也匹配同 URL 的旧 <img>
-    const mdImg = new RegExp(`!?\\[[^\\]]*\\]\\(${esc}[^)]*\\)`, "g");
+    const mdImg = new RegExp(`!\\[[^\\]]*\\]\\(${esc}[^)]*\\)`, "g");
     const htmlImg = new RegExp(`<img[^>]*src="${esc}"[^>]*>`, "g");
-    const tag = `<img src="${src}" alt="${(alt || "").replace(/"/g, "&quot;")}" style="width:${Math.round(w)}px;height:${Math.round(h)}px">`;
+    const tag = `<img src="${src}" alt="${(alt || "").replace(/"/g, "&quot;")}"${reset ? '' : ` style="width:${Math.round(w)}px;height:${Math.round(h)}px"`}>`;
     // ⚠️ 必须让 HTML <img> 成为独立块（前后空行）：
     // 和文字/链接挤在同一行时，Lute 会按 html-inline 处理并渲染成源码 code，
     // 图片会消失。只有块级 HTML 才会被渲染成真正的 <img>。
     const block = `\n\n${tag}\n\n`;
-    let next;
-    if (htmlImg.test(cur)) next = cur.replace(htmlImg, block);
-    else next = cur.replace(mdImg, block);
-    next = next.replace(/\n{3,}/g, "\n\n").replace(/^\n+|\n+$/g, "");
+    // Count Markdown and HTML references together, then replace exactly the selected occurrence.
+    const matches = [...cur.matchAll(mdImg), ...cur.matchAll(htmlImg)].sort((a,b)=>a.index-b.index);
+    const match = matches[occurrence];
+    if (!match) return;
+    const next = cur.slice(0,match.index) + block + cur.slice(match.index+match[0].length);
     if (next !== cur) setValueSilently(next);
   }
 
@@ -189,6 +186,7 @@ const NoteEditor = (() => {
   }
 
   function onImgPointerDown(e) {
+    if (mode === 'read') return;
     // 把手是 body 下的 fixed 元素，不能靠 parentElement 找图；
     // 优先用创建把手时记录的 img，元素被 Vditor 重绘替换时再按 URL 兜底查找。
     let img = gripImg && gripImg.isConnected ? gripImg : null;
@@ -216,7 +214,9 @@ const NoteEditor = (() => {
       startW, startH,
       startDisplayW: r.width,
       ratio: startW / startH,
-      src: img.src, alt: img.alt || "",
+      src: img.getAttribute('src'), alt: img.alt || "",
+      occurrence: [...container.querySelectorAll('.vditor-ir img')]
+        .filter(other=>other.src===img.src).indexOf(img),
       maxW: host ? host.getBoundingClientRect().width - 24 : 1200,
     };
     document.body.classList.add("note-img-resizing");
@@ -251,7 +251,7 @@ const NoteEditor = (() => {
     // 尺寸有变化才写源码（与起始显示宽度比，避免 naturalWidth/逻辑宽差异误触发）
     const finalRect = img.getBoundingClientRect();
     if (Math.abs(finalRect.width - resizing.startDisplayW) > 2) {
-      persistImageSize({ src: resizing.src, alt: resizing.alt, w: finalRect.width, h: finalRect.height });
+      persistImageSize({ src: resizing.src, alt: resizing.alt, w: finalRect.width, h: finalRect.height, occurrence:resizing.occurrence });
       callbacks.onChange?.();       // 走自动保存
     }
     // IR 重绘后 img/wrapper 都是新的，把手会在下次 hover 时重建
@@ -291,10 +291,11 @@ const NoteEditor = (() => {
      监听器如果挂在把手节点上，pointerout 把把手移除后监听器就随节点一起没了 ——
      这正是第一版「按下有效、拖动无效」的原因。挂 document 不依赖节点存活。 */
   function bindImageResize(root) {
+    const signal = binding.signal;
     root.addEventListener("pointerover", (e) => {
       const img = e.target.closest?.(".vditor-ir img, .note-read-host img");
       if (img) ensureGrip(img);
-    });
+    }, { signal });
     // 鼠标移出图片且不是进入把手时移除把手（拖拽中不移除）
     document.addEventListener("pointerout", (e) => {
       if (resizing) return;
@@ -303,15 +304,15 @@ const NoteEditor = (() => {
       const toGrip = e.relatedTarget?.classList?.contains("note-img-grip");
       const toImg = e.relatedTarget?.closest?.(".vditor-ir img, .note-read-host img");
       if (!toGrip && !toImg) removeGrip();
-    }, true);
+    }, { capture:true, signal });
     // 把手挂在 body 上，pointerdown 必须挂 document 才能收到
     document.addEventListener("pointerdown", (e) => {
       if (e.target.classList?.contains("note-img-grip")) onImgPointerDown(e);
-    }, true);   // capture：抢在 Vditor 的编辑处理之前
-    root.addEventListener("keydown", onEnterInsideImage, true);
-    document.addEventListener("pointermove", onImgPointerMove, true);
-    document.addEventListener("pointerup", onImgPointerUp, true);
-    document.addEventListener("pointercancel", onImgPointerUp, true);
+    }, { capture:true, signal });
+    root.addEventListener("keydown", onEnterInsideImage, { capture:true, signal });
+    document.addEventListener("pointermove", onImgPointerMove, { capture:true, signal });
+    document.addEventListener("pointerup", onImgPointerUp, { capture:true, signal });
+    document.addEventListener("pointercancel", onImgPointerUp, { capture:true, signal });
   }
 
   /* read 模式：用 Vditor.preview 做只读渲染（不创建编辑器实例，省一个实例的开销） */
@@ -333,6 +334,7 @@ const NoteEditor = (() => {
   }
 
   function buildEditor(md, editMode) {
+    const serial = ++editorSerial;
     const el = container.querySelector(".note-vditor-host");
     el.innerHTML = "";
     return window.Vditor ? new window.Vditor(el, {
@@ -349,6 +351,7 @@ const NoteEditor = (() => {
       counter: { enable: false },
       resize: { enable: false },
       outline: { enable: false },
+      image: { isPreview:false },
       preview: {
         // 关键：Vditor 用 `padding = max(35, (容器宽 - maxWidth)/2)` 给正文加左右内边距。
         // 默认 maxWidth=800，在 1500px 的整页里会算出 (1500-800)/2=350px，
@@ -369,6 +372,7 @@ const NoteEditor = (() => {
         accept: "image/*",
       },
       input: () => {
+        if (serial !== editorSerial) return;
         lastValue = vd?.getValue?.() ?? lastValue;
         callbacks.onChange?.();
       },
@@ -380,6 +384,7 @@ const NoteEditor = (() => {
         }
       },
       after: () => {
+        if (serial !== editorSerial || !container?.isConnected) return;
         ready = true;
         // 初始化完成前收到的 setValue 在这里补挂（否则内容会静默丢失）
         if (pendingValue != null) {
@@ -389,6 +394,8 @@ const NoteEditor = (() => {
           lastValue = v;
         }
         callbacks.onReady?.();
+        setEditable(editable);
+        applyBookmark();
       },
     }) : null;
   }
@@ -399,27 +406,34 @@ const NoteEditor = (() => {
      构造函数返回后 Vditor 还在异步初始化，此时调用这些方法会抛错。
      ready 在 after 回调后才为 true（read 模式渲染是同步的，挂上即真）。 */
   let ready = false;
+  let editorSerial = 0;
 
   /* 挂载。options: { value, mode, onChange, onSave, onReady } */
   async function mount(target, options = {}) {
+    const ticket = ++lifecycle;
     const ok = await ensureLoaded();
+    if (ticket !== lifecycle || !target.isConnected) return false;
     if (!ok) {
       target.innerHTML = `<div class="note-editor-fail">编辑器资源加载失败，请检查 frontend/vendor/vditor 是否存在</div>`;
       return false;
     }
-    destroy();                      // 同一时刻只允许一个实例
+    destroy(false);                 // 同一时刻只允许一个实例
     container = target;
+    editable = options.editable !== false;
     mode = MODES.includes(options.mode) ? options.mode : "live";
     callbacks = {
       onChange: options.onChange,
       onSave: options.onSave,
       onReady: options.onReady,
     };
+    binding = new AbortController();
     // 事件委托挂在容器上：Vditor 会重绘内部 DOM，逐图绑定会被冲掉
     bindImageResize(container);
     bindGripScrollSync();
+    bindWritingTools(container);
     lastValue = options.value || "";
     rebuild();
+    setEditable(editable);
     return true;
   }
 
@@ -427,6 +441,8 @@ const NoteEditor = (() => {
   function rebuild() {
     if (!container) return;
     const md = lastValue;
+    editorSerial++;
+    closeWritingTools();
     pendingValue = null;      // 重建以 lastValue 为准，清掉旧队列
     ready = false;
     const editMode = mode === "source" ? "sv" : "ir";
@@ -447,6 +463,7 @@ const NoteEditor = (() => {
     }
     if (mode === "read") {
       renderRead(readEl, md);
+      requestAnimationFrame(applyBookmark);
     } else {
       vd = buildEditor(md, editMode);
     }
@@ -455,27 +472,21 @@ const NoteEditor = (() => {
   /* 切换模式：保留内容，尽量恢复滚动位置 */
   function setMode(next) {
     if (!MODES.includes(next) || next === mode) return;
+    getValue();
     const scroll = recordScroll();
     mode = next;
+    pendingBookmark = { scroll, mode:next };
     rebuild();
-    restoreScroll(scroll);
   }
 
-  /* 读取期间编辑器可能有内部滚动容器，切换模式后按比例还原 */
+  /* 模式切换后的滚动恢复统一在实例 ready 后执行。 */
   function recordScroll() {
-    const sc = vd?.vditor?.ir?.element?.scrollTop ?? readEl?.scrollTop ?? 0;
+    const sc = editElement()?.scrollTop ?? 0;
     return sc;
   }
-  function restoreScroll(top) {
-    if (!top) return;
-    requestAnimationFrame(() => {
-      const el = vd?.vditor?.ir?.element || readEl;
-      if (el) el.scrollTop = top;
-    });
-  }
-
   function getValue() {
     if (mode === "read") return lastValue;
+    if (!ready) return pendingValue ?? lastValue;
     try {
       const v = vd?.getValue?.();
       if (typeof v === "string") lastValue = v;
@@ -506,13 +517,18 @@ const NoteEditor = (() => {
   function insertValue(text) {
     if (mode === "read") { setValue(getValue() + text); return; }
     if (!vd) { setValue(getValue() + text); return; }
-    try { vd.insertValue(text, true); } catch { setValue(getValue() + text); }
+    try { vd.insertMD(text); } catch { setValue(getValue() + text); }
     lastValue = vd.getValue?.() ?? lastValue;
   }
 
   function focus() {
     if (mode === "read") return;
     try { vd?.focus?.(); } catch {}
+  }
+  function setEditable(value) {
+    editable = value;
+    const el=editElement();
+    if (el && mode!=='read') el.setAttribute('contenteditable',value?'true':'false');
   }
 
   /* 主题切换后重绘（read 模式的 KaTeX 颜色依赖内容主题） */
@@ -529,7 +545,174 @@ const NoteEditor = (() => {
     }
   }
 
-  function destroy() {
+  function editElement() {
+    return mode === 'read' ? readEl : mode === 'source' ? vd?.vditor?.sv?.element : vd?.vditor?.ir?.element;
+  }
+  function bookmark() {
+    const el=editElement(), selection=window.getSelection();
+    if (!el) return null;
+    const result={ scroll:el.scrollTop, mode };
+    if (selection?.rangeCount && el.contains(selection.anchorNode)) {
+      const range=selection.getRangeAt(0), before=document.createRange();
+      before.selectNodeContents(el); before.setEnd(range.startContainer,range.startOffset);
+      result.start=before.toString().length; result.length=range.toString().length;
+    }
+    return result;
+  }
+  function textPoint(el, offset) {
+    const walker=document.createTreeWalker(el,NodeFilter.SHOW_TEXT);
+    let node;
+    while ((node=walker.nextNode())) {
+      if (offset<=node.length) return [node,offset];
+      offset-=node.length;
+    }
+    return [el,el.childNodes.length];
+  }
+  function applyBookmark() {
+    if (!pendingBookmark || (!ready && mode!=='read')) return;
+    const b=pendingBookmark, el=editElement();
+    if (!el) return;
+    pendingBookmark=null;
+    if (b.focus && mode!=='read') el.focus();
+    if (b.mode===mode && Number.isFinite(b.start) && mode!=='read') {
+      const range=document.createRange();
+      range.setStart(...textPoint(el,b.start)); range.setEnd(...textPoint(el,b.start+(b.length || 0)));
+      const sel=window.getSelection(); sel.removeAllRanges(); sel.addRange(range);
+    }
+    el.scrollTop=b.scroll || 0;
+  }
+  function restoreBookmark(value) {
+    pendingBookmark=value;
+    requestAnimationFrame(applyBookmark);
+  }
+  function focusEnd() {
+    restoreBookmark({mode,scroll:1e9,start:1e9,length:0,focus:true});
+  }
+  function headings() {
+    const el=editElement();
+    if (mode!=='source' && el?.querySelector('h1,h2,h3,h4,h5,h6')) {
+      return [...el.querySelectorAll('h1,h2,h3,h4,h5,h6')].map(h=>({level:Number(h.tagName[1]),text:h.textContent.replace(/^#+\s*/, '')}));
+    }
+    let fenced=false;
+    return getValue().split('\n').flatMap(line=>{
+      if (/^\s*(```|~~~)/.test(line)) { fenced=!fenced; return []; }
+      const match=!fenced && /^(#{1,6})\s+(.+)/.exec(line);
+      return match ? [{level:match[1].length,text:match[2]}] : [];
+    });
+  }
+  function scrollToHeading(index) {
+    const el=editElement();
+    const target=mode==='source' ? null : el?.querySelectorAll('h1,h2,h3,h4,h5,h6')[index];
+    if (target) { target.scrollIntoView({block:'start',behavior:'smooth'}); return; }
+    const text=headings()[index]?.text;
+    if (!el || !text) return;
+    const walker=document.createTreeWalker(el,NodeFilter.SHOW_TEXT);
+    let node;
+    while ((node=walker.nextNode())) if (node.textContent.includes(text)) {
+      node.parentElement.scrollIntoView({block:'center'}); return;
+    }
+  }
+  function closeWritingTools() {
+    formatBar?.remove(); formatBar=null;
+    commandMenu?.remove(); commandMenu=null;
+  }
+  const commands = [
+    ['标题', '## 标题\n'], ['项目列表', '- 条目\n'], ['任务列表', '- [ ] 待办事项\n'],
+    ['表格', '| 列一 | 列二 |\n| --- | --- |\n| 内容 | 内容 |\n'],
+    ['代码块', '```python\n\n```\n'], ['公式', '$$\nE = mc^2\n$$\n'],
+  ];
+  function placeTool(tool, range, below=false) {
+    document.body.appendChild(tool);
+    const r=range.getBoundingClientRect(), h=tool.offsetHeight;
+    tool.style.left=Math.max(8,Math.min(innerWidth-tool.offsetWidth-8,r.left))+'px';
+    tool.style.top=Math.max(8,Math.min(innerHeight-h-8,below?r.bottom+6:r.top-h-6))+'px';
+  }
+  function replaceSelection(range, value) {
+    if (!container?.contains(range.startContainer)) return;
+    const sel=window.getSelection();
+    range.deleteContents(); range.collapse(true);
+    sel.removeAllRanges(); sel.addRange(range);
+    insertValue(value); callbacks.onChange?.(); closeWritingTools();
+  }
+  function bindWritingTools(root) {
+    const signal=binding.signal;
+    root.addEventListener('mouseup',()=>{
+      closeWritingTools();
+      const sel=window.getSelection();
+      if (mode==='read' || !sel?.rangeCount || sel.isCollapsed || !root.contains(sel.anchorNode)) return;
+      const range=sel.getRangeAt(0).cloneRange(), text=sel.toString();
+      const bar=document.createElement('div'); bar.className='note-formatbar'; bar.setAttribute('role','toolbar'); bar.setAttribute('aria-label','文字格式');
+      [['粗体','B',`**${text}**`],['斜体','I',`*${text}*`],['链接','↗',`[${text}](https://)`]].forEach(([label,short,value])=>{
+        const button=document.createElement('button'); button.textContent=short; button.title=label; button.setAttribute('aria-label',label);
+        button.onpointerdown=e=>e.preventDefault(); button.onclick=()=>replaceSelection(range,value); bar.appendChild(button);
+      });
+      formatBar=bar; placeTool(bar,range);
+    },{signal});
+    root.addEventListener('keyup',e=>{
+      if (e.key!=='/' || e.isComposing || mode==='read') return;
+      const sel=window.getSelection();
+      if (!sel?.rangeCount || !sel.isCollapsed || sel.anchorNode?.nodeType!==3) return;
+      const block=sel.anchorNode.parentElement.closest('p, [data-block]') || editElement();
+      if (!block || block.textContent.trim()!=='/') return;
+      const range=sel.getRangeAt(0).cloneRange();
+      if (!range.startOffset) return;
+      range.setStart(range.startContainer,range.startOffset-1);
+      if (range.toString()!=='/') return;
+      closeWritingTools();
+      const menu=document.createElement('div'); menu.className='note-command-menu'; menu.setAttribute('role','menu');
+      commands.forEach(([label,value],index)=>{
+        const button=document.createElement('button'); button.textContent=label; button.setAttribute('role','menuitem');
+        button.classList.toggle('active',index===0); button.onpointerdown=e=>e.preventDefault();
+        button.onclick=()=>replaceSelection(range,value); menu.appendChild(button);
+      });
+      commandMenu=menu; placeTool(menu,range,true);
+    },{capture:true,signal});
+    root.addEventListener('keydown',e=>{
+      if (e.isComposing) return;
+      if (e.key==='Escape') { closeWritingTools(); return; }
+      if (!commandMenu) return;
+      const buttons=[...commandMenu.querySelectorAll('button')], index=buttons.findIndex(b=>b.classList.contains('active'));
+      if (e.key==='ArrowDown' || e.key==='ArrowUp') {
+        e.preventDefault(); e.stopPropagation(); buttons[index]?.classList.remove('active');
+        buttons[(index+(e.key==='ArrowDown'?1:-1)+buttons.length)%buttons.length].classList.add('active');
+      } else if (e.key==='Enter') { e.preventDefault(); e.stopPropagation(); buttons[index]?.click(); }
+      else closeWritingTools();
+    },{capture:true,signal});
+    document.addEventListener('pointerdown',e=>{
+      if (!e.target.closest('.note-formatbar,.note-command-menu')) closeWritingTools();
+    },{signal});
+    window.addEventListener('scroll',closeWritingTools,{capture:true,passive:true,signal});
+    window.addEventListener('resize',closeWritingTools,{signal});
+    root.addEventListener('dblclick',e=>{
+      if (e.target.tagName!=='IMG') return;
+      e.preventDefault(); e.stopPropagation();
+      const source=e.target;
+      const modal=document.createElement('div'); modal.className='note-image-preview'; modal.setAttribute('role','dialog'); modal.setAttribute('aria-label','图片预览'); modal.tabIndex=-1;
+      const img=document.createElement('img'); img.src=e.target.src; img.alt=e.target.alt;
+      const close=document.createElement('button'); close.textContent='关闭'; close.onclick=()=>modal.remove();
+      modal.append(img,close); modal.onclick=()=>modal.remove(); modal.onkeydown=event=>{if(event.key==='Escape')modal.remove()};
+      if (mode==='live' && source.style.width) {
+        const reset=document.createElement('button'); reset.className='note-image-reset'; reset.textContent='恢复原始尺寸';
+        reset.onclick=()=>{
+          const occurrence=[...container.querySelectorAll('.vditor-ir img')].filter(other=>other.src===source.src).indexOf(source);
+          persistImageSize({src:source.getAttribute('src'),alt:source.alt,occurrence,reset:true}); callbacks.onChange?.(); modal.remove();
+        };
+        modal.appendChild(reset);
+      }
+      document.body.appendChild(modal); modal.focus();
+    },{capture:true,signal});
+  }
+
+  function destroy(invalidate = true) {
+    if (invalidate) lifecycle++;
+    editorSerial++;
+    binding?.abort(); binding = null;
+    closeWritingTools(); removeGrip(); resizing = null;
+    document.querySelectorAll('.note-image-preview').forEach(el=>el.remove());
+    const nativePreview=document.querySelector('.vditor-img');
+    if (nativePreview) { nativePreview.remove(); document.body.style.overflow=''; }
+    document.body.classList.remove('note-img-resizing');
+    pendingBookmark = null;
     if (vd) {
       try { vd.destroy(); } catch {}
       vd = null;
@@ -542,6 +725,7 @@ const NoteEditor = (() => {
 
   return {
     mount, destroy, getValue, setValue, setMode, insertValue, focus,
+    bookmark, restoreBookmark, headings, scrollToHeading, setEditable, focusEnd,
     refreshTheme, isMounted,
     getMode: () => mode,
     MODES,

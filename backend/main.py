@@ -13,16 +13,18 @@ import tempfile
 import threading
 import uuid
 from pathlib import Path
+from urllib.parse import quote
 from typing import Literal
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from pypdf import PdfReader
 from paper_title import clean_title, detect_title
 from paper_authors import detect_authors
+from note_export import export_note, export_name
 
 from store import store
 from paths import DATA_DIR, FRONTEND_DIR
@@ -860,6 +862,7 @@ NOTE_IMAGE_MAX_MB = 8
 class NoteBody(BaseModel):
     title: str | None = None
     content: str | None = None
+    pinned: bool | None = None
 
 
 @app.get("/api/papers/{pid}/notes")
@@ -874,12 +877,12 @@ def create_note(pid: str, body: NoteBody | None = None):
     if not store.get_paper(pid):
         raise HTTPException(404, "文献不存在")
     body = body or NoteBody()
-    return store.add_note(pid, title=body.title or "", content=body.content or "")
+    return store.add_note(pid, title=body.title or "", content=body.content or "", pinned=body.pinned or False)
 
 
 @app.put("/api/papers/{pid}/notes/{nid}")
 def update_note(pid: str, nid: str, body: NoteBody):
-    note = store.update_note(pid, nid, title=body.title, content=body.content)
+    note = store.update_note(pid, nid, title=body.title, content=body.content, pinned=body.pinned)
     if not note:
         raise HTTPException(404, "笔记不存在")
     return note
@@ -890,6 +893,28 @@ def delete_note(pid: str, nid: str):
     if not store.delete_note(pid, nid):
         raise HTTPException(404, "笔记不存在")
     return {"ok": True}
+
+
+@app.post("/api/papers/{pid}/notes/{nid}/restore")
+def restore_note(pid: str, nid: str):
+    note = store.restore_note(pid, nid)
+    if not note:
+        raise HTTPException(404, "笔记已恢复或撤销时间已过")
+    return note
+
+
+@app.get("/api/papers/{pid}/notes/{nid}/export")
+def download_note(pid: str, nid: str):
+    note = store.get_note(pid, nid)
+    if not note:
+        raise HTTPException(404, "笔记不存在")
+    try:
+        data = export_note(note, NOTE_IMAGE_DIR)
+    except FileNotFoundError as error:
+        raise HTTPException(409, str(error)) from error
+    return Response(data, media_type="application/zip", headers={
+        "Content-Disposition": f"attachment; filename*=UTF-8''{quote(export_name(note['title']) + '.zip')}"
+    })
 
 
 """笔记内图片：上传后返回可直接嵌入 Markdown 的 URL"""

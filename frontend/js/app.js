@@ -1183,6 +1183,7 @@ function mountPdfHosts(p) {
       updateZoomLabel();
       // PDF 就绪后加载该文献的批注并绘制
       await loadAnnotations(p);
+      applyNoteReference(p, pane);
     } catch (err) {
       if (!pane.isConnected || err?.name === "AbortException") return;
       pane.insertAdjacentHTML("beforeend",
@@ -1434,10 +1435,50 @@ const noteState = {
   saveTimer: 0,
   mode: "live",        // live | source | read
   ready: false,        // 编辑器实例是否已就绪
+  loading: false,
+  query: '',
+  generation: 0,
 };
+const noteDrafts = NoteDraftStore.create({ storage:localStorage,
+  save:(paperId, noteId, data)=>LithubAPI.updateNote(paperId, noteId, data) });
+const activeNoteDraft = () => noteDrafts.get(noteState.paperId, noteState.currentId);
+const noteMatches = e => e && noteState.paperId === e.paperId && noteState.currentId === e.id && NoteEditor.isMounted();
+const noteBookmarks = new Map();
+function noteBookmark(paperId, noteId, value) {
+  const key=`lithub-note-caret:${paperId}:${noteId}`;
+  if (value) {
+    noteBookmarks.set(key,value);
+    try { localStorage.setItem(key,JSON.stringify(value)); } catch {}
+    return value;
+  }
+  if (noteBookmarks.has(key)) return noteBookmarks.get(key);
+  try { return JSON.parse(localStorage.getItem(key)); } catch { return null; }
+}
+function notePreference(paperId, value) {
+  const key = `lithub-note-position:${paperId}`;
+  try {
+    if (value) localStorage.setItem(key, JSON.stringify(value));
+    else return JSON.parse(localStorage.getItem(key)) || {};
+  } catch {}
+  return {};
+}
+function rememberNotePosition() {
+  if (NoteEditor.isMounted() && noteState.currentId && !noteState.loading) {
+    const bookmark=NoteEditor.bookmark();
+    noteBookmark(noteState.paperId,noteState.currentId,bookmark);
+    notePreference(noteState.paperId, { id:noteState.currentId, bookmark });
+  }
+}
 
 /* 笔记功能是否可用：需要 sidecar 在线（图片与持久化都依赖它） */
 const notesEnabled = () => LithubAPI.live;
+
+document.addEventListener('pointerdown', e=>{
+  $$('.note-browser[open],.note-outline[open]').forEach(menu=>{ if (!menu.contains(e.target)) menu.open=false; });
+});
+document.addEventListener('keydown', e=>{
+  if (e.key==='Escape') $$('.note-browser[open],.note-outline[open]').forEach(menu=>{menu.open=false});
+});
 
 /* 编辑器与 Markdown 渲染全部交给 Vditor（见 frontend/js/note-editor.js）。
    Vditor 自带 Lute 解析器 + KaTeX + highlight.js，所以这里不再需要
@@ -1449,11 +1490,17 @@ const notesEnabled = () => LithubAPI.live;
    这样 noteState、保存逻辑、图片粘贴等只写一份） */
 function noteToolsHTML({ compact = false } = {}) {
   return `
-        <label class="select-wrap ${compact ? "note-sel-compact" : "grow"}">
+        <label class="select-wrap note-select-compat ${compact ? "note-sel-compact" : "grow"}">
           <select id="note-sel"></select>
         </label>
+        <details class="note-browser">
+          <summary title="查找与切换笔记">${I('list', 15)}<span id="note-current-label">笔记列表</span></summary>
+          <div class="note-browser-pop"><input id="note-search" type="search" placeholder="搜索标题或正文" aria-label="搜索笔记"><div id="note-list"></div></div>
+        </details>
         <button class="icon-btn" data-action="note-new" title="新建笔记">${I("plus", 15)}</button>
         <button class="icon-btn danger" data-action="note-del" title="删除当前笔记">${I("trash", 15)}</button>
+        <details class="note-outline"><summary title="笔记目录">目录</summary><div id="note-outline-list"></div></details>
+        <button class="icon-btn" data-action="note-export" title="导出 Markdown 和图片">${I('external', 15)}</button>
         <div class="seg seg-note-mode" title="视图模式">
           <button class="seg-btn" data-action="note-mode" data-id="live" title="即时渲染（Obsidian 风格：边写边渲染）">${I("sparkle", 13)}</button>
           <button class="seg-btn" data-action="note-mode" data-id="source" title="源码模式（左源码右预览）">${I("columns", 13)}</button>
@@ -1475,6 +1522,7 @@ function noteTitleHTML() {
 
 function noteBodyHTML() {
   return `
+    <div class="note-uploads" id="note-uploads" aria-live="polite"></div>
     <div class="note-body" id="note-body">
       <div class="note-editor-wrap" id="note-editor-wrap">
         <div class="note-drop-hint" id="note-drop-hint">松开以插入图片</div>
@@ -1497,7 +1545,7 @@ function notePanelHTML(p) {
     <div class="note-panel-grip" data-note-grip title="拖动调整笔记宽度（双击恢复默认）"></div>
     <header class="ai-head">
       <div class="ai-head-title">${I("pencil", 16)}<h2>笔记</h2>
-        <span class="note-save-state" id="note-save-state"></span>
+        <button class="note-save-state" id="note-save-state" data-action="note-save" title="点击保存或重试" aria-live="polite"></button>
         <button class="icon-btn sm" data-action="note-popout" title="在新标签页中打开（更大编辑区）">${I("external", 15)}</button>
         <button class="icon-btn sm" data-action="note-close" title="关闭笔记面板">${I("x", 15)}</button>
       </div>
@@ -1528,7 +1576,7 @@ function notePageHTML(p) {
           </div>
         </div>
         <div class="note-page-acts">
-          <span class="note-save-state" id="note-save-state"></span>
+          <button class="note-save-state" id="note-save-state" data-action="note-save" title="点击保存或重试" aria-live="polite"></button>
           <button class="btn sm" data-action="open-note-pdf" data-id="${p?.id || ""}" title="在阅读器中打开原文">${I("file", 14)}原文 PDF</button>
           <button class="icon-btn sm" data-action="note-tab-close" title="关闭笔记标签页">${I("x", 15)}</button>
         </div>
@@ -1736,6 +1784,9 @@ function makeNotePanelResizable(panel) {
 /* 关闭笔记面板：连同「让出宽度」的布局标记一起清掉，
    否则阅读器会一直留着右侧空白（PDF 却已经回到全宽）。 */
 function closeNotePanel() {
+  if (noteState.host==='panel') {
+    flushNoteEditor(); NoteEditor.destroy(); noteState.ready=false; noteState.generation++;
+  }
   $("#note-panel")?.remove();
   syncNotePanelLayout(null);
 }
@@ -1743,7 +1794,7 @@ function closeNotePanel() {
 /* 打开笔记面板（阅读器右侧栏） */
 async function mountNotePanel(p) {
   // 覆盖 DOM 前先落盘：saveCurrentNote 是同步读编辑器的，之后再等就来不及了
-  await flushNoteEditor();
+  flushNoteEditor();
   $("#overlay-root").innerHTML = notePanelHTML(p);
   noteState.host = "panel";
   makeNotePanelResizable($("#note-panel"));
@@ -1754,69 +1805,69 @@ async function mountNotePanel(p) {
 async function mountNotePage(p) {
   const view = $("#view");
   if (!view) return;
-  await flushNoteEditor();
+  flushNoteEditor();
   view.innerHTML = notePageHTML(p);
   noteState.host = "page";
   makeNotePageResizable();
   await initNoteEditor(p);
 }
 
-/* 立即把编辑器内容落盘（切标签页 / 关标签页 / 卸载前调用）。
-   从 DOM 读值 → 必须在 DOM 还在时调用。没有编辑器 DOM 时直接跳过，
-   否则会把空字符串当成新内容写回去。
-   重复调用会共用同一个进行中的 Promise，避免 render() 与 mountNotePanel()
-   各触发一次保存（第一次 await 期间 dirty 还是 true）。 */
-let noteFlushPromise = null;
+/* 在 DOM 移除前同步留草稿，再按笔记排队保存；重复快照共用同一个请求。 */
 function flushNoteEditor() {
   clearTimeout(noteState.saveTimer);
-  if (!noteState.dirty) return Promise.resolve();
-  // 编辑器已卸载（例如面板被别的路径移除）：此刻读 DOM 只会拿到空内容，
-  // 直接跳过；真正的改动在卸载前的 flush 里已经写回去了。
-  if (!NoteEditor.isMounted()) return Promise.resolve();
-  if (noteFlushPromise) return noteFlushPromise;
-  noteFlushPromise = saveCurrentNote(true).finally(() => { noteFlushPromise = null; });
-  return noteFlushPromise;
+  rememberNotePosition();
+  if (!NoteEditor.isMounted() || noteState.loading) return Promise.resolve(true);
+  captureNoteDraft();
+  return saveCurrentNote(true);
 }
-/* 面板与整页共用的初始化：加载依赖、取笔记列表、填表 */
+/* Each async mount owns a generation and a concrete host. Late results cannot replace another note. */
 async function initNoteEditor(p) {
+  const generation = ++noteState.generation;
+  const host = $('#note-editor-wrap');
   noteState.paperId = p.id;
+  noteState.currentId = null;
   noteState.dirty = false;
-
+  noteState.ready = false;
+  noteState.loading = true;
+  if ($('#note-title')) $('#note-title').readOnly=true;
+  const current = () => generation === noteState.generation && host?.isConnected && $('#note-editor-wrap') === host;
   const ok = await mountNoteEditor();
-
+  if (!current()) return;
+  if (!ok) { noteState.loading = false; return; }
   if (!LithubAPI.live) {
-    // 演示模式：可以在本地试用编辑器，但不持久化
-    noteState.notes = [{
-      id: "demo", title: "示例笔记", content: defaultDemoNote(),
-      created: "", updated: "",
-    }];
-    noteState.currentId = "demo";
-    fillNoteForm(noteState.notes[0]);
-    setNoteSaveState("演示模式（不保存）");
+    noteState.notes = [{ id:'demo', title:'示例笔记', content:defaultDemoNote(), created:'', updated:'' }];
+    noteState.loading = false;
+    selectNote('demo');
+    setNoteSaveState('演示模式（不保存）');
     return;
   }
-
   try {
-    noteState.notes = await LithubAPI.notes(p.id);
-  } catch {
-    noteState.notes = [];
-  }
-  if (!noteState.notes.length) {
-    // 首次打开：自动建一条，避免空白页再加一次点击
-    try {
-      const n = await LithubAPI.createNote(p.id, { title: "", content: "" });
-      noteState.notes = [n];
-    } catch {
-      noteState.notes = [];
+    const readVersion = noteDrafts.version();
+    const notes = await LithubAPI.notes(p.id);
+    if (!current()) return;
+    notes.forEach(note=>noteDrafts.open(p.id,note,readVersion));
+    noteState.notes = notes;
+    if (!notes.length) {
+      const note = await LithubAPI.createNote(p.id, { title:'', content:'' });
+      if (!current()) return;
+      noteState.notes = [note];
     }
+    noteState.loading = false;
+    const last = notePreference(p.id);
+    const first = noteState.notes.find(n=>n.id===last.id) || noteState.notes[0];
+    selectNote(first.id, last.id===first.id ? last.bookmark : null);
+    syncNoteCount(p.id);
+  } catch (error) {
+    if (!current()) return;
+    noteState.loading = false;
+    noteState.notes = [];
+    setNoteSaveState('加载失败', 'err');
+    const wrap = $('#note-editor-wrap');
+    NoteEditor.destroy();
+    wrap.innerHTML = '<div class="note-editor-fail">笔记加载失败，已有内容未改动。<button class="btn sm" data-action="note-reload">重试</button></div>';
   }
-  renderNoteSelect();
-  const first = noteState.notes[0];
-  if (first) selectNote(first.id);
-  syncNoteCount(p.id);
 }
 
-/* 笔记数量回写到 literature 条目：附件树的「笔记」行显示的条数要立刻跟上 */
 function syncNoteCount(paperId) {
   const p = paperById(paperId);
   if (!p) return;
@@ -1870,6 +1921,52 @@ function renderNoteSelect() {
   const wrap = sel.closest(".select-wrap");
   if (wrap) wrap.hidden = noteState.notes.length <= 1;
   refreshNoteMeta();
+  renderNoteList();
+  updateNoteOutline();
+}
+
+function renderNoteList() {
+  const list = $('#note-list');
+  if (!list) return;
+  const query = ($('#note-search')?.value || '').trim().toLocaleLowerCase();
+  const notes = noteState.notes.map(n=>({ ...n, ...(noteDrafts.get(noteState.paperId,n.id)?.data || {}) }))
+    .filter(n=>!query || `${n.title}\n${n.content}`.toLocaleLowerCase().includes(query))
+    .sort((a,b)=>Number(!!b.pinned)-Number(!!a.pinned) || (b.updated || '').localeCompare(a.updated || ''));
+  list.innerHTML = notes.length ? notes.map(n=>`<div class="note-list-row ${n.id===noteState.currentId?'active':''}">
+    <button data-action="note-select" data-id="${esc(n.id)}"><strong>${esc(n.title || '未命名笔记')}</strong>
+      <span>${esc(notePreview(n.content) || '空白笔记')}</span>
+      <small>${esc((n.updated || '').replace('T',' '))}</small></button>
+    <button class="icon-btn" data-action="note-pin" data-id="${esc(n.id)}" aria-label="${n.pinned?'取消置顶':'置顶笔记'}" title="${n.pinned?'取消置顶':'置顶笔记'}">${I('star',14)}</button></div>`).join('')
+    : '<p class="note-list-empty">没有匹配的笔记</p>';
+  const label = $('#note-current-label');
+  if (label) label.textContent = `笔记 ${noteState.notes.length}`;
+}
+function notePreview(content) {
+  return (content || '').replace(/!\[[^\]]*\]\([^)]*\)|<img\b[^>]*>/gi,' [图片] ')
+    .replace(/\[([^\]]*)\]\([^)]*\)/g,'$1').replace(/[#*\x60>\[\]]/g,'').replace(/\s+/g,' ').trim().slice(0,70);
+}
+async function toggleNotePin(id) {
+  const note = noteState.notes.find(n=>n.id===id);
+  if (!note) return;
+  if (id===noteState.currentId) captureNoteDraft();
+  const entry = noteDrafts.open(noteState.paperId, note);
+  noteDrafts.change(entry, { ...entry.data, pinned:!entry.data.pinned });
+  renderNoteList();
+  const result = await noteDrafts.save(entry);
+  if (noteState.paperId===entry.paperId) {
+    if (result.ok) {
+      const index = noteState.notes.findIndex(n=>n.id===entry.id);
+      if (index>=0) noteState.notes[index]=entry.server;
+    }
+    renderNoteList(); showNoteSaveResult(entry);
+  }
+}
+function updateNoteOutline() {
+  const list = $('#note-outline-list');
+  if (!list || !NoteEditor.isMounted()) return;
+  const headings = NoteEditor.headings();
+  list.innerHTML = headings.length ? headings.map((h,i)=>`<button data-action="note-heading" data-id="${i}" style="padding-left:${12+(h.level-1)*12}px">${esc(h.text)}</button>`).join('')
+    : '<p class="note-list-empty">使用标题组织长笔记</p>';
 }
 
 /* 整页/面板的辅助元信息：笔记条数、字数与更新时间 */
@@ -1880,15 +1977,31 @@ function refreshNoteMeta() {
 }
 
 /* 选中某条笔记并填入编辑器 */
-function selectNote(id) {
-  const note = noteState.notes.find((n) => n.id === id);
+function selectNote(id, bookmark = null) {
+  const note = noteState.notes.find(n=>n.id===id);
   if (!note) return;
   noteState.currentId = id;
-  state.noteTitles[noteState.paperId] = note.title || "";
-  fillNoteForm(note);
+  bookmark ||= noteBookmark(noteState.paperId,id);
+  const entry = noteDrafts.open(noteState.paperId, note);
+  state.noteTitles[noteState.paperId] = entry.data.title;
+  fillNoteForm({ ...note, ...entry.data });
+  noteState.dirty = entry.dirty;
   renderNoteSelect();
-  setNoteSaveState("");
   updateNoteTabTitle();
+  if (bookmark) NoteEditor.restoreBookmark(bookmark);
+  notePreference(noteState.paperId, { id, bookmark:bookmark || null });
+  setNoteSaveState(entry.dirty ? '已恢复本地草稿，待保存' : '', entry.dirty ? 'pending' : '');
+  if (entry.dirty && LithubAPI.live) {
+    clearTimeout(noteState.saveTimer);
+    noteState.saveTimer = setTimeout(()=>saveCurrentNote(true), 800);
+  }
+}
+async function switchNote(id) {
+  if (id===noteState.currentId || noteState.loading) return;
+  // Draft is synchronously captured before replacing the editor. Network saves may finish later.
+  flushNoteEditor();
+  selectNote(id);
+  $('.note-browser')?.removeAttribute('open');
 }
 
 /* 笔记标签页的可读标题：用户起过名就用笔记标题，否则退回文献标题
@@ -1912,12 +2025,14 @@ function updateNoteTabTitle() {
 function fillNoteForm(note) {
   const title = $("#note-title");
   if (title) {
+    title.readOnly = false;
     // 后端把空标题存成占位名「未命名笔记」；回填成空串让 placeholder 显示，
     // 用户点进去直接打字即可，不用先删掉这四个字。
     const t = (note.title || "").trim();
     title.value = t === "未命名笔记" ? "" : t;
   }
   NoteEditor.setValue(note.content || "");
+  NoteEditor.setEditable(true);
   layoutNoteMode();
   const meta = $("#note-meta");
   if (meta) {
@@ -1927,6 +2042,7 @@ function fillNoteForm(note) {
   }
   noteState.ready = true;
   noteState.dirty = false;
+  renderNoteUploads();
 }
 
 /* 视图三态：即时渲染 / 源码分屏 / 只读。
@@ -1944,15 +2060,19 @@ function layoutNoteMode() {
 async function mountNoteEditor() {
   const host = $("#note-editor-wrap");
   if (!host) return false;
+  host.querySelector('.note-editor-fail')?.remove();
   const target = document.createElement("div");
   target.className = "note-vditor-mount";
   host.appendChild(target);
   const ok = await NoteEditor.mount(target, {
     value: "",
     mode: noteState.mode,
+    editable: false,
     onChange: () => markNoteDirty(true),
     onSave: () => saveCurrentNote(false),
+    onReady: () => updateNoteOutline(),
   });
+  if (!host.isConnected || !target.isConnected) return false;
   if (!ok) {
     host.innerHTML = `<div class="note-editor-fail">编辑器资源加载失败：请确认 frontend/vendor/vditor 存在</div>`;
     toast("笔记编辑器加载失败", "err");
@@ -1967,81 +2087,137 @@ function setNoteSaveState(text, kind = "") {
 }
 
 /* 标记有未保存改动并安排自动保存 */
+function captureNoteDraft() {
+  if (!noteState.ready || noteState.loading || !NoteEditor.isMounted()) return null;
+  const entry = activeNoteDraft();
+  if (!entry) return null;
+  if (entry.deleting) return entry;
+  noteDrafts.change(entry, { ...entry.data, title:$('#note-title')?.value || '', content:NoteEditor.getValue() });
+  noteState.dirty = entry.dirty;
+  return entry;
+}
 function markNoteDirty() {
-  noteState.dirty = true;
-  setNoteSaveState("未保存…");
+  const entry = captureNoteDraft();
+  if (!entry) return;
+  setNoteSaveState(entry.storageError ? '草稿备份失败，请保存' : '未保存…', entry.storageError ? 'err' : '');
+  updateNoteOutline();
+  const meta = $('#note-meta');
+  if (meta) meta.textContent = `${entry.data.content.length} 字`;
   clearTimeout(noteState.saveTimer);
-  noteState.saveTimer = setTimeout(() => saveCurrentNote(true), 800);
+  noteState.saveTimer = setTimeout(()=>saveCurrentNote(true), 800);
 }
-
-/* 保存当前笔记。silent=true 为自动保存（不弹 toast）
-   注意：内容和目标 id 必须在第一个 await 之前同步取出。await 期间用户可能已经
-   切到别的文献/容器，所以回来后只有「还是同一条笔记」才回写 UI 与状态。 */
+function showNoteSaveResult(entry) {
+  if (noteState.paperId === entry.paperId && !entry.error) {
+    const index=noteState.notes.findIndex(n=>n.id===entry.id);
+    if (index>=0) noteState.notes[index]=entry.server;
+    renderNoteList();
+  }
+  if (!noteMatches(entry)) return;
+  noteState.dirty = entry.dirty;
+  if (entry.error) setNoteSaveState(entry.storageError ? '保存失败，草稿备份也失败' : '保存失败 · 草稿已保留 · 点击重试', 'err');
+  else if (entry.dirty) setNoteSaveState('未保存…');
+  else {
+    const index = noteState.notes.findIndex(n=>n.id===entry.id);
+    if (index>=0) noteState.notes[index] = entry.server;
+    renderNoteSelect();
+    setNoteSaveState('已保存', 'ok');
+    const meta = $('#note-meta');
+    if (meta) meta.textContent = `${entry.data.content.length} 字 · 更新于 ${(entry.server.updated || '').replace('T',' ')}`;
+  }
+}
 async function saveCurrentNote(silent = false) {
-  if (!LithubAPI.live || !noteState.paperId || !noteState.currentId) return;
-  if (noteState.currentId === "demo") return;
-  const paperId = noteState.paperId;
-  const noteId = noteState.currentId;
-  const title = $("#note-title")?.value ?? "";
-  const content = NoteEditor.getValue();
-  const note = noteState.notes.find((n) => n.id === noteId);
-  if (note && note.title === title && note.content === content) {
-    if (noteState.paperId === paperId && noteState.currentId === noteId) noteState.dirty = false;
-    if (!silent) toast("已保存");
-    return;
-  }
-  try {
-    const saved = await LithubAPI.updateNote(paperId, noteId, { title, content });
-    // 已经切走了：数据已落盘，但不要再动当前这条笔记的状态
-    if (noteState.paperId !== paperId || noteState.currentId !== noteId) return;
-    const idx = noteState.notes.findIndex((n) => n.id === saved.id);
-    if (idx >= 0) noteState.notes[idx] = saved;
-    noteState.dirty = false;
-    renderNoteSelect();
-    setNoteSaveState("已保存", "ok");
-    const meta = $("#note-meta");
-    if (meta) meta.textContent = `${content.length} 字 · 更新于 ${saved.updated.replace("T", " ")}`;
-    if (!silent) toast("笔记已保存");
-  } catch (err) {
-    if (noteState.paperId !== paperId || noteState.currentId !== noteId) return;
-    setNoteSaveState("保存失败", "err");
-    if (!silent) toast("保存失败：" + err.message, "err");
-  }
+  if (!LithubAPI.live || noteState.currentId==='demo' || noteState.loading) return false;
+  const entry = captureNoteDraft();
+  if (!entry) return false;
+  clearTimeout(noteState.saveTimer);
+  if (entry.dirty) setNoteSaveState('保存中…');
+  const result = await noteDrafts.save(entry);
+  showNoteSaveResult(entry);
+  if (!silent) toast(result.ok ? '笔记已保存' : '保存失败：' + (result.error?.message || '请重试'), result.ok ? 'ok' : 'err');
+  return result.ok;
 }
-
+window.addEventListener('pagehide',()=>{ captureNoteDraft(); rememberNotePosition(); });
 async function createNote() {
-  if (!LithubAPI.live) { toast("演示模式不支持新建", "err"); return; }
-  await saveCurrentNote(true);
+  if (!LithubAPI.live || noteState.loading) return;
+  flushNoteEditor();
+  const paperId = noteState.paperId, generation = noteState.generation;
   try {
-    const n = await LithubAPI.createNote(noteState.paperId, { title: "", content: "" });
-    noteState.notes.unshift(n);
-    selectNote(n.id);
-    syncNoteCount(noteState.paperId);
-    $("#note-title")?.focus();
-  } catch (err) {
-    toast("新建失败：" + err.message, "err");
+    const note = await LithubAPI.createNote(paperId, { title:'', content:'' });
+    if (generation!==noteState.generation || paperId!==noteState.paperId || !NoteEditor.isMounted()) return;
+    flushNoteEditor();
+    noteState.notes.unshift(note);
+    selectNote(note.id);
+    syncNoteCount(paperId);
+    $('#note-title')?.focus();
+  } catch (error) { toast('新建失败：' + error.message, 'err'); }
+}
+async function deleteCurrentNote() {
+  if (!LithubAPI.live || noteState.loading) return;
+  const entry = captureNoteDraft();
+  if (!entry || entry.deleting) return;
+  if ([...noteUploads.values()].some(job=>job.entry===entry)) { toast('请先完成或取消图片上传，再删除这条笔记','warn'); return; }
+  const paperId = entry.paperId, generation = noteState.generation;
+  entry.deleting = true;
+  NoteEditor.setEditable(false);
+  if ($('#note-title')) $('#note-title').readOnly=true;
+  clearTimeout(noteState.saveTimer);
+  try {
+    // Save what is being deleted so undo restores the latest content, not an older server snapshot.
+    const result = await noteDrafts.save(entry);
+    if (!result.ok) { toast('保存失败，笔记保留，请重试后再删除', 'err'); return; }
+    await LithubAPI.deleteNote(paperId, entry.id);
+    noteDrafts.discard(entry);
+    if (generation===noteState.generation && noteState.paperId===paperId) {
+      noteState.notes = noteState.notes.filter(n=>n.id!==entry.id);
+      if (noteState.currentId===entry.id) {
+        if (noteState.notes.length) selectNote(noteState.notes[0].id);
+        else {
+          noteState.currentId = null; noteState.ready = false; noteState.dirty = false;
+          $('#note-title').value = ''; NoteEditor.setValue(''); setNoteSaveState('点击 + 新建笔记');
+        }
+      }
+      renderNoteSelect(); syncNoteCount(paperId);
+    }
+    showNoteUndo(paperId, entry.id);
+  } catch (error) { toast('删除失败：' + error.message, 'err'); }
+  finally {
+    entry.deleting = false;
+    if (noteMatches(entry)) { NoteEditor.setEditable(true); $('#note-title').readOnly=false; }
   }
 }
-
-async function deleteCurrentNote() {
-  if (!LithubAPI.live) { toast("演示模式不支持删除", "err"); return; }
-  const note = noteState.notes.find((n) => n.id === noteState.currentId);
-  if (!note) return;
-  if (!confirm(`删除笔记「${note.title || "未命名笔记"}」？此操作不可撤销。`)) return;
+function showNoteUndo(paperId, noteId) {
+  const el = document.createElement('div');
+  el.className = 'toast toast-ok annot-undo-toast';
+  el.innerHTML = '<span>笔记已删除</span><button type="button">撤销</button>';
+  $('#toast-root').appendChild(el);
+  const timer = setTimeout(()=>el.remove(), 10000);
+  el.querySelector('button').onclick = async e => {
+    e.target.disabled = true;
+    try {
+      const note = await LithubAPI.restoreNote(paperId, noteId);
+      clearTimeout(timer); el.remove();
+      if (noteState.paperId===paperId && NoteEditor.isMounted()) {
+        if (!noteState.notes.some(n=>n.id===note.id)) noteState.notes.push(note);
+        if (!noteState.currentId) selectNote(note.id);
+        renderNoteSelect(); syncNoteCount(paperId);
+      }
+      toast('笔记已恢复');
+    } catch (error) { e.target.disabled=false; toast(error.message, 'err'); }
+  };
+}
+async function exportCurrentNote() {
+  const entry = captureNoteDraft();
+  if (!entry) return;
+  if ([...noteUploads.values()].some(job=>job.entry===entry)) { toast('图片上传完成或取消后即可导出','warn'); return; }
+  const saved = await noteDrafts.save(entry);
+  showNoteSaveResult(entry);
+  if (!saved.ok) { toast('请先保存笔记，再导出包含图片的压缩包', 'err'); return; }
   try {
-    await LithubAPI.deleteNote(noteState.paperId, note.id);
-    noteState.notes = noteState.notes.filter((n) => n.id !== note.id);
-    if (!noteState.notes.length) {
-      const n = await LithubAPI.createNote(noteState.paperId, { title: "", content: "" });
-      noteState.notes = [n];
-    }
-    selectNote(noteState.notes[0].id);
-    renderNoteSelect();
-    syncNoteCount(noteState.paperId);
-    toast("笔记已删除");
-  } catch (err) {
-    toast("删除失败：" + err.message, "err");
-  }
+    const blob = await LithubAPI.exportNote(entry.paperId, entry.id);
+    const link = document.createElement('a'), url = URL.createObjectURL(blob);
+    link.href = url; link.download = (entry.data.title || '未命名笔记').replace(/[<>:"/\\|?*]/g,'_') + '.zip';
+    link.click(); setTimeout(()=>URL.revokeObjectURL(url), 1000);
+  } catch (error) { toast(error.message, 'err'); }
 }
 
 /* ---------- 图片插入 ---------- */
@@ -2050,7 +2226,7 @@ async function deleteCurrentNote() {
 async function uploadNoteImage(blob, filename = "image.png") {
   if (!LithubAPI.live) throw new Error("演示模式无法上传图片");
   const r = await LithubAPI.uploadNoteImage(blob, filename);
-  return `![${filename.replace(/\.[^.]+$/, "")}](${API_BASE}${r.url})`;
+  return `![${filename.replace(/\.[^.]+$/, "").replace(/[\[\]\\\r\n]/g,' ')}](${API_BASE}${r.url})`;
 }
 
 /* 在光标处插入文本（保持滚动位置与选区） */
@@ -2062,18 +2238,57 @@ function insertAtCursor(text) {
 
 /* 处理粘贴 / 拖入的图片文件 */
 async function handleNoteImageFiles(files) {
+  const entry = captureNoteDraft();
+  if (!entry || entry.deleting || !LithubAPI.live) return false;
   const images = [...files].filter((f) => f.type.startsWith("image/"));
   if (!images.length) return false;
   for (const file of images) {
-    try {
-      const md = await uploadNoteImage(file, file.name || "pasted.png");
-      insertAtCursor(`\n${md}\n`);
-      toast("图片已插入");
-    } catch (err) {
-      toast("图片上传失败：" + err.message, "err");
-    }
+    if (file.size>8*1024*1024) { toast('图片超过 8 MB，请压缩后重试','err'); continue; }
+    const id=crypto.randomUUID(), token=`【图片上传中·${id}】`;
+    const job={id,entry,file,token,status:'上传中'};
+    noteUploads.set(id,job);
+    insertAtCursor(`\n${token}\n`);
+    renderNoteUploads();
+    runNoteUpload(job);
   }
   return true;
+}
+const noteUploads = new Map();
+function renderNoteUploads() {
+  const host=$('#note-uploads');
+  if (!host) return;
+  const jobs=[...noteUploads.values()].filter(j=>noteMatches(j.entry));
+  host.innerHTML=jobs.map(j=>`<div><span>${esc(j.file.name)} · ${esc(j.status)}</span>${j.failed?`<button data-action="note-upload-retry" data-id="${j.id}">重试</button>`:''}<button data-action="note-upload-cancel" data-id="${j.id}">取消</button></div>`).join('');
+  host.hidden=!jobs.length;
+}
+function replaceNoteUpload(job, replacement) {
+  const entry=job.entry;
+  if (entry.deleted) return;
+  if (noteMatches(entry)) captureNoteDraft();
+  if (!entry.data.content.includes(job.token)) return;
+  noteDrafts.change(entry,{...entry.data,content:entry.data.content.replace(job.token,replacement)});
+  if (noteMatches(entry)) {
+    const bookmark=NoteEditor.bookmark();
+    NoteEditor.setValue(entry.data.content); NoteEditor.restoreBookmark(bookmark);
+    noteState.dirty=entry.dirty;
+  }
+  noteDrafts.save(entry).then(()=>showNoteSaveResult(entry));
+}
+async function runNoteUpload(job) {
+  if (job.running) return;
+  job.running=true; job.failed=false; job.status='上传中'; renderNoteUploads();
+  try {
+    const markdown=await uploadNoteImage(job.file,job.file.name || 'image.png');
+    if (noteUploads.get(job.id)!==job) return;
+    replaceNoteUpload(job,markdown);
+    noteUploads.delete(job.id);
+  } catch (error) {
+    job.failed=true; job.status='上传失败：'+error.message;
+  } finally { job.running=false; renderNoteUploads(); }
+}
+function cancelNoteUpload(id) {
+  const job=noteUploads.get(id); if (!job) return;
+  replaceNoteUpload(job,''); noteUploads.delete(id); renderNoteUploads();
 }
 
 /* ---------------- AI 总结面板 ---------------- */
@@ -2085,6 +2300,7 @@ const promptName = () => state.db.prompts.find((x) => x.id === state.reader.prom
    用户偏好：AI 总结是有成本的调用，不该点开就跑。
    如果该提示词已有缓存，直接展示缓存内容（省一次请求），但仍可用「重新生成」覆盖。 */
 function mountAiPanel(p, opts = {}) {
+  if ($('#note-panel')) closeNotePanel();
   closeAnnotationPanel();
   $('[data-action="annot-panel"]')?.classList.remove("is-on");
   $("#overlay-root").innerHTML = aiPanelHTML(p);
@@ -3060,6 +3276,9 @@ function render(opts = {}) {
   // 路由切换会清掉 overlay-root / 重建视图，而 saveCurrentNote() 是从编辑器 DOM
   // 读值的 —— 必须在 DOM 还在时先把未保存的笔记刷出去。
   flushNoteEditor();
+  if (NoteEditor.isMounted() && !(nextRoute.view==='note' && noteState.host==='page' && noteState.paperId===nextRoute.id)) {
+    NoteEditor.destroy(); noteState.ready=false; noteState.generation++;
+  }
   // 离开阅读器之前（旧 DOM 还在）记录滚动位置；之后 state.route 会切到新路由，
   // 就再也读不到旧 DOM 了。阅读模式/缩放/网页 AI 开关本来就写在会话对象里。
   if (state.route.view === "reader") captureReaderScroll(state.route.id);
@@ -3505,6 +3724,17 @@ document.addEventListener("click", (e) => {
     case "note-new": createNote(); break;
     case "note-del": deleteCurrentNote(); break;
     case "note-save": saveCurrentNote(false); break;
+    case "note-select": switchNote(id); break;
+    case "note-pin": toggleNotePin(id); break;
+    case "note-export": exportCurrentNote(); break;
+    case "note-upload-retry": { const job=noteUploads.get(id); if(job)runNoteUpload(job); break; }
+    case "note-upload-cancel": cancelNoteUpload(id); break;
+    case "note-heading": NoteEditor.scrollToHeading(Number(id)); $('.note-outline')?.removeAttribute('open'); break;
+    case "note-reload": {
+      const p=paperById(noteState.paperId);
+      if (p) initNoteEditor(p);
+      break;
+    }
     case "note-mode":
       if (!noteState.ready) break;
       noteState.mode = id;
@@ -4059,6 +4289,7 @@ document.addEventListener("click", (e) => {
 
 /* 搜索输入 / 排序 / 温度滑杆 / 提示词切换 */
 document.addEventListener("input", (e) => {
+  if (e.target.id==='note-search') renderNoteList();
   if (e.target.id === "set-temp") $("#temp-val").textContent = e.target.value;
   if (e.target.id === "prompt-sel") {
     state.reader.prompt = e.target.value;
@@ -4096,7 +4327,7 @@ document.addEventListener("change", (e) => {
   if (e.target.id === "note-sel") {
     const next = e.target.value;
     if (next && next !== noteState.currentId) {
-      saveCurrentNote(true).then(() => selectNote(next));
+      switchNote(next);
     }
   }
 });
@@ -4440,7 +4671,71 @@ function scrollToAnnotation(pane, ann) {
   $$(".annot-item").forEach((el) => el.classList.toggle("is-active", el.dataset.id === ann.id));
 }
 
-/* 把当前文献的全部批注按页序导出为一条 Markdown 笔记 */
+let pendingNoteReference = null;
+function noteReferenceLink(paperId, annotation) {
+  const data={paper:paperId,view:annotation.view,page:annotation.page || 1,rects:annotation.rects || []};
+  const label=({en:'原文',zh:'译文',dual2:'双语对照'})[data.view] || '原文';
+  return `[${label} · 第 ${data.page} 页](?lithub-ref=${encodeURIComponent(JSON.stringify(data))})`;
+}
+function openNoteReference(reference) {
+  const paper=paperById(reference.paper);
+  if (!paper || !['en','zh','dual2'].includes(reference.view) || !Number.isInteger(reference.page) || reference.page<1) {
+    toast('引用的文献或阅读版本无效','err'); return;
+  }
+  if ((reference.view==='zh' && !paper.zhUrl) || (reference.view==='dual2' && !paper.compareUrl && !paper.zhUrl)) {
+    toast('引用对应的译文或双语文件暂不可用','err'); return;
+  }
+  flushNoteEditor();
+  pendingNoteReference=reference;
+  readerSession(paper.id).mode=reference.view;
+  if (state.route.view==='reader' && state.route.id===paper.id) renderReader(paper.id);
+  else openTab('paper',paper.id);
+}
+function applyNoteReference(paper,pane) {
+  const reference=pendingNoteReference;
+  if (!reference || reference.paper!==paper.id || reference.view!==PdfAnnot.viewFor(pane)) return;
+  pendingNoteReference=null;
+  const page=pane._pdf?.metas?.[reference.page-1]?.sides?.find(s=>s.div)?.div;
+  if (!page) { toast('引用页码已超出当前文件范围','err'); return; }
+  page.scrollIntoView({block:'center'});
+  const rects=Array.isArray(reference.rects)?reference.rects.slice(0,200):[];
+  for (const r of rects) {
+    if (![r.x,r.y,r.w,r.h].every(n=>Number.isFinite(n)&&n>=0&&n<=1)) continue;
+    const flash=document.createElement('span'); flash.className='note-reference-flash';
+    Object.assign(flash.style,{left:`${r.x*100}%`,top:`${r.y*100}%`,width:`${r.w*100}%`,height:`${r.h*100}%`});
+    page.appendChild(flash); setTimeout(()=>flash.remove(),3000);
+    if (r===rects[0]) flash.scrollIntoView({block:'center'});
+  }
+}
+document.addEventListener('click', e=>{
+  const link=e.target.closest('#note-body a[href]');
+  if (!link) return;
+  let url;
+  try { url=new URL(link.getAttribute('href'),document.baseURI); } catch { return; }
+  if (!url.searchParams.has('lithub-ref')) return;
+  e.preventDefault(); e.stopImmediatePropagation();
+  try { openNoteReference(JSON.parse(url.searchParams.get('lithub-ref'))); }
+  catch { toast('引用内容无法读取','err'); }
+},true);
+async function insertSelectionInNote() {
+  const selection=pendingSelection, paper=paperById(state.route.id);
+  pendingSelection=null; $('.sel-pop')?.remove();
+  if (!selection || !paper || !LithubAPI.live) return;
+  const markdown=`\n> ${selection.text.replace(/\n/g,'\n> ')}\n\n${noteReferenceLink(paper.id,{view:selection.view,page:selection.pageIndex+1,rects:selection.rects})}\n\n`;
+  if (!$('#note-panel') || noteState.paperId!==paper.id) {
+    state.reader.notePanel=true;
+    closeAnnotationPanel(); state.reader.panel=false;
+    await mountNotePanel(paper);
+  }
+  if (noteState.paperId!==paper.id || !noteState.ready) return;
+  // An excerpt is appended so opening the panel never inserts into an arbitrary restored selection.
+  const content=NoteEditor.getValue()+markdown;
+  if (noteState.mode==='read') { noteState.mode='live'; layoutNoteMode(); }
+  NoteEditor.setValue(content); markNoteDirty();
+  NoteEditor.focusEnd();
+}
+
+/* 汇总当前阅读版本，保留每条摘录的版本、页码与选区定位。 */
 async function exportAnnotationsToNote() {
   const p = paperById(state.route.id);
   const items = annotListState.items.filter(a=>a.view===currentAnnotationView());
@@ -4470,12 +4765,14 @@ async function exportAnnotationsToNote() {
         lines.push("");
       }
       lines.push(`- **[${kind}]**${a.comment ? ` ${a.comment}` : ""}`);
+      lines.push('',noteReferenceLink(p.id,a),'');
     }
     lines.push("");
   }
   const content = lines.join("\n");
   try {
     const note = await LithubAPI.createNote(p.id, { title: `阅读批注（${items.length} 条）`, content });
+    if (noteState.paperId===p.id && NoteEditor.isMounted()) { noteState.notes.unshift(note); renderNoteSelect(); syncNoteCount(p.id); }
     toast(`已导出为笔记「${note.title}」`);
   } catch (err) {
     toast("导出失败：" + err.message, "err");
@@ -4976,6 +5273,7 @@ document.addEventListener("mouseup", (e) => {
       <button data-selact="highlight">${I("sparkle", 13)}高亮</button>
       <button data-selact="underline">${I("list", 13)}划线</button>
       <button data-selact="note">${I("pencil", 13)}批注</button>
+      <button data-selact="excerpt">${I("book", 13)}摘录</button>
       <span class="sel-sep"></span>
       <span class="sel-colors">
         ${ANNOT_COLOR_LIST.map((c, i) => `<button class="sel-dot ${c === lastAnnotationColor ? "active" : ""}"
@@ -5016,6 +5314,7 @@ document.addEventListener("click", (e) => {
   const b = e.target.closest("[data-selact]");
   if (b) {
     const act = b.dataset.selact;
+    if (act==='excerpt') { insertSelectionInNote(); return; }
     if (act === "highlight" || act === "underline" || act === "note") {
       const color = $(".sel-pop .sel-dot.active")?.dataset.selcolor || "yellow";
       createAnnotation(act, color);

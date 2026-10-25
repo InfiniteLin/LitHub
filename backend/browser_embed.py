@@ -300,6 +300,125 @@ def _process_image(pid: int) -> str:
         kernel32.CloseHandle(handle)
 
 
+def _startup_transparency(hwnd: int):
+    """Save the window's opacity, then make even subsequent ShowWindow invisible.
+
+    DWM cloaking rejects windows owned by another process. Layered-window opacity
+    can be applied to the external browser without modifying its profile/process.
+    """
+    style = user32.GetWindowLongW(hwnd, -20)  # GWL_EXSTYLE
+    key, alpha, flags = wintypes.DWORD(), ctypes.c_ubyte(), wintypes.DWORD()
+    had_alpha = user32.GetLayeredWindowAttributes(hwnd, ctypes.byref(key), ctypes.byref(alpha), ctypes.byref(flags))
+    if style & 0x00080000 and not had_alpha:
+        # An existing per-pixel layered surface cannot be reconstructed by us.
+        return None
+    # Do not steal activation or briefly add a taskbar button during startup.
+    mask = 0x00080000 | 0x08000000 | 0x00000080 | 0x00040000
+    user32.SetWindowLongW(hwnd, -20, (style | mask) & ~0x00040000)
+    if not user32.SetLayeredWindowAttributes(hwnd, 0, 0, 2):  # LWA_ALPHA, invisible
+        user32.SetWindowLongW(hwnd, -20, style)
+        return None
+    return (style & mask, (key.value, alpha.value, flags.value) if had_alpha else None)
+
+
+def _restore_startup_opacity(hwnd: int, saved) -> None:
+    if not saved or not user32.IsWindow(hwnd):
+        return
+    saved_style, alpha = saved
+    if saved_style & 0x00080000 and alpha:
+        user32.SetLayeredWindowAttributes(hwnd, *alpha)
+    # Only restore our style bits; Chrome may have updated unrelated bits.
+    mask = 0x00080000 | 0x08000000 | 0x00000080 | 0x00040000
+    style = user32.GetWindowLongW(hwnd, -20)
+    user32.SetWindowLongW(hwnd, -20, (style & ~mask) | saved_style)
+
+
+class _StartupWindowGuard:
+    """Listen *before* launching, including untitled/transient startup windows.
+
+    STARTUPINFO belongs to the launcher; Chromium may forward to a running broker.
+    Zero opacity survives the broker's subsequent ShowWindow calls. Only new
+    top-level windows of the chosen executable are touched. On exit all unclaimed
+    windows regain their opacity, including failed or ambiguous launches.
+    """
+    def __init__(self, browser_path: str, existed: set[int]):
+        self.expected = os.path.normcase(os.path.realpath(browser_path))
+        self.existed = existed
+        self.suppressed = {}
+        self.events = []
+        self.keep = None
+        self.ready = threading.Event()
+        self.thread_id = 0
+        self.error = None
+        self.thread = threading.Thread(target=self._run, daemon=True, name="lithub-startup-guard")
+
+    def _on_event(self, hook, event, hwnd, obj, child, tid, stamp):
+        if not hwnd or obj != 0 or child != 0 or hwnd in self.existed:
+            return
+        if event == 0x8001:  # EVENT_OBJECT_DESTROY; HWND values can be reused.
+            self.suppressed.pop(hwnd, None)
+            return
+        if _class_name(hwnd) != "Chrome_WidgetWin_1":
+            return
+        if user32.GetWindowLongW(hwnd, GWL_STYLE) & WS_CHILD:
+            return
+        image = _process_image(_window_pid(hwnd))
+        if not image or os.path.normcase(os.path.realpath(image)) != self.expected:
+            return
+        if hwnd not in self.suppressed:
+            saved = _startup_transparency(hwnd)
+            if saved is not None:
+                self.suppressed[hwnd] = saved
+            # No title or size requirement here: the first visible frame can
+            # precede both. Capture evidence for the native regression test.
+            self.events.append((hwnd, event, bool(user32.IsWindowVisible(hwnd)), saved is not None))
+        elif event == 0x8002:
+            user32.SetLayeredWindowAttributes(hwnd, 0, 0, 2)
+
+    def _run(self):
+        callback_type = ctypes.WINFUNCTYPE(None, wintypes.HANDLE, wintypes.DWORD,
+                                           wintypes.HWND, wintypes.LONG, wintypes.LONG,
+                                           wintypes.DWORD, wintypes.DWORD)
+        user32.SetWinEventHook.argtypes = [wintypes.DWORD, wintypes.DWORD, wintypes.HMODULE,
+                                          callback_type, wintypes.DWORD, wintypes.DWORD, wintypes.DWORD]
+        user32.SetWinEventHook.restype = wintypes.HANDLE
+        user32.UnhookWinEvent.argtypes = [wintypes.HANDLE]
+        user32.PostThreadMessageW.argtypes = [wintypes.DWORD, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+        callback = callback_type(self._on_event)  # Strong reference until unhook.
+        hook = None
+        try:
+            self.thread_id = kernel32.GetCurrentThreadId()
+            msg = wintypes.MSG()
+            user32.PeekMessageW(ctypes.byref(msg), None, 0, 0, 0)  # Create message queue.
+            hook = user32.SetWinEventHook(0x8000, 0x8002, None, callback, 0, 0, 2)
+            if not hook:
+                raise RuntimeError("无法监听浏览器窗口创建事件")
+            self.ready.set()
+            while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
+                user32.TranslateMessage(ctypes.byref(msg))
+                user32.DispatchMessageW(ctypes.byref(msg))
+        except Exception as exc:
+            self.error = exc
+        finally:
+            if hook:
+                user32.UnhookWinEvent(hook)
+            self.ready.set()
+
+    def __enter__(self):
+        self.thread.start()
+        self.ready.wait()
+        if self.error:
+            raise self.error
+        return self
+
+    def __exit__(self, *args):
+        user32.PostThreadMessageW(self.thread_id, 0x0012, 0, 0)  # WM_QUIT
+        self.thread.join()
+        for hwnd, saved in self.suppressed.items():
+            if hwnd != self.keep and user32.IsWindow(hwnd):
+                _restore_startup_opacity(hwnd, saved)
+
+
 class EmbeddedBrowser:
     """管理「用宿主窗口嵌入一个 --app 浏览器窗口」的完整生命周期。
 
@@ -346,6 +465,8 @@ class EmbeddedBrowser:
         self._insets_at = 0.0
         self._closed = False
         self._cancel_event = threading.Event()
+        self.startup_events = []
+        self._startup_opacity = None
         self.input_lost_count = 0     # 巡检发现「点击/按键没落到浏览器上」的次数
 
     # ---------- 启动并找窗口 ----------
@@ -361,8 +482,12 @@ class EmbeddedBrowser:
             "--window-position=-32000,-32000",   # 先放到屏幕外，避免闪一下
         ]
         try:
+            startup = subprocess.STARTUPINFO()
+            startup.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            startup.wShowWindow = SW_HIDE
             self.proc = subprocess.Popen(
                 args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                startupinfo=startup,
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             )
         except Exception as exc:
@@ -383,7 +508,9 @@ class EmbeddedBrowser:
         expected = os.path.normcase(os.path.realpath(self.browser["path"]))
         while time.time() < deadline and (not stop_on_cancel or not self._cancel_event.is_set()):
             candidates = []
-            for h in _enum_windows(lambda x: user32.IsWindowVisible(x)):
+            # Include hidden windows: STARTUPINFO can hide a fresh process, and a
+            # brokered launch must remain discoverable after we hide it below.
+            for h in _enum_windows(lambda x: True):
                 if h in existed:
                     continue
                 if _class_name(h) != "Chrome_WidgetWin_1":
@@ -403,6 +530,10 @@ class EmbeddedBrowser:
             # Ambiguous ownership is an error, not a reason to capture the largest window.
             best = candidates[0] if len(candidates) == 1 else None
             if best is not None:
+                # Do not leave the standalone window visible during the 400 ms
+                # stability check. Offscreen coordinates can be clamped by Chrome;
+                # CREATE_NO_WINDOW only suppresses console windows, not browser UI.
+                user32.ShowWindow(best, SW_HIDE)
                 if best == last_seen:
                     if time.time() - stable_since >= 0.4 and user32.IsWindow(best):
                         return best
@@ -461,8 +592,18 @@ class EmbeddedBrowser:
         self._close_orphans(parent_hwnd)
 
         # 记录启动前已存在的窗口，稍后用差集找出新窗口
-        existed = set(_enum_windows(lambda h: user32.IsWindowVisible(h)))
+        # Hidden windows that predate this launch belong to the user too.
+        existed = set(_enum_windows(lambda h: True))
 
+        with _StartupWindowGuard(self.browser["path"], existed) as guard:
+            result = self._open_guarded(url, parent_hwnd, timeout, existed)
+            if result[0]:
+                guard.keep = self.hwnd
+                self._startup_opacity = guard.suppressed.get(self.hwnd)
+            self.startup_events = list(guard.events)
+            return result
+
+    def _open_guarded(self, url, parent_hwnd, timeout, existed):
         err = self._launch(url)
         if err:
             return False, err
@@ -486,12 +627,22 @@ class EmbeddedBrowser:
                 return False, "打开已取消"
             ok, rerr = self._reparent(parent_hwnd)
             if not ok:
-                self.hwnd = None
-                self._kill_launcher()
+                self.close()
                 return False, rerr
             # 挂上去之后还要确认它还活着（Chrome 换窗口就发生在这个时间窗内）
             time.sleep(0.35)
             if self.alive():
+                # Chromium can defer renderer creation for a hidden window.
+                # Let it initialize as an invisible child, never as a popup.
+                key, alpha, flags = wintypes.DWORD(), ctypes.c_ubyte(), wintypes.DWORD()
+                if (user32.GetLayeredWindowAttributes(self.hwnd, ctypes.byref(key), ctypes.byref(alpha), ctypes.byref(flags))
+                        and flags.value & 2 and alpha.value == 0):
+                    user32.ShowWindow(self.hwnd, 4)  # SW_SHOWNOACTIVATE; opacity stays zero.
+                ready = self._wait_for_viewport()
+                self.hide()
+                if not ready:
+                    self.close()
+                    return False, "打开已取消" if self._cancel_event.is_set() else "浏览器网页视口尚未就绪，请重试"
                 self._watch_parent()
                 return True, ""
             self.hwnd = None
@@ -500,6 +651,28 @@ class EmbeddedBrowser:
         self.hwnd = None
         self._kill_launcher()
         return False, "浏览器窗口没有出现（可能被策略拦截）"
+
+    def _wait_for_viewport(self) -> bool:
+        # Cold profiles may create their renderer after the stable top-level
+        # window. Do not expose the unmeasured browser frame in that interval.
+        deadline = time.monotonic() + 3.0
+        while self.alive() and not self._cancel_event.is_set():
+            ready = []
+            def cb(hwnd, _lp):
+                if (_class_name(hwnd).startswith("Chrome_RenderWidgetHost")
+                        and user32.GetWindowLongW(hwnd, GWL_STYLE) & WS_VISIBLE):
+                    rect = wintypes.RECT()
+                    user32.GetWindowRect(hwnd, ctypes.byref(rect))
+                    if rect.right - rect.left > 100 and rect.bottom - rect.top > 100:
+                        ready.append(hwnd)
+                return True
+            user32.EnumChildWindows(self.hwnd, ENUM_WND_PROC(cb), 0)
+            if ready:
+                return True
+            if time.monotonic() >= deadline:
+                return False
+            self._cancel_event.wait(0.025)
+        return False
 
     def _watch_parent(self) -> None:
         """后台守卫线程，每 1.5 秒做三件事：
@@ -746,6 +919,7 @@ class EmbeddedBrowser:
             "requested": list(self.last_requested or []),
             "content_insets": list(self._insets),
             "input_lost_count": self.input_lost_count,
+            "startup_suppressed_windows": len(self.startup_events),
         }
         if not self.alive():
             return info
@@ -785,6 +959,8 @@ class EmbeddedBrowser:
                 user32.ShowWindow(self.hwnd, SW_SHOW)
                 self._raise_to_top()
                 self._activate_spoof()
+                _restore_startup_opacity(self.hwnd, self._startup_opacity)
+                self._startup_opacity = None
             except Exception:
                 pass
 
@@ -841,6 +1017,7 @@ class EmbeddedBrowser:
         self._closed = True
         hwnd = self.hwnd
         if hwnd and user32.IsWindow(hwnd):
+            user32.ShowWindow(hwnd, SW_HIDE)
             try:
                 user32.SetParent(hwnd, None)
             except Exception:
@@ -857,5 +1034,6 @@ class EmbeddedBrowser:
             if user32.IsWindow(hwnd):
                 raise RuntimeError("浏览器窗口尚未关闭，请检查是否有未确认的弹窗后重试")
         self.hwnd = None
+        self._startup_opacity = None
         self._kill_launcher()
         self.parent_hwnd = None

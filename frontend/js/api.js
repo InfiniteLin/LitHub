@@ -281,10 +281,10 @@ window.LithubAPI = {
     return r.json();
   },
 
-  async updateNote(paperId, noteId, { title, content }) {
+  async updateNote(paperId, noteId, { title, content, pinned }) {
     const r = await fetch(`${API_BASE}/api/papers/${paperId}/notes/${noteId}`, {
       method: "PUT", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ title, content }),
+      body: JSON.stringify({ title, content, pinned }),
     });
     if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || "保存笔记失败");
     return r.json();
@@ -294,6 +294,19 @@ window.LithubAPI = {
     const r = await fetch(`${API_BASE}/api/papers/${paperId}/notes/${noteId}`, { method: "DELETE" });
     if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || "删除笔记失败");
     return r.json();
+  },
+
+  async restoreNote(paperId, noteId) {
+    const r = await fetch(`${API_BASE}/api/papers/${paperId}/notes/${noteId}/restore`, { method:'POST' });
+    const result = await r.json();
+    if (!r.ok) throw new Error(result.detail || '恢复失败');
+    return result;
+  },
+
+  async exportNote(paperId, noteId) {
+    const r = await fetch(`${API_BASE}/api/papers/${paperId}/notes/${noteId}/export`);
+    if (!r.ok) throw new Error((await r.json().catch(()=>({}))).detail || '导出失败');
+    return r.blob();
   },
 
   async uploadNoteImage(blob, filename = "image.png") {

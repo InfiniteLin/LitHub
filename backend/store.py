@@ -148,6 +148,7 @@ class Store:
     def __init__(self):
         self._db = _load()
         self._annotation_trash = {}
+        self._note_trash = {}
         program = Path(os.environ.get("LITHUB_PROGRAM_DIR") or Path(__file__).resolve().parent.parent)
         default = os.environ.get("LITHUB_PDF_DEFAULT_DIR")
         if not default and os.environ.get("LITHUB_DATA_DIR") and not os.environ.get("LITHUB_PROGRAM_DIR"):
@@ -474,7 +475,7 @@ class Store:
     def list_notes(self, paper_id):
         with _lock:
             items = sorted(self._db["notes"].get(paper_id, []),
-                           key=lambda n: n.get("updated") or n.get("created") or "", reverse=True)
+                           key=lambda n: (bool(n.get("pinned")), n.get("updated") or n.get("created") or ""), reverse=True)
             return [dict(n) for n in items]
 
     def get_note(self, paper_id, note_id):
@@ -484,11 +485,12 @@ class Store:
                     return dict(n)
         return None
 
-    def add_note(self, paper_id, title="", content=""):
+    def add_note(self, paper_id, title="", content="", pinned=False):
         note = {
             "id": "n" + uuid.uuid4().hex[:10],
             "title": (title or "").strip()[:120] or "未命名笔记",
             "content": content or "",
+            "pinned": bool(pinned),
             "created": datetime.now().isoformat(timespec="seconds"),
             "updated": datetime.now().isoformat(timespec="seconds"),
         }
@@ -506,6 +508,8 @@ class Store:
                     n["title"] = str(fields["title"]).strip()[:120] or "未命名笔记"
                 if "content" in fields and fields["content"] is not None:
                     n["content"] = str(fields["content"])
+                if fields.get("pinned") is not None:
+                    n["pinned"] = bool(fields["pinned"])
                 n["updated"] = datetime.now().isoformat(timespec="seconds")
                 self._flush()
                 return dict(n)
@@ -516,12 +520,30 @@ class Store:
             items = self._db["notes"].get(paper_id, [])
             for i, n in enumerate(items):
                 if n["id"] == note_id:
+                    now = time.monotonic()
+                    self._note_trash = {k: v for k, v in self._note_trash.items() if now - v[0] < 60}
+                    if len(self._note_trash) >= 100:
+                        self._note_trash.pop(next(iter(self._note_trash)))
+                    self._note_trash[(paper_id, note_id)] = (now, dict(n))
                     items.pop(i)
                     if not items:
                         self._db["notes"].pop(paper_id, None)
                     self._flush()
                     return True
         return False
+
+    def restore_note(self, paper_id, note_id):
+        with _lock:
+            item = self._note_trash.get((paper_id, note_id))
+            if not item or time.monotonic() - item[0] >= 60 or paper_id not in self._db["papers"]:
+                return None
+            notes = self._db["notes"].setdefault(paper_id, [])
+            if any(n["id"] == note_id for n in notes):
+                return None
+            notes.append(dict(item[1]))
+            self._flush()
+            self._note_trash.pop((paper_id, note_id), None)
+            return dict(item[1])
 
     # ---------- annotations（高亮 / 划线 / 批注） ----------
     def list_annotations(self, paper_id):

@@ -92,14 +92,20 @@ class SessionTests(unittest.TestCase):
 
 
 class WindowSelectionTests(unittest.TestCase):
-    def select(self, windows, cancel=False):
+    def select(self, windows, cancel=False, existed=(), hidden=False):
         # Run the real selection method with deterministic Win32 doubles; no desktop changes.
         source = Path(__file__).resolve().parents[1] / 'backend/browser_embed.py'
         cls = next(n for n in ast.parse(source.read_text(encoding='utf-8')).body
                    if isinstance(n, ast.ClassDef) and n.name == 'EmbeddedBrowser')
         method = next(n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == '_find_new_window')
+        self.hidden_calls = []
+        visible = {h: not hidden for h in windows}
+        calls = self.hidden_calls
         class Win:
-            def IsWindowVisible(self, hwnd): return True
+            def IsWindowVisible(self, hwnd): return visible[hwnd]
+            def ShowWindow(self, hwnd, mode):
+                calls.append((hwnd, mode, clock[0]))
+                visible[hwnd] = False
             def IsWindow(self, hwnd): return True
             def GetWindowRect(self, hwnd, ptr):
                 ptr._obj.left = ptr._obj.top = 0
@@ -108,14 +114,26 @@ class WindowSelectionTests(unittest.TestCase):
         def advance(delay): clock[0] += delay
         namespace = {'time': SimpleNamespace(time=lambda: clock[0], sleep=advance),
                      'os': os, 'ctypes': ctypes, 'wintypes': wintypes, 'user32': Win(),
-                     '_enum_windows': lambda pred: list(windows), '_window_title': lambda h: 'test',
+                     'SW_HIDE': 0,
+                     '_enum_windows': lambda pred: [h for h in windows if pred(h)], '_window_title': lambda h: 'test',
                      '_class_name': lambda h: windows[h][0], '_window_pid': lambda h: h,
                      '_process_image': lambda pid: windows[pid][1]}
         exec(compile(ast.Module(body=[method], type_ignores=[]), str(source), 'exec'), namespace)
         event = threading.Event()
         if cancel: event.set()
         instance = SimpleNamespace(browser={'path': 'chrome.exe'}, _cancel_event=event)
-        return namespace['_find_new_window'](instance, set(), 1.0)
+        return namespace['_find_new_window'](instance, set(existed), 1.0)
+
+    def test_hide_before_stability_wait_and_keep_finding_hidden_window(self):
+        self.assertEqual(self.select({1: ('Chrome_WidgetWin_1', 'chrome.exe', (900, 800))}), 1)
+        self.assertEqual(self.hidden_calls[0], (1, 0, 0.0))
+
+    def test_hidden_startup_window_is_discovered(self):
+        self.assertEqual(self.select({1: ('Chrome_WidgetWin_1', 'chrome.exe', (900, 800))}, hidden=True), 1)
+
+    def test_preexisting_hidden_windows_are_untouched(self):
+        self.assertIsNone(self.select({1: ('Chrome_WidgetWin_1', 'chrome.exe', (900, 800))}, existed=(1,), hidden=True))
+        self.assertEqual(self.hidden_calls, [])
 
     def test_unrelated_larger_window_is_rejected(self):
         self.assertEqual(self.select({1: ('Chrome_WidgetWin_1', 'chrome.exe', (900, 800)),
@@ -167,6 +185,81 @@ class ContentInsetsTests(unittest.TestCase):
     def test_unavailable_viewport_keeps_geometry_uncropped(self):
         self.assertEqual(self.measure({1: ('Intermediate D3D Window', True, (100, 200, 900, 700))}),
                          (0, 0, 0, 0))
+
+
+class StartupGuardTests(unittest.TestCase):
+    def setUp(self):
+        source = Path(__file__).resolve().parents[1] / 'backend/browser_embed.py'
+        nodes = [node for node in ast.parse(source.read_text(encoding='utf-8')).body
+                 if getattr(node, 'name', '') in ('_startup_transparency', '_restore_startup_opacity', '_StartupWindowGuard')]
+        self.styles = {1: 0x40000, 2: 0x40000, 3: 0x40000, 4: 0x40000}
+        self.alpha = {}
+        owner = self
+        class Win:
+            def GetWindowLongW(self, h, flag): return owner.styles[h] if flag == -20 else (0x40000000 if h == 4 else 0)
+            def SetWindowLongW(self, h, flag, style): owner.styles[h] = style
+            def GetLayeredWindowAttributes(self, h, key, alpha, flags):
+                if h not in owner.alpha: return False
+                key._obj.value, alpha._obj.value, flags._obj.value = owner.alpha[h]
+                return True
+            def SetLayeredWindowAttributes(self, h, key, alpha, flags):
+                owner.alpha[h] = (key, alpha, flags)
+                return True
+            def IsWindowVisible(self, h): return False
+            def IsWindow(self, h): return True
+            def PostThreadMessageW(self, *args): return True
+        self.ns = dict(os=os, threading=threading, ctypes=ctypes, wintypes=wintypes, user32=Win(),
+                       GWL_STYLE=-16, WS_CHILD=0x40000000,
+                       _class_name=lambda h: 'Chrome_WidgetWin_1', _window_pid=lambda h: h,
+                       _process_image=lambda h: 'other.exe' if h == 3 else 'chrome.exe')
+        exec(compile(ast.Module(body=nodes, type_ignores=[]), str(source), 'exec'), self.ns)
+        self.guard = self.ns['_StartupWindowGuard']('chrome.exe', {1})
+        self.guard.thread = SimpleNamespace(join=lambda: None)
+
+    def event(self, hwnd=2, event=0x8000, obj=0):
+        self.guard._on_event(None, event, hwnd, obj, 0, 0, 0)
+
+    def test_untitled_creation_is_transparent_and_no_activate_before_show(self):
+        self.event()
+        self.assertEqual(self.alpha[2], (0, 0, 2))
+        self.assertTrue(self.styles[2] & 0x8000000)
+        self.assertTrue(self.styles[2] & 0x80)
+        self.assertFalse(self.styles[2] & 0x40000)
+        self.event(event=0x8002)
+        self.assertEqual(self.guard.suppressed[2], (0x40000, None))
+
+    def test_existing_other_executable_and_child_windows_are_untouched(self):
+        for h in (1, 3, 4): self.event(h)
+        self.event(obj=-4)
+        self.assertEqual(self.guard.suppressed, {})
+        self.assertEqual(self.alpha, {})
+
+    def test_failure_or_ambiguity_restores_all_unclaimed_window_styles(self):
+        self.event()
+        self.guard.__exit__(RuntimeError, RuntimeError('failed'), None)
+        self.assertEqual(self.styles[2], 0x40000)
+
+    def test_claimed_window_stays_transparent_until_explicit_restore(self):
+        self.event()
+        self.guard.keep = 2
+        self.guard.__exit__(None, None, None)
+        self.assertTrue(self.styles[2] & 0x80000)
+        self.ns['_restore_startup_opacity'](2, self.guard.suppressed[2])
+        self.assertEqual(self.styles[2], 0x40000)
+
+    def test_existing_layered_opacity_and_unrelated_style_changes_are_preserved(self):
+        self.styles[2] |= 0x80000
+        self.alpha[2] = (42, 170, 3)
+        self.event()
+        self.styles[2] |= 0x200
+        self.guard.__exit__(None, None, None)
+        self.assertEqual(self.styles[2], 0xC0200)
+        self.assertEqual(self.alpha[2], (42, 170, 3))
+
+    def test_destroyed_handle_is_not_restored_as_an_unrelated_reused_window(self):
+        self.event()
+        self.event(event=0x8001)
+        self.assertEqual(self.guard.suppressed, {})
 
 
 if __name__ == '__main__': unittest.main()
