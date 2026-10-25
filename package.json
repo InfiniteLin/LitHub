@@ -15,6 +15,8 @@
     "verify:updates": "node tests/verify-updates.mjs && node tests/verify-updates-electron.mjs",
     "verify:notes-safe": "python tests/verify-notes-safe.py && node tests/verify-notes-safe.mjs",
     "verify:pdf-view": "node tests/verify-pdf-view.mjs",
+    "verify:translation": "python tests/verify-translation-tasks.py && node tests/verify-pdf-view.mjs",
+    "verify:sidecar": "node tests/sidecar-connection.test.mjs && node tests/verify-sidecar-isolation.mjs",
     "verify:paper-titles": "python tests/verify-paper-titles.py",
     "test:browser-backend": "python -m unittest discover -s tests -p test_browser_session.py",
     "test:pdf-storage": "python -m unittest discover -s tests -p test_pdf_storage.py",

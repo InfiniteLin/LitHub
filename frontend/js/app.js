@@ -739,7 +739,8 @@ function renderReader(id) {
           <div class="tag-pop hidden" id="tag-pop"></div>
         </div>
         <button class="icon-btn danger" data-action="del-paper" data-id="${p.id}" title="删除文献">${I("trash", 17)}</button>
-        <button class="btn ${p.translated || runningTask ? "" : "btn-primary"}" data-action="translate" data-id="${p.id}">${btnHTML}</button>
+        <button class="btn ${p.translated || runningTask ? "" : "btn-primary"}" data-action="translate" data-id="${p.id}" ${runningTask ? "disabled" : ""}>${btnHTML}</button>
+        ${runningTask ? `<button class="btn sm" data-action="cancel-translation" data-id="${runningTask.id}">取消翻译</button>` : ""}
         <button class="btn ${annotListState.open ? "is-on" : ""}" data-action="annot-panel" data-id="${p.id}" title="批注列表">${I("list", 15)}批注<span class="annot-count" ${annotCountOf(p.id) ? "" : "hidden"}>${annotCountOf(p.id) || ""}</span></button>
         <button class="btn" data-action="note-panel" data-id="${p.id}" title="在右侧栏打开 Markdown 笔记">${I("pencil", 15)}笔记</button>
         <button class="icon-btn" data-action="open-note" data-id="${p.id}" title="在新标签页中打开笔记（更大编辑区）">${I("external", 16)}</button>
@@ -2650,17 +2651,71 @@ function regenSummary(p, force = true) {
 }
 
 /* ---------------- 翻译流程（模拟） ---------------- */
+const translationSubmissions = new Set();
+const translationCancellations = new Set();
+
+async function submitTranslation(paperId) {
+  if (translationSubmissions.has(paperId)) return;
+  if (state.liveTasks.some(t => t.paper_id === paperId && ["queued", "running"].includes(t.status))) {
+    toast("该文献已在翻译队列中"); return;
+  }
+  translationSubmissions.add(paperId);
+  const buttons = $$('[data-action="translate"]').filter(b => b.dataset.id === paperId);
+  buttons.forEach(b => { b.disabled = true; });
+  try {
+    const task = await LithubAPI.translate(paperId);
+    state.liveTasks = [task, ...state.liveTasks.filter(t => t.id !== task.id)];
+    toast("已加入翻译队列");
+    await pollTasks();
+    if (state.route.view === "tasks") renderTasks();
+  } catch (e) {
+    toast(e.message || "发起翻译失败", "err");
+  } finally {
+    translationSubmissions.delete(paperId);
+    buttons.forEach(b => { if (!state.liveTasks.some(t => t.paper_id === paperId && ["queued", "running"].includes(t.status))) b.disabled = false; });
+  }
+}
+
+async function cancelTranslation(taskId) {
+  if (translationCancellations.has(taskId)) return;
+  translationCancellations.add(taskId);
+  const button = $$('[data-action="cancel-translation"]').find(b => b.dataset.id === taskId);
+  if (button) button.disabled = true;
+  try {
+    if (LithubAPI.live) {
+      const task = await LithubAPI.cancelTranslation(taskId);
+      state.liveTasks = state.liveTasks.map(t => t.id === task.id ? task : t);
+      toast(task.status === "cancelled" ? "已取消翻译" : "任务已结束");
+      await pollTasks();
+    } else {
+      const task = state.db.tasks.find(t => t.id === taskId);
+      if (task && ["queued", "running"].includes(task.status)) {
+        task.status = "cancelled"; task.note = "已取消";
+        delete state.translating[task.paperId];
+      }
+    }
+    if (state.route.view === "tasks") renderTasks();
+  } catch (e) {
+    toast(e.message || "取消翻译失败", "err");
+  } finally {
+    translationCancellations.delete(taskId);
+    if (button?.isConnected) button.disabled = false;
+  }
+}
+
 function startTranslate(paperId) {
   const p = paperById(paperId);
   if (!p || p.translated || state.translating[paperId] != null) return;
   state.translating[paperId] = 0;
-  state.db.tasks.unshift({
+  const newTask = {
     id: "t" + Date.now(), paperId, name: p.title, status: "running", progress: 0,
     pages: 10 + (p.id.charCodeAt(1) % 15), model: state.db.settings.model, time: "刚刚", note: "正在解析版面…",
-  });
+  };
+  state.db.tasks.unshift(newTask);
   if (state.route.view === "reader") renderReader(paperId);
   if (state.route.view === "tasks") renderTasks();
   const timer = setInterval(() => {
+    if (newTask.status === "cancelled") { clearInterval(timer); return; }
     state.translating[paperId] = Math.min(100, state.translating[paperId] + 4 + Math.floor(Math.random() * 9));
     const task = state.db.tasks.find((t) => t.paperId === paperId && t.status === "running");
     const pct = state.translating[paperId];
@@ -2686,6 +2741,7 @@ const TASK_STATUS = {
   running: { text: "翻译中", cls: "run" },
   queued: { text: "排队中", cls: "queue" },
   failed: { text: "失败", cls: "fail" },
+  cancelled: { text: "已取消", cls: "queue" },
 };
 
 function tasksForView() {
@@ -2699,7 +2755,7 @@ function tasksForView() {
     progress: t.progress,
     pages: paperById(t.paper_id)?.pages || "—",
     model: store_service_label(),
-    time: t.status === "done" ? "已完成" : t.status === "queued" ? "排队中" : t.status === "running" ? "进行中" : "失败",
+    time: TASK_STATUS[t.status]?.text || t.status,
     note: t.note || "",
   }));
 }
@@ -2719,10 +2775,11 @@ function renderTasks() {
       <div class="t-progress">${t.status === "running"
         ? `<div class="progress"><span style="width:${t.progress}%"></span></div><span class="t-pct">${t.progress}%</span>`
         : t.status === "done" ? `<div class="progress done"><span style="width:100%"></span></div>`
-        : t.status === "failed" ? `<button class="btn sm" data-action="retry" data-id="${t.id}">${I("refresh", 13)}重试</button>`
+        : ["failed", "cancelled"].includes(t.status) ? `<button class="btn sm" data-action="retry" data-id="${t.id}">${I("refresh", 13)}${t.status === "cancelled" ? "重新翻译" : "重试"}</button>`
         : `<span class="t-queued">${I("clock", 13)}等待分配</span>`}
       </div>
       <div class="t-actions">
+        ${["queued", "running"].includes(t.status) ? `<button class="btn sm" data-action="cancel-translation" data-id="${t.id}" ${translationCancellations.has(t.id) ? "disabled" : ""}>取消</button>` : ""}
         ${t.status === "done" ? `<button class="btn sm" data-action="open" data-id="${t.paperId}">${I("book", 13)}打开对照</button>` : ""}
       </div>
     </article>`;
@@ -3611,22 +3668,21 @@ document.addEventListener("click", (e) => {
     case "translate": {
       const target = paperById(t.dataset.id);
       if (LithubAPI.live && target?.live) {
-        LithubAPI.translate(target.id)
-          .then(() => toast("已加入翻译队列"))
-          .catch((e) => toast(e.message || "发起翻译失败", "err"));
+        submitTranslation(target.id);
       } else {
         startTranslate(t.dataset.id);
       }
       break;
     }
+    case "cancel-translation": cancelTranslation(id); break;
     case "retry": {
       const task = state.db.tasks.find((x) => x.id === id);
       if (LithubAPI.live) {
         const live = state.liveTasks.find((x) => x.id === id);
-        if (live) LithubAPI.translate(live.paper_id).then(() => toast("已重新加入队列")).catch((e) => toast(e.message, "err"));
+        if (live) submitTranslation(live.paper_id);
       } else if (task) {
-        task.status = "running"; task.time = "刚刚"; task.note = "重新解析版面…";
-        renderTasks(); startTranslate(task.paperId);
+        startTranslate(task.paperId);
+        renderTasks();
       }
       break;
     }
@@ -5636,7 +5692,8 @@ async function pollTasks() {
         // 原文文件没有变化；保留现有 PDF 实例、选区和滚动位置。
         if (state.reader.mode === "en") {
           const btn = $('.reader-bar [data-action="translate"]');
-          if (btn) { btn.innerHTML = `${I("check", 15)}已翻译`; btn.classList.remove("btn-primary"); }
+          if (btn) { btn.innerHTML = `${I("check", 15)}已翻译`; btn.classList.remove("btn-primary"); btn.disabled = false; }
+          $('.reader-bar [data-action="cancel-translation"]')?.remove();
         } else {
           renderReader(p.id);
         }
@@ -5648,17 +5705,32 @@ async function pollTasks() {
           translateBtn.innerHTML = `${I("refresh", 15)}<span class="spin"></span>`;
           translateBtn.classList.remove("btn-primary");
         }
+        if (translateBtn) {
+          translateBtn.disabled = true;
+          let cancelBtn = $('.reader-bar [data-action="cancel-translation"]');
+          if (!cancelBtn) {
+            translateBtn.insertAdjacentHTML("afterend", `<button class="btn sm" data-action="cancel-translation" data-id="${esc(t.id)}">取消翻译</button>`);
+            cancelBtn = translateBtn.nextElementSibling;
+          }
+          cancelBtn.dataset.id = t.id;
+          cancelBtn.disabled = translationCancellations.has(t.id);
+        }
         const pct = $("#zh-pct"), note = $("#zh-note"), bar = $("#zh-progress span"), btn = $('.reader-bar [data-action="translate"] .spin');
         if (pct) pct.textContent = (t.progress || 0) + "%";
         if (note) note.textContent = t.note || "";
         if (bar) bar.style.width = (t.progress || 0) + "%";
         if (btn) btn.textContent = `翻译中 ${t.progress || 0}%`;
-      } else if (t?.status === "failed" && $("#zh-note")) {
-        $("#zh-note").textContent = t.note || "翻译失败";
+      } else if (t && ["failed", "cancelled"].includes(t.status)) {
+        const btn = $('.reader-bar [data-action="translate"]');
+        if (btn) {
+          btn.innerHTML = `${I("languages", 15)}翻译全文`;
+          btn.classList.add("btn-primary"); btn.disabled = false;
+        }
+        $('.reader-bar [data-action="cancel-translation"]')?.remove();
         const ph = $("#pane-zh .pane-placeholder");
         if (ph && !$("#zh-retry")) {
-          ph.insertAdjacentHTML("beforeend",
-            `<button class="btn" id="zh-retry" data-action="translate" data-id="${p.id}">${I("refresh", 14)}重试</button>`);
+          ph.innerHTML = `<h3>${t.status === "cancelled" ? "翻译已取消" : "翻译失败"}</h3><p>${esc(t.note || "")}</p>
+            <button class="btn" id="zh-retry" data-action="translate" data-id="${p.id}">${I("refresh", 14)}${t.status === "cancelled" ? "重新翻译" : "重试"}</button>`;
         }
       }
     }

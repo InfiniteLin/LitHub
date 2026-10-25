@@ -117,7 +117,7 @@ try {
     window.pollingOriginalTasks = LithubAPI.tasks;
     window.pollingPdf = pane()._pdf;
     window.pollingCanvas = side(0).canvas;
-    window.pollingTask = { paper_id: testPaper.id, status: 'queued', progress: 0 };
+    window.pollingTask = { id: 'polling-task', paper_id: testPaper.id, status: 'queued', progress: 0 };
     LithubAPI.live = true;
     LithubAPI.tasks = async () => [{ ...pollingTask }];
     testPaper.translated = false;
@@ -133,15 +133,46 @@ try {
   await check('translation polling preserves original PDF, canvas and scroll', `pane()._pdf===pollingPdf
     && side(0).canvas===pollingCanvas && !pollingPdf.dead && pane().scrollTop===pollingScroll
     && document.querySelector('.reader-bar [data-action="translate"] .spin').textContent==='翻译中 90%'`);
+  await check('running reader disables duplicate submission and offers cancellation', `document.querySelector('.reader-bar [data-action="translate"]').disabled
+    && document.querySelector('.reader-bar [data-action="cancel-translation"]').dataset.id===pollingTask.id`);
+  await evaluate(`
+    window.originalCancelTranslation=LithubAPI.cancelTranslation;
+    window.originalTranslate=LithubAPI.translate;
+    LithubAPI.cancelTranslation=async()=>{pollingTask.status='cancelled';return {...pollingTask};};
+    document.querySelector('.reader-bar [data-action="cancel-translation"]').click();
+  `);
+  await until('reader cancellation enables retry without replacing original PDF', `!translationCancellations.size
+    && !document.querySelector('.reader-bar [data-action="cancel-translation"]')
+    && !document.querySelector('.reader-bar [data-action="translate"]').disabled
+    && pane()._pdf===pollingPdf && !pollingPdf.dead && side(0).canvas===pollingCanvas`);
+  await evaluate(`
+    window.translationRequests=0;
+    LithubAPI.translate=async()=>{
+      translationRequests++;
+      await new Promise(resolve=>window.releaseTranslation=resolve);
+      Object.assign(pollingTask,{id:'retry-task',status:'queued',progress:0});
+      return {...pollingTask};
+    };
+    void submitTranslation(testPaper.id); void submitTranslation(testPaper.id);
+  `);
+  await check('concurrent frontend submissions share a single request', `translationRequests===1
+    && document.querySelector('.reader-bar [data-action="translate"]').disabled`);
+  await evaluate(`releaseTranslation()`);
+  await until('resubmission updates cancellation target in place', `!translationSubmissions.size
+    && document.querySelector('.reader-bar [data-action="cancel-translation"]')?.dataset.id==='retry-task'
+    && pane()._pdf===pollingPdf`);
   await evaluate(`(async () => { pollingTask.status='done'; await pollTasks(); await pollTasks(); })()`);
   await check('translation completion preserves original PDF and updates button', `testPaper.translated
     && pane()._pdf===pollingPdf && side(0).canvas===pollingCanvas && !pollingPdf.dead
     && pane().scrollTop===pollingScroll
-    && document.querySelector('.reader-bar [data-action="translate"]').textContent==='已翻译'`);
+    && document.querySelector('.reader-bar [data-action="translate"]').textContent==='已翻译'
+    && !document.querySelector('.reader-bar [data-action="translate"]').disabled
+    && !document.querySelector('.reader-bar [data-action="cancel-translation"]')`);
   await evaluate(`
     testPaper.zhUrl='/fixture.pdf'; testPaper.compareUrl='/wide.pdf';
     state.liveTasks=[];
     LithubAPI.live=pollingOriginalLive; LithubAPI.tasks=pollingOriginalTasks;
+    LithubAPI.translate=originalTranslate; LithubAPI.cancelTranslation=originalCancelTranslation;
   `);
   await evaluate(`
     window.renamePdf = pane()._pdf;
@@ -545,6 +576,34 @@ try {
   await until('legacy annotation only draws after explicit version assignment', `PdfAnnot.get(activePdfPane(),'legacy-unscoped')?.view==='en'
     && !document.querySelector('.annot-legacy')`);
   await evaluate(`Object.assign(LithubAPI,{live:scopedAPIs.live,annotations:scopedAPIs.list,createAnnotation:scopedAPIs.create,updateAnnotation:scopedAPIs.update});`);
+  await evaluate(`
+    testPaper.translated=false; state.liveTasks=[]; state.reader.mode='zh'; renderReader(testPaper.id);
+    window.translationUiTasks=[{id:'ui-running',paper_id:testPaper.id,status:'running',progress:25,note:'working'},
+      {id:'ui-queued',paper_id:'another-paper',status:'queued',progress:0}];
+    LithubAPI.live=true;
+    LithubAPI.tasks=async()=>translationUiTasks.map(t=>({...t}));
+    LithubAPI.cancelTranslation=async id=>{
+      const task=translationUiTasks.find(t=>t.id===id); task.status='cancelled';task.note='已取消';return {...task};
+    };
+  `);
+  await evaluate(`pollTasks()`);
+  await check('translation pane transitions from empty to progress', `document.querySelector('#zh-pct')?.textContent==='25%'`);
+  await evaluate(`document.querySelector('.reader-bar [data-action="cancel-translation"]').click()`);
+  await until('translation pane shows cancelled state and retry instead of spinning', `!translationCancellations.size
+    && document.querySelector('#pane-zh h3')?.textContent==='翻译已取消'
+    && !document.querySelector('#zh-pct') && !!document.querySelector('#zh-retry')
+    && !document.querySelector('#pane-zh .spin-ring')`);
+  await evaluate(`location.hash='#/tasks'`);
+  await until('task list offers cancellation for queued tasks and retry for cancelled tasks', `state.route.view==='tasks'
+    && document.querySelector('[data-action="cancel-translation"]')?.dataset.id==='ui-queued'
+    && document.querySelector('.t-status')?.textContent==='已取消'
+    && document.querySelector('[data-action="retry"]')?.textContent.includes('重新翻译')`);
+  await evaluate(`document.querySelector('[data-action="cancel-translation"]').click()`);
+  await until('task list updates after queued cancellation', `!translationCancellations.size
+    && !document.querySelector('[data-action="cancel-translation"]')
+    && [...document.querySelectorAll('.t-status')].every(n=>n.textContent==='已取消')`);
+  await evaluate(`LithubAPI.live=pollingOriginalLive;LithubAPI.tasks=pollingOriginalTasks;
+    LithubAPI.translate=originalTranslate;LithubAPI.cancelTranslation=originalCancelTranslation;`);
   assert.deepEqual(errors, [], 'no uncaught errors or page render failures');
   console.log('PASS real PDF.js lifecycle, geometry, selection, budgets and route integration');
 } finally {

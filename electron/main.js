@@ -9,8 +9,12 @@ const path = require("node:path");
 const fs = require("node:fs");
 const { spawn } = require("node:child_process");
 const { createUpdateService, registerUpdateIPC } = require("./update-service");
+const { randomUUID } = require("node:crypto");
+const { selectSidecarPort, waitForOwnedSidecar } = require("./sidecar-connection");
 
-const SIDECAR_PORT = process.env.LITHUB_API_PORT || 8130;
+let SIDECAR_PORT;
+const SIDECAR_INSTANCE = randomUUID();
+let sidecarReady = false;
 
 // file:// 下允许加载 PDF.js 的 worker 脚本
 app.commandLine.appendSwitch("allow-file-access-from-files");
@@ -78,13 +82,14 @@ function startSidecar() {
       ? path.join(dataDir, "pdfs")
       : path.join(isPackaged ? path.dirname(app.getPath("exe")) : RES_ROOT, "pdfs"),
     LITHUB_API_PORT: String(SIDECAR_PORT),
+    LITHUB_INSTANCE_ID: SIDECAR_INSTANCE,
     // 打包版没有控制台，日志级别压到 warning，避免无谓开销
     LITHUB_LOG_LEVEL: isPackaged ? "warning" : "info",
     // 不生成 .pyc：程序目录本身可能只读，写缓存会报一堆权限警告
     PYTHONDONTWRITEBYTECODE: "1",
   };
 
-  log(`sidecar: ${py} | 代码 ${cwd} | 数据 ${dataDir}`);
+  log(`sidecar: ${py} | 代码 ${cwd} | 数据 ${dataDir} | 端口 ${SIDECAR_PORT}`);
 
   sidecar = spawn(
     py,
@@ -100,18 +105,11 @@ function startSidecar() {
   });
   sidecar.on("exit", (code) => {
     if (!quitting && Date.now() - startedAt < 5000) {
-      log(`sidecar 提前退出（code=${code}）：8130 端口可能被占用，或依赖未安装`);
+      log(`sidecar 提前退出（code=${code}）：${SIDECAR_PORT} 端口可能被占用，或依赖未安装`);
     }
     sidecar = null;
   });
 
-  // 就绪探测（仅日志，便于开发期确认链路）
-  setTimeout(() => {
-    net.fetch(`http://127.0.0.1:${SIDECAR_PORT}/api/health`)
-      .then((r) => r.json())
-      .then((j) => log("sidecar 就绪:", JSON.stringify(j)))
-      .catch(() => log("sidecar 未就绪（可选组件，不影响界面）"));
-  }, 3000);
 }
 
 function stopSidecar() {
@@ -122,18 +120,11 @@ function stopSidecar() {
   sidecar = null;
 }
 
-function waitForSidecar(timeoutMs = 8000) {
-  const deadline = Date.now() + timeoutMs;
-  return new Promise((resolve, reject) => {
-    const probe = async () => {
-      try {
-        const r = await net.fetch(`http://127.0.0.1:${SIDECAR_PORT}/api/health`);
-        if (r.ok) return resolve();
-      } catch {}
-      if (Date.now() > deadline) return reject(new Error("sidecar 超时"));
-      setTimeout(probe, 400);
-    };
-    probe();
+function waitForSidecar() {
+  return waitForOwnedSidecar({
+    baseURL: `http://127.0.0.1:${SIDECAR_PORT}`, instanceId: SIDECAR_INSTANCE,
+    fetch: (url, options) => net.fetch(url, options),
+    isAlive: () => !!sidecar && sidecar.exitCode === null && !sidecar.killed && !quitting,
   });
 }
 
@@ -165,8 +156,16 @@ function createWindow() {
   });
   // 优先从 sidecar 加载前端（localhost 静态服务，规避 file:// 的 worker 限制）
   waitForSidecar()
-    .then(() => win.loadURL(`http://127.0.0.1:${SIDECAR_PORT}/`))
-    .catch(() => win.loadFile(path.join(RES_ROOT, "frontend", "index.html")));
+    .then(() => {
+      sidecarReady = true;
+      return win?.loadURL(`http://127.0.0.1:${SIDECAR_PORT}/`);
+    })
+    .catch(error => {
+      if (quitting) return;
+      log("后端启动失败:", error.message);
+      dialog.showErrorBox("文枢启动失败", `${error.message}\n\n后端目录：${BACKEND_DIR}\n端口：${SIDECAR_PORT}`);
+      app.quit();
+    });
 
   win.on("maximize", () => win?.webContents.send("lithub:maximized", true));
   win.on("unmaximize", () => win?.webContents.send("lithub:maximized", false));
@@ -189,6 +188,7 @@ function createWindow() {
     // 嵌入的用户浏览器窗口是**别的进程**的子窗口，宿主没了它不会自己关。
     // sidecar 里还有一层看门线程兜底，这里先主动关一次（尽力而为）。
     try {
+      if (!sidecarReady) return;
       net.fetch(`http://127.0.0.1:${SIDECAR_PORT}/api/browser/close`, { method: "POST" }).catch(() => {});
     } catch {}
   });
@@ -533,6 +533,7 @@ ipcMain.handle("browser:bounds", async (_e, rect) => {
 });
 
 async function closeBrowserSession(shutdown = false) {
+  if (!sidecarReady) return { ok: true };
   try {
     const action = shutdown ? "shutdown" : "close";
     const response = await net.fetch(`http://127.0.0.1:${SIDECAR_PORT}/api/browser/${action}`, {
@@ -545,7 +546,8 @@ async function closeBrowserSession(shutdown = false) {
 ipcMain.handle("browser:close", () => closeBrowserSession());
 
 /* ---------------- 生命周期 ---------------- */
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
+  SIDECAR_PORT = await selectSidecarPort(process.env.LITHUB_API_PORT);
   updateService = createUpdateService({
     version: app.getVersion(), storageFile: path.join(app.getPath("userData"), "update-check.json"),
     fetch: (url, options) => net.fetch(url, options), openExternal: url => shell.openExternal(url),
@@ -556,6 +558,9 @@ app.whenReady().then(() => {
   startSidecar();
   createWindow();
   updateService.start();
+}).catch(error => {
+  dialog.showErrorBox("文枢启动失败", error.message);
+  app.quit();
 });
 
 app.on("window-all-closed", () => app.quit());

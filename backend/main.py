@@ -80,7 +80,8 @@ app.add_middleware(
 
 @app.get("/api/health")
 def health():
-    return {"ok": True, "service": "lithub-sidecar", "version": SERVICE_VERSION}
+    return {"ok": True, "service": "lithub-sidecar", "version": SERVICE_VERSION,
+            "instance_id": os.environ.get("LITHUB_INSTANCE_ID", "")}
 
 
 # ---------- 文献 ----------
@@ -463,13 +464,22 @@ class TranslateBody(BaseModel):
 
 @app.post("/api/translate")
 def start_translation(body: TranslateBody):
-    paper = store.get_paper(body.paper_id)
-    if not paper:
+    try:
+        return translate.submit(body.paper_id)
+    except KeyError:
         raise HTTPException(404, "文献不存在")
-    if paper.get("translated"):
-        raise HTTPException(400, "该文献已有译文")
-    task = store.add_task(body.paper_id)
-    translate.enqueue(task["id"])
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@app.post("/api/tasks/{tid}/cancel")
+def cancel_translation(tid: str):
+    try:
+        task = translate.cancel_task(tid)
+    except OSError:
+        raise HTTPException(409, "无法终止翻译进程，请重试")
+    if not task:
+        raise HTTPException(404, "任务不存在")
     return task
 
 

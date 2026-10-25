@@ -11,7 +11,7 @@ const sandbox = {
     webContents: { executeJavaScript: () => { scriptReads++; throw Error('unexpected renderer read'); } } },
   screen: { getDisplayMatching: () => ({ scaleFactor: 2 }) },
   net: { fetch: async (url, options) => { requests.push({ url, options }); return { ok: true, json: async () => body }; } },
-  SIDECAR_PORT: 8130, AbortSignal,
+  SIDECAR_PORT: 8130, sidecarReady: true, AbortSignal,
   webAiVisible: false, webAiView: null,
 };
 vm.runInNewContext(source.slice(source.indexOf('function cssToPhysical('), source.indexOf('/* ---------------- 生命周期')), sandbox);

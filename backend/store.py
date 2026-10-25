@@ -318,7 +318,7 @@ class Store:
         task = {
             "id": uuid.uuid4().hex[:12],
             "paper_id": paper_id,
-            "status": "queued",     # queued | running | done | failed
+            "status": "queued",     # queued | running | done | failed | cancelled
             "progress": 0,
             "note": "排队中",
             "error": None,

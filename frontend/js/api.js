@@ -70,6 +70,12 @@ window.LithubAPI = {
     return r.json();
   },
 
+  async cancelTranslation(taskId) {
+    const r = await fetch(`${API_BASE}/api/tasks/${encodeURIComponent(taskId)}/cancel`, { method: "POST" });
+    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || "取消翻译失败");
+    return r.json();
+  },
+
   async updatePaper(id, fields) {
     const r = await fetch(`${API_BASE}/api/papers/${id}`, {
       method: "PATCH",
