@@ -8,6 +8,7 @@ const { app, BrowserWindow, dialog, ipcMain, net, shell, screen, WebContentsView
 const path = require("node:path");
 const fs = require("node:fs");
 const { spawn } = require("node:child_process");
+const { createUpdateService, registerUpdateIPC } = require("./update-service");
 
 const SIDECAR_PORT = process.env.LITHUB_API_PORT || 8130;
 
@@ -17,6 +18,9 @@ app.commandLine.appendSwitch("allow-file-access-from-files");
 let win = null;
 let sidecar = null;
 let quitting = false;
+let updateService = null;
+registerUpdateIPC(ipcMain, () => updateService, event =>
+  !!win && event.sender === win.webContents && event.senderFrame === win.webContents.mainFrame);
 
 const log = (...a) => console.log("[main]", ...a);
 
@@ -542,11 +546,20 @@ ipcMain.handle("browser:close", () => closeBrowserSession());
 
 /* ---------------- 生命周期 ---------------- */
 app.whenReady().then(() => {
+  updateService = createUpdateService({
+    version: app.getVersion(), storageFile: path.join(app.getPath("userData"), "update-check.json"),
+    fetch: (url, options) => net.fetch(url, options), openExternal: url => shell.openExternal(url),
+    onChange: snapshot => {
+      if (win && !win.isDestroyed() && !win.webContents.isDestroyed()) win.webContents.send("updates:changed", snapshot);
+    },
+  });
   startSidecar();
   createWindow();
+  updateService.start();
 });
 
 app.on("window-all-closed", () => app.quit());
+app.on("will-quit", () => updateService?.stop());
 
 let shutdownComplete = false;
 app.on("before-quit", (event) => {

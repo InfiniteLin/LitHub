@@ -2748,12 +2748,14 @@ const TABS = [
   { id: "prompts", name: "提示词模板" },
   { id: "appearance", name: "外观" },
   { id: "storage", name: "文件存储" },
+  { id: "about", name: "关于与更新" },
 ];
 
 function renderSettings() {
   const s = state.db.settings;
   const tab = state.settingsTab;
   const body = {
+    about: () => AppUpdates.html(),
     storage: storageSettingsHTML,
     ai: () => `
       <section class="set-card">
@@ -2904,7 +2906,7 @@ function renderSettings() {
       <h1>偏好设置</h1>
     </div>
   </header>
-  <div class="set-tabs">${TABS.map((t) => `<button class="set-tab ${t.id === tab ? "active" : ""}" data-action="set-tab" data-id="${t.id}">${t.name}</button>`).join("")}</div>
+  <div class="set-tabs">${TABS.map((t) => `<button class="set-tab ${t.id === tab ? "active" : ""} ${t.id === 'about' && AppUpdates.hasUpdate() ? 'has-update' : ''}" data-action="set-tab" data-id="${t.id}">${t.name}</button>`).join("")}</div>
   <div class="set-body">${body}</div>`;
   // AI 服务页：探测已安装的浏览器，填入「使用哪个浏览器」下拉
   if (tab === "ai") refreshBrowserSelect();
@@ -2912,6 +2914,24 @@ function renderSettings() {
 }
 
 const pdfStorageState = { info: null, loading: false, error: "", busy: false };
+
+function refreshUpdateSettings() {
+  document.querySelector('.set-tab[data-id="about"]')?.classList.toggle('has-update', AppUpdates.hasUpdate());
+  if (state.route.view === "settings" && state.settingsTab === "about") {
+    const body = document.querySelector('.set-body');
+    if (body) body.innerHTML = AppUpdates.html();
+  }
+}
+
+function notifyAppUpdate(version) {
+  if (state.route.view === "settings" && state.settingsTab === "about") return;
+  const notice = document.createElement('div');
+  notice.className = 'toast toast-update';
+  notice.innerHTML = `${I('sparkle',16)}<span>发现新版本 v${esc(version)}</span><button class="btn sm" data-action="updates-details">查看更新</button>`;
+  document.getElementById('toast-root').appendChild(notice);
+  setTimeout(() => notice.remove(), 12000);
+}
+
 function storageSettingsHTML() {
   const info = pdfStorageState.info;
   if (!LithubAPI.live) return '<section class="set-card"><h3>PDF 文件存储</h3><p class="set-desc">连接本地服务后可设置存储目录。</p></section>';
@@ -4134,6 +4154,15 @@ document.addEventListener("click", (e) => {
     }
 
     /* 设置 */
+    case "updates-check": void AppUpdates.check(); break;
+    case "updates-open":
+      AppUpdates.openRelease().then(result => { if (!result.ok) toast(esc(result.error), 'err'); });
+      break;
+    case "updates-details":
+      t.closest('.toast')?.remove();
+      state.settingsTab = "about";
+      if (location.hash === '#/settings') render(); else location.hash = '#/settings';
+      break;
     case "pdf-storage-browse": {
       if (pdfStorageState.busy) break;
       window.lithub?.pdfStorage?.pickDirectory($("#set-pdf-directory")?.value).then(result => {
@@ -4311,6 +4340,9 @@ document.addEventListener("input", (e) => {
   }
 });
 document.addEventListener("change", (e) => {
+  if (e.target.id === "set-update-auto") {
+    void AppUpdates.setAutoCheck(e.target.checked).catch(error => toast(esc(error.message), 'err'));
+  }
   if (e.target.id === "sort-sel") { state.sort = e.target.value; render(); }
   if (e.target.id === "zoom-sel") {
     const v = e.target.value;
@@ -5640,6 +5672,7 @@ function initTitlebar() {
 
 (async () => {
   initTitlebar();
+  void AppUpdates.init({ onChange: refreshUpdateSettings, onAvailable: notifyAppUpdate });
   await LithubAPI.ping();
   // A renderer reload loses its controller; retire the previous native session first.
   if (LithubAPI.live && window.lithub?.browser?.reset) {

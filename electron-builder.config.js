@@ -80,7 +80,8 @@ module.exports = {
     buildResources: "electron",
   },
 
-  // 关掉自动更新（本地工具，没有发布服务器）
+  // 更新检查直接读取公开 GitHub Releases，并引导用户下载安装包。
+  // 暂不生成 electron-updater 的下载/安装元数据，也不自动上传产物。
   publish: null,
 
   // asar 只包 JS 代码；Python/前端走 extraResources（在 asar 外面，

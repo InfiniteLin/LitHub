@@ -14,6 +14,18 @@ contextBridge.exposeInMainWorld("lithub", {
      走系统浏览器则直接复用已登录的账号（用户明确要求）。 */
   openExternal: (url) => ipcRenderer.invoke("shell:open-external", url),
 
+  updates: {
+    getState: () => ipcRenderer.invoke("updates:state"),
+    check: () => ipcRenderer.invoke("updates:check"),
+    setAutoCheck: enabled => ipcRenderer.invoke("updates:auto-check", enabled),
+    openRelease: () => ipcRenderer.invoke("updates:open-release"),
+    onChange: callback => {
+      const listener = (_event, snapshot) => callback(snapshot);
+      ipcRenderer.on("updates:changed", listener);
+      return () => ipcRenderer.removeListener("updates:changed", listener);
+    },
+  },
+
   pdfStorage: {
     pickDirectory: (current) => ipcRenderer.invoke("storage:pick-directory", current),
     openDirectory: () => ipcRenderer.invoke("storage:open-directory"),
