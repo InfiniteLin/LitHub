@@ -10,22 +10,32 @@ const entry=path.join(dir,'main.cjs');
 const renderer=`(async()=>{
   const u=window.lithub.updates,initial=await u.getState(),events=[];
   const unsub=u.onChange(s=>events.push(s.status));
-  const checked=await u.check();await u.setAutoCheck(false);await u.openRelease();unsub();
-  return {initial,checked,events,final:await u.getState()};
+  const checked=await u.check();await u.setAutoCheck(false);await u.openRelease();
+  const downloaded=await u.download();const installed=await u.install();unsub();
+  return {initial,checked,downloaded,installed,events,final:await u.getState()};
 })()`;
 writeFileSync(entry, `
 const {app,BrowserWindow,ipcMain,net}=require('electron');
 const assert=require('node:assert/strict');
+const {createHash}=require('node:crypto');
 const {createServer}=require('node:http');
 const {createUpdateService,registerUpdateIPC}=require(${JSON.stringify(path.resolve('electron/update-service.js'))});
 app.setPath('userData',${JSON.stringify(path.join(dir,'user'))});
 let win,service,server;
 app.whenReady().then(async()=>{
-  server=createServer((req,res)=>{res.setHeader('Content-Type','application/json');res.end(JSON.stringify({tag_name:'v0.1.2',draft:false,prerelease:false,body:'Integration release'}));});
+  const payload=Buffer.from('isolated Electron update fixture');
+  const digest=createHash('sha256').update(payload).digest('hex');
+  server=createServer((req,res)=>{
+    if(req.url==='/asset'){res.end(payload);return;}
+    res.setHeader('Content-Type','application/json');res.end(JSON.stringify({tag_name:'v0.1.2',draft:false,prerelease:false,body:'Integration release',
+      assets:[{name:'LitHub Setup 0.1.2.exe',size:payload.length,state:'uploaded',digest:'sha256:'+digest}]}));});
   await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
-  const opened=[];
+  const opened=[];let installCalls=0;
   service=createUpdateService({version:'0.1.1',storageFile:${JSON.stringify(path.join(dir,'state.json'))},
-    fetch:(url,options)=>{assert.equal(url,'https://api.github.com/repos/InfiniteLin/LitHub/releases/latest');return net.fetch('http://127.0.0.1:'+server.address().port,options);},
+    canInstall:true,install:async()=>{installCalls++;return false;},
+    fetch:(url,options)=>{const api=url==='https://api.github.com/repos/InfiniteLin/LitHub/releases/latest';
+      if(!api)assert.ok(url.startsWith('https://github.com/InfiniteLin/LitHub/releases/download/'));
+      return net.fetch('http://127.0.0.1:'+server.address().port+(api?'/':'/asset'),options);},
     openExternal:async url=>opened.push(url),onChange:s=>win.webContents.send('updates:changed',s)});
   registerUpdateIPC(ipcMain,()=>service,e=>!!win && e.sender===win.webContents && e.senderFrame===win.webContents.mainFrame);
   win=new BrowserWindow({show:false,webPreferences:{contextIsolation:true,nodeIntegration:false,
@@ -35,6 +45,7 @@ app.whenReady().then(async()=>{
   assert.equal(result.initial.currentVersion,'0.1.1');assert.equal(result.checked.status,'available');
   assert.ok(result.events.includes('checking'));assert.ok(result.events.includes('available'));
   assert.equal(result.final.autoCheck,false);
+  assert.equal(result.downloaded.download.status,'ready');assert.equal(result.installed.download.status,'ready');assert.equal(installCalls,1);
   assert.deepEqual(opened,['https://github.com/InfiniteLin/LitHub/releases/tag/v0.1.2']);
   console.log('PASS real Electron preload, trusted-frame IPC, native networking and state events');
 }).catch(e=>{console.error(e);process.exitCode=1;}).finally(()=>{

@@ -11,7 +11,7 @@ const sandbox = {
     webContents: { executeJavaScript: () => { scriptReads++; throw Error('unexpected renderer read'); } } },
   screen: { getDisplayMatching: () => ({ scaleFactor: 2 }) },
   net: { fetch: async (url, options) => { requests.push({ url, options }); return { ok: true, json: async () => body }; } },
-  SIDECAR_PORT: 8130, sidecarReady: true, AbortSignal,
+  SIDECAR_PORT: 8130, SIDECAR_INSTANCE: 'owner-instance', sidecarReady: true, AbortSignal,
   webAiVisible: false, webAiView: null,
 };
 vm.runInNewContext(source.slice(source.indexOf('function cssToPhysical('), source.indexOf('/* ---------------- 生命周期')), sandbox);
@@ -26,6 +26,7 @@ payload = JSON.parse(requests.at(-1).options.body);
 assert.equal(payload.x, 20, 'invalid DPR falls back to host monitor');
 body = { ok: false, error: 'native close failed' };
 const result = await handlers.get('browser:close')();
+assert.equal(requests.at(-1).options.headers['X-LitHub-Instance'], 'owner-instance');
 assert.equal(result.ok, false);
 assert.equal(result.error, 'native close failed');
 console.log('PASS Electron DPR conversion, session identity, timeouts and native error propagation');

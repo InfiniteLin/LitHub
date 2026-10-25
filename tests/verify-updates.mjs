@@ -44,13 +44,16 @@ try {
   await send('Network.setBlockedURLs',{urls:['https://*']});
   await send('Emulation.setDeviceMetricsOverride',{width:1400,height:1000,deviceScaleFactor:1,mobile:false});
   await send('Page.addScriptToEvaluateOnNewDocument',{source:`
-    window.updateSnapshot={currentVersion:'0.1.1',autoCheck:true,status:'idle',revision:1,checkedAt:0,release:null,hasUpdate:false};
+    window.updateSnapshot={currentVersion:'0.1.1',autoCheck:true,status:'idle',revision:1,checkedAt:0,release:null,hasUpdate:false,canInstall:true,download:{status:'idle'}};
     window.updateListener=null;window.updateOpened=0;window.updateSaved=[];
     window.emitUpdate=patch=>{Object.assign(updateSnapshot,patch,{revision:updateSnapshot.revision+1});updateListener?.({...updateSnapshot});delete updateSnapshot.notify;};
     window.lithub={updates:{getState:async()=>({...updateSnapshot}),
       onChange:fn=>{updateListener=fn;return()=>{updateListener=null;}},
       check:()=>new Promise(resolve=>{emitUpdate({status:'checking',error:''});window.finishCheck=patch=>{emitUpdate(patch);resolve({...updateSnapshot});};}),
       setAutoCheck:async enabled=>{updateSaved.push(enabled);emitUpdate({autoCheck:enabled});return {...updateSnapshot};},
+      download:async()=>{emitUpdate({download:{status:'downloading',received:40,total:100,version:'0.1.2'}});return {...updateSnapshot};},
+      cancelDownload:async()=>{emitUpdate({download:{status:'idle'}});return {...updateSnapshot};},
+      install:async()=>{window.updateInstalled=true;return {...updateSnapshot};},
       openRelease:async()=>{updateOpened++;return {ok:true};}}};
   `});
   await send('Page.navigate',{url:`http://127.0.0.1:${port}/#/settings`});
@@ -64,6 +67,17 @@ try {
   await check('remote HTML stays inert text',`!document.querySelector('.update-notes img') && !window.noteExecuted && document.querySelector('.update-notes').textContent.includes('<img')`);
   await evaluate(`document.querySelector('[data-action="updates-open"]').click()`);
   await until('download action reaches desktop bridge',`updateOpened===1`);
+  await evaluate(`document.querySelector('[data-action="updates-download"]').click()`);
+  await until('in-app download shows progress and prevents duplicate actions',`document.querySelector('.update-download progress')?.value===40 && document.querySelector('[data-action="updates-check"]').disabled && document.querySelector('[data-action="updates-download"]').disabled`);
+  await evaluate(`document.querySelector('[data-action="updates-cancel"]').click()`);
+  await until('cancel restores download action',`!document.querySelector('.update-download') && !document.querySelector('[data-action="updates-download"]').disabled`);
+  await evaluate(`emitUpdate({download:{status:'ready',version:'0.1.2'}})`);
+  await until('verified download offers restart installation',`document.querySelector('[data-action="updates-install"]')?.textContent==='重启并安装'`);
+  await evaluate(`document.querySelector('[data-action="updates-install"]').click()`);
+  await until('install reaches IPC bridge',`window.updateInstalled===true`);
+  await evaluate(`emitUpdate({download:{status:'error',error:'安装包校验失败，请重新下载。'}})`);
+  await until('verification failure offers fresh download',`document.querySelector('.update-warning')?.textContent.includes('校验失败') && document.querySelector('[data-action="updates-download"]').textContent==='重新下载'`);
+  await evaluate(`emitUpdate({download:{status:'idle'}})`);
   await evaluate(`document.querySelector('#set-update-auto').click()`);
   await until('auto-check preference persists immediately',`updateSaved.at(-1)===false && !document.querySelector('#set-update-auto').checked && !document.querySelector('#set-update-auto').disabled`);
   await evaluate(`document.querySelector('[data-action="updates-check"]').click();finishCheck({status:'error',error:'无法连接 GitHub，请检查网络后重试。'})`);

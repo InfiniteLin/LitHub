@@ -1443,6 +1443,13 @@ const noteState = {
 const noteDrafts = NoteDraftStore.create({ storage:localStorage,
   save:(paperId, noteId, data)=>LithubAPI.updateNote(paperId, noteId, data) });
 const activeNoteDraft = () => noteDrafts.get(noteState.paperId, noteState.currentId);
+window.prepareForUpdate = async () => {
+  try {
+    if (typeof pdfStorageState !== "undefined" && pdfStorageState.busy) return false;
+    await flushNoteEditor();
+    return await noteDrafts.flushAll();
+  } catch { return false; }
+};
 const noteMatches = e => e && noteState.paperId === e.paperId && noteState.currentId === e.id && NoteEditor.isMounted();
 const noteBookmarks = new Map();
 function noteBookmark(paperId, noteId, value) {
@@ -4211,6 +4218,9 @@ document.addEventListener("click", (e) => {
 
     /* 设置 */
     case "updates-check": void AppUpdates.check(); break;
+    case "updates-download": void AppUpdates.download(); break;
+    case "updates-cancel": void AppUpdates.cancelDownload(); break;
+    case "updates-install": void AppUpdates.install(); break;
     case "updates-open":
       AppUpdates.openRelease().then(result => { if (!result.ok) toast(esc(result.error), 'err'); });
       break;

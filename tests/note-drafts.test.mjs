@@ -43,4 +43,13 @@ drafts.discard(entry); assert.equal(drafts.get('p1','n1'),undefined);
 const blocked=context.factory.create({storage:{getItem(){},setItem(){throw Error('quota')},removeItem(){}},save:async()=>original});
 const quota=blocked.open('p1',original); blocked.change(quota,{title:'x',content:'x'});
 assert.equal(quota.storageError,true,'storage failure is surfaced');
+{
+const all=context.factory.create({storage,save:async(p,n,data)=>({id:n,...data})});
+const first=all.open('flush',{...original,id:'one'}),second=all.open('flush',{...original,id:'two'});
+all.change(first,{title:'one',content:'saved on update'});all.change(second,{title:'two',content:'also saved'});
+assert.equal(await all.flushAll(),true);assert.equal(first.dirty,false);assert.equal(second.dirty,false);
+const failed=context.factory.create({storage,save:async()=>{throw Error('offline')}});
+failed.change(failed.open('flush',original),{title:'fail',content:'keep draft'});
+assert.equal(await failed.flushAll(),false,'failed background note blocks update restart');
+}
 console.log('PASS note queues, late responses, durable drafts, retry, owner isolation and quota handling');

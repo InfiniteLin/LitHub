@@ -90,6 +90,15 @@ class SessionTests(unittest.TestCase):
         def unexpected_factory(): self.fail('shutdown must not launch another browser')
         self.assertTrue(session.open(unexpected_factory, '', 1, (0, 0, 1, 1))['cancelled'])
 
+    def test_normal_close_does_not_mark_application_stopping(self):
+        session = BrowserSession()
+        self.assertTrue(session.open(FakeBrowser, '', 1, (0, 0, 1, 1))['ok'])
+        self.assertTrue(session.close()['ok'])
+        self.assertFalse(session.status()['stopping'])
+        self.assertTrue(session.open(FakeBrowser, '', 1, (0, 0, 1, 1))['ok'])
+        session.shutdown()
+        self.assertTrue(session.status()['stopping'])
+
 
 class WindowSelectionTests(unittest.TestCase):
     def select(self, windows, cancel=False, existed=(), hidden=False):

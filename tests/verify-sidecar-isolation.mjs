@@ -11,9 +11,10 @@ const { selectSidecarPort, waitForOwnedSidecar } = require('../electron/sidecar-
 const temporary = mkdtempSync(path.join(tmpdir(), 'lithub-instance-'));
 writeFileSync(path.join(temporary, 'library.json'), JSON.stringify({ papers: {}, tasks: {}, settings: {} }));
 const port = await selectSidecarPort(), instance = randomUUID();
-const child = spawn(process.platform === 'win32' ? 'python' : 'python3', [
-  '-m', 'uvicorn', 'main:app', '--host', '127.0.0.1', '--port', String(port),
-], {
+const pythonArgs = process.env.LITHUB_TEST_SITE_PACKAGES
+  ? ['-B', '-c', `import sys;sys.path.insert(0,${JSON.stringify(path.resolve(process.env.LITHUB_TEST_SITE_PACKAGES))});import uvicorn;uvicorn.run('main:app',host='127.0.0.1',port=${port})`]
+  : ['-B', '-m', 'uvicorn', 'main:app', '--host', '127.0.0.1', '--port', String(port)];
+const child = spawn(process.env.LITHUB_TEST_PYTHON || (process.platform === 'win32' ? 'python' : 'python3'), pythonArgs, {
   cwd: path.resolve('backend'), windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'],
   env: { ...process.env, LITHUB_DATA_DIR: temporary, LITHUB_PROGRAM_DIR: temporary,
     LITHUB_PDF_DEFAULT_DIR: path.join(temporary, 'pdfs'), LITHUB_INSTANCE_ID: instance,
@@ -34,6 +35,15 @@ try {
   const api = await (await fetch(baseURL + '/openapi.json')).json();
   assert.ok(api.paths['/api/tasks/{tid}/cancel']);
   assert.equal((await fetch(baseURL + '/api/tasks/missing/cancel', { method: 'POST' })).status, 404);
+  for (const headers of [{}, { 'X-LitHub-Instance': 'different-application' }]) {
+    assert.equal((await fetch(baseURL + '/api/browser/shutdown', { method: 'POST', headers })).status, 403);
+    assert.equal((await (await fetch(baseURL + '/api/browser/status')).json()).stopping, false);
+  }
+  assert.equal((await fetch(baseURL + '/api/browser/shutdown', {
+    method: 'POST', headers: { 'X-LitHub-Instance': instance },
+  })).status, 200);
+  assert.equal((await (await fetch(baseURL + '/api/browser/status')).json()).stopping, true);
+  console.log('PASS foreign/legacy shutdown cannot poison the browser session; only the owner can stop it');
   console.log(`PASS real backend at ${baseURL}: own instance, workspace frontend and cancellation endpoint`);
 } catch (error) {
   throw new Error(error.message + '\n' + logs);

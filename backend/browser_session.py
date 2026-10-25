@@ -116,6 +116,7 @@ class BrowserSession:
         with self._lock:
             browser = self._browser
             result = {"active": bool(browser and browser.alive()), "busy": self._busy,
+                      "stopping": self._stopping,
                       "session_id": self._session_id, "last_bounds_seq": self._seq,
                       "bounds_stale_dropped": self._stale}
             if browser:

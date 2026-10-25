@@ -16,7 +16,7 @@ from pathlib import Path
 from urllib.parse import quote
 from typing import Literal
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, Header, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -484,7 +484,9 @@ def cancel_translation(tid: str):
 
 
 @app.get("/api/tasks")
-def tasks():
+def tasks(active_only: bool = False):
+    if active_only:
+        return [t for t in store.list_tasks(limit=None) if t["status"] in {"queued", "running"}]
     return store.list_tasks()
 
 
@@ -1142,7 +1144,11 @@ def browser_embed_hide():
 
 
 @app.post("/api/browser/shutdown")
-def browser_embed_shutdown():
+def browser_embed_shutdown(x_lithub_instance: str = Header(default="")):
+    # An unrelated or legacy desktop process must never permanently stop our browser session.
+    owner = os.environ.get("LITHUB_INSTANCE_ID", "")
+    if not owner or x_lithub_instance != owner:
+        raise HTTPException(403, "只有所属应用实例可以关闭网页 AI 服务")
     try:
         return _browser_session.shutdown()
     except Exception as exc:

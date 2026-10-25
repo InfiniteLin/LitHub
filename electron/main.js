@@ -11,6 +11,8 @@ const { spawn } = require("node:child_process");
 const { createUpdateService, registerUpdateIPC } = require("./update-service");
 const { randomUUID } = require("node:crypto");
 const { selectSidecarPort, waitForOwnedSidecar } = require("./sidecar-connection");
+const { acquireDesktopInstance } = require("./desktop-instance");
+const { launchInstallerAfterExit } = require("./update-launcher");
 
 let SIDECAR_PORT;
 const SIDECAR_INSTANCE = randomUUID();
@@ -20,6 +22,8 @@ let sidecarReady = false;
 app.commandLine.appendSwitch("allow-file-access-from-files");
 
 let win = null;
+// A duplicate process must exit before starting a backend or sending any cleanup requests.
+if (!acquireDesktopInstance(app, () => win)) app.exit(0);
 let sidecar = null;
 let quitting = false;
 let updateService = null;
@@ -93,7 +97,7 @@ function startSidecar() {
 
   sidecar = spawn(
     py,
-    ["-m", "uvicorn", "main:app", "--host", "127.0.0.1", "--port", String(SIDECAR_PORT)],
+    ["-B", "-m", "uvicorn", "main:app", "--host", "127.0.0.1", "--port", String(SIDECAR_PORT)],
     { cwd, env, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] }
   );
 
@@ -538,6 +542,7 @@ async function closeBrowserSession(shutdown = false) {
     const action = shutdown ? "shutdown" : "close";
     const response = await net.fetch(`http://127.0.0.1:${SIDECAR_PORT}/api/browser/${action}`, {
       method: "POST", signal: AbortSignal.timeout(7000),
+      headers: { "X-LitHub-Instance": SIDECAR_INSTANCE },
     });
     const body = await response.json();
     return { ...body, ok: response.ok && body.ok === true };
@@ -550,6 +555,27 @@ app.whenReady().then(async () => {
   SIDECAR_PORT = await selectSidecarPort(process.env.LITHUB_API_PORT);
   updateService = createUpdateService({
     version: app.getVersion(), storageFile: path.join(app.getPath("userData"), "update-check.json"),
+    canInstall: isPackaged && process.platform === "win32",
+    downloadDirectory: path.join(app.getPath("userData"), "updates"),
+    install: async file => {
+      if (quitting || !win || win.isDestroyed()) throw Error("窗口正在关闭，请重新打开程序后更新。");
+      const choice = await dialog.showMessageBox(win, { type: "question", buttons: ["重启并安装", "稍后"],
+        defaultId: 1, cancelId: 1, title: "安装更新", message: "现在重启并安装新版本？",
+        detail: "将保存笔记并退出软件，安装完成后自动重新打开。文献、PDF 和设置会保留。" });
+      if (choice.response !== 0) return false;
+      const prepared = await win.webContents.executeJavaScript("window.prepareForUpdate ? window.prepareForUpdate() : false");
+      if (!prepared) throw Error("笔记尚未保存或有操作正在进行，请保存后重试。");
+      const response = await net.fetch(`http://127.0.0.1:${SIDECAR_PORT}/api/tasks?active_only=true`,
+        { signal: AbortSignal.timeout(5000) });
+      if (!response.ok) throw Error("无法确认翻译任务状态，请稍后重试。");
+      const tasks = await response.json();
+      if (!Array.isArray(tasks) || tasks.length) throw Error("请先等待翻译完成，或在任务队列中取消翻译，再安装更新。");
+      // NSIS handles replacing this installation and restarting it (--force-run).
+      // Use spawn arguments directly so spaces/Chinese paths never pass through a shell.
+      await launchInstallerAfterExit(file, app.getPath("exe"));
+      app.quit();
+      return true;
+    },
     fetch: (url, options) => net.fetch(url, options), openExternal: url => shell.openExternal(url),
     onChange: snapshot => {
       if (win && !win.isDestroyed() && !win.webContents.isDestroyed()) win.webContents.send("updates:changed", snapshot);

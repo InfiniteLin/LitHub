@@ -19,6 +19,9 @@ contextBridge.exposeInMainWorld("lithub", {
     check: () => ipcRenderer.invoke("updates:check"),
     setAutoCheck: enabled => ipcRenderer.invoke("updates:auto-check", enabled),
     openRelease: () => ipcRenderer.invoke("updates:open-release"),
+    download: () => ipcRenderer.invoke("updates:download"),
+    cancelDownload: () => ipcRenderer.invoke("updates:cancel-download"),
+    install: () => ipcRenderer.invoke("updates:install"),
     onChange: callback => {
       const listener = (_event, snapshot) => callback(snapshot);
       ipcRenderer.on("updates:changed", listener);

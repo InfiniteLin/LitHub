@@ -3,7 +3,7 @@
  *
  * 产物结构（安装后）：
  *   安装目录/
- *     文枢 LitHub.exe            ← 双击这个
+ *     LitHub.exe                 ← 双击这个
  *     resources/
  *       app.asar                 ← Electron 主进程 + 前端
  *       backend/                 ← FastAPI 代码（sidecar）
@@ -11,19 +11,29 @@
  *       python/                  ← 内置 Python 运行时 + 全部依赖
  *   元数据：%APPDATA%\文枢 LitHub\data；新库 PDF 默认放在安装目录的 pdfs/（不可写时回退）
  *
- * 为什么把 Python 运行时整个塞进 resources：
- *   sidecar 是 Python + 一堆 C 扩展（PyMuPDF/onnxruntime/torch…），
- *   冻结成单 exe 试过（PyInstaller），在本机静默失败且 pdf2zh 的 torch
- *   依赖极难打，维护成本远高于直接带一份便携运行时。
- *   代价是安装包变大，换来的是「装上就能用，不需要用户装 Python」。
+ * Python 运行时先经过 build/prepare-runtime.py 精简和验证，再写入 resources。
+ *   sidecar 和 pdf2zh 依赖 PyMuPDF、ONNX Runtime、OpenCV 等原生扩展，
+ *   保留便携 Python 能保证安装后直接使用；测试、pip、缓存不进入发布包。
  * ============================================================ */
 const path = require("node:path");
+const { execFileSync } = require("node:child_process");
 
 /** @type {import('electron-builder').Configuration} */
 module.exports = {
   appId: "com.lithub.app",
   productName: "文枢 LitHub",
+  // nsisunz does not reliably decode Unicode ZIP entry names on Windows.
+  // Keep the payload executable ASCII while retaining the Chinese display/shortcut name.
+  executableName: "LitHub",
+  artifactName: "文枢 LitHub Setup ${version}.${ext}",
   copyright: "Copyright © 2026 LitHub",
+
+  // Stage and verify a slim runtime without modifying the pip-managed dependency source.
+  beforePack: async () => {
+    execFileSync(path.join(__dirname, "build/python/python.exe"),
+      ["-B", path.join(__dirname, "build/prepare-runtime.py")],
+      { cwd: __dirname, stdio: "inherit", windowsHide: true });
+  },
 
   // 只打我们自己的代码。
   // ⚠️ 这里必须把 electron/ 显式列进来：electron-builder 默认只从 package.json
@@ -44,7 +54,7 @@ module.exports = {
   extraResources: [
     { from: "backend", to: "backend", filter: ["**/*", "!data/**", "!__pycache__/**", "!*.log"] },
     { from: "frontend", to: "frontend" },
-    { from: "build/python", to: "python" },
+    { from: "build/runtime", to: "python", filter: ["**/*", "!.lithub-runtime-stage"] },
   ],
 
   // 安装包图标 / 卸载图标
@@ -57,6 +67,10 @@ module.exports = {
   },
 
   nsis: {
+    // ZIP extracts directly to the destination; 7z stages then copies thousands of files.
+    // Both options are required by electron-builder 26.15.x to keep archive/decoder formats aligned.
+    useZip: true,
+    differentialPackage: false,
     include: "build/preserve-pdfs.nsh",
     oneClick: false,              // 给用户选安装目录的机会
     perMachine: false,            // 只给当前用户装（不需要管理员）
@@ -80,8 +94,8 @@ module.exports = {
     buildResources: "electron",
   },
 
-  // 更新检查直接读取公开 GitHub Releases，并引导用户下载安装包。
-  // 暂不生成 electron-updater 的下载/安装元数据，也不自动上传产物。
+  // 应用内更新使用 GitHub Release 附件及其 SHA-256 digest 下载完整安装包。
+  // 无需 electron-updater 元数据；构建不会自动上传产物。
   publish: null,
 
   // asar 只包 JS 代码；Python/前端走 extraResources（在 asar 外面，
@@ -89,7 +103,7 @@ module.exports = {
   asar: true,
   asarUnpack: [],
 
-  // 压缩算法：maximum 会让 800MB 的 python 目录打好几分钟，normal 足够
+  // ZIP normal balances payload size and extraction speed; avoid maximum's extra compression passes.
   compression: "normal",
   removePackageScripts: true,
 };

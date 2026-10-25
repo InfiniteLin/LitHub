@@ -14,6 +14,7 @@
 #   pwsh -File build/rebuild-runtime.ps1 -Force     # 忽略缓存，全量重装
 #
 # 产物：build/python/（约 640 MB）
+# 发布副本：build/runtime/（自动精简并验证；安装包只使用这个副本）
 # 注意：不需要管理员权限；全程只写 build/ 目录。
 
 param(
@@ -84,8 +85,8 @@ $pkgs = @(
 python -m pip install --target $SitePackages --no-warn-script-location --no-compile --upgrade @pkgs
 if ($LASTEXITCODE -ne 0) { throw "依赖安装失败" }
 
-# ---------- 5. 瘦身 ----------
-Write-Step "清理 __pycache__ / 测试目录"
+# ---------- 5. 清理依赖源中的缓存 / 未使用的图形界面 ----------
+Write-Step "清理 __pycache__ / 图形界面依赖"
 Get-ChildItem $SitePackages -Recurse -Directory -Filter "__pycache__" -ErrorAction SilentlyContinue |
     Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
 # gradio 只有 pdf2zh 的图形界面用，命令行流程不需要；删掉能省 150MB
@@ -98,12 +99,18 @@ foreach ($junk in @("gradio", "gradio_client")) {
 # 少了这步，装出「都能装上但一用就 ImportError」的组合也不会被发现。
 Write-Step "冒烟测试"
 $py = Join-Path $PyDir "python.exe"
-& $py -c "import fastapi, uvicorn, pydantic, pymupdf, pypdf, openai, multipart; print('sidecar deps OK')"
+& $py -B -c "import fastapi, uvicorn, pydantic, pymupdf, pypdf, openai, multipart; print('sidecar deps OK')"
 if ($LASTEXITCODE -ne 0) { throw "sidecar 依赖导入失败" }
 
-& $py (Join-Path $Root "backend\pdf2zh_cli.py") --help | Out-Null
+& $py -B (Join-Path $Root "backend\pdf2zh_cli.py") --help | Out-Null
 if ($LASTEXITCODE -ne 0) { throw "pdf2zh 导入失败（版本组合有问题，见脚本顶部的说明）" }
 Write-Host "pdf2zh OK" -ForegroundColor Green
+
+# ---------- 7. 生成发布用精简运行时 ----------
+# 保留 pip 管理的依赖源；测试目录、pip、缓存只从发布副本中移除。
+Write-Step "生成并验证精简运行时 build/runtime"
+& $py -B (Join-Path $PSScriptRoot "prepare-runtime.py")
+if ($LASTEXITCODE -ne 0) { throw "精简运行时验证失败" }
 
 $size = (Get-ChildItem $PyDir -Recurse -File | Measure-Object Length -Sum).Sum / 1MB
 Write-Host ("==> 完成：{0} ({1:N0} MB)" -f $PyDir, $size) -ForegroundColor Green

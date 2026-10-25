@@ -47,7 +47,10 @@ with tempfile.TemporaryDirectory(prefix='lithub-translation-') as temporary, con
         for _ in range(60):
             store.add_task('another-paper')
         assert start()['id'] == first['id'], 'dedup must search beyond the latest 50 tasks'
+        active = client.get('/api/tasks?active_only=true').json()
+        assert len(active) == 61 and first['id'] in {t['id'] for t in active}, 'update guard must inspect all active tasks'
         assert cancel(first)['status'] == 'cancelled'
+        assert first['id'] not in {t['id'] for t in client.get('/api/tasks?active_only=true').json()}
         assert cancel(first)['status'] == 'cancelled'
         with patch.object(translate.subprocess, 'Popen') as popen:
             translate._run_one(first['id'])

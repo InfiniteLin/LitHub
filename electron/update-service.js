@@ -2,6 +2,7 @@
 
 const fs = require("node:fs");
 const path = require("node:path");
+const { installerAsset, createInstallerUpdate } = require("./installer-update");
 const RELEASES_URL = "https://github.com/InfiniteLin/LitHub/releases";
 const API_URL = "https://api.github.com/repos/InfiniteLin/LitHub/releases/latest";
 const DAY = 24 * 60 * 60 * 1000;
@@ -46,12 +47,14 @@ function normalizeRelease(data) {
     name: typeof data.name === "string" ? data.name.slice(0, 200) : data.tag_name,
     notes: typeof data.body === "string" ? data.body.slice(0, 20000) : "",
     publishedAt: Number.isFinite(date) ? new Date(date).toISOString() : "",
-    // Ignore all remotely supplied links, including html_url and asset URLs.
+    installer: installerAsset(data),
+    // Derive all URLs from the fixed repository rather than trusting remote links.
     url: `${RELEASES_URL}/tag/${encodeURIComponent(data.tag_name)}`,
   };
 }
 
 function createUpdateService({ version, storageFile, fetch, openExternal, onChange = () => {},
+  install, downloadDirectory = path.join(path.dirname(storageFile), "updates"), canInstall = false,
   now = Date.now, timers = globalThis }) {
   if (!parseVersion(version)) throw Error("当前程序版本号格式无效");
   let prefs = { autoCheck: true, lastAttemptAt: 0, checkedAt: 0, blockedUntil: 0, notifiedVersion: "", release: null };
@@ -72,6 +75,12 @@ function createUpdateService({ version, storageFile, fetch, openExternal, onChan
   } catch { /* Missing/corrupt preferences use defaults; the library is untouched. */ }
   let status = baseStatus(), error = "", settingsError = "", revision = 0;
   let inFlight = null, controller = null, startupTimer = null, interval = null, stopped = false;
+  const installer = createInstallerUpdate({ directory: downloadDirectory, fetch, install,
+    enabled: canInstall, onChange: () => emit(), resolveRelease: async () => {
+      await check();
+      if (status !== "available") throw Error(error || "暂无可安装的新版本。");
+      return prefs.release;
+    } });
 
   function baseStatus() {
     return prefs.checkedAt && prefs.release ? (compareVersions(prefs.release.version, version) > 0 ? "available" : "up-to-date") : "idle";
@@ -79,7 +88,8 @@ function createUpdateService({ version, storageFile, fetch, openExternal, onChan
   function getState() {
     return { currentVersion: version, autoCheck: prefs.autoCheck, status, error, settingsError,
       checkedAt: prefs.checkedAt, lastAttemptAt: prefs.lastAttemptAt, release: prefs.release && { ...prefs.release },
-      hasUpdate: !!prefs.release && compareVersions(prefs.release.version, version) > 0, revision };
+      hasUpdate: !!prefs.release && compareVersions(prefs.release.version, version) > 0, revision,
+      canInstall, download: installer.getState() };
   }
   function emit(notify = false) {
     revision++;
@@ -166,9 +176,12 @@ function createUpdateService({ version, storageFile, fetch, openExternal, onChan
     startupTimer.unref?.(); interval.unref?.();
   }
   function stop() {
-    stopped = true; timers.clearTimeout(startupTimer); timers.clearInterval(interval); controller?.abort();
+    stopped = true; timers.clearTimeout(startupTimer); timers.clearInterval(interval); controller?.abort(); installer.stop();
   }
-  return { getState, check, setAutoCheck, openRelease, start, stop };
+  return { getState, check, setAutoCheck, openRelease, start, stop,
+    download: async () => { if (stopped) return getState(); await installer.download(); return getState(); },
+    cancelDownload: () => { installer.cancel(); return getState(); },
+    install: async () => { await installer.install(); return getState(); } };
 }
 
 function registerUpdateIPC(ipcMain, getService, trusted) {
@@ -182,6 +195,9 @@ function registerUpdateIPC(ipcMain, getService, trusted) {
   ipcMain.handle("updates:check", e => service(e).check());
   ipcMain.handle("updates:auto-check", (e, enabled) => service(e).setAutoCheck(enabled));
   ipcMain.handle("updates:open-release", e => service(e).openRelease());
+  ipcMain.handle("updates:download", e => service(e).download());
+  ipcMain.handle("updates:cancel-download", e => service(e).cancelDownload());
+  ipcMain.handle("updates:install", e => service(e).install());
 }
 
 module.exports = { createUpdateService, registerUpdateIPC, compareVersions, normalizeRelease };

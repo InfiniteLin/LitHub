@@ -75,7 +75,11 @@ const NoteDraftStore = (() => {
       e.deleted = true; entries.delete(e.key);
       try { storage.removeItem(e.key); } catch {}
     }
-    return { open, change, save:enqueue, discard, version:()=>clock, get:(p,n)=>entries.get(key(p,n)) };
+    async function flushAll() {
+      const results = await Promise.all([...entries.values()].filter(e=>!e.deleted).map(enqueue));
+      return results.every(r=>r.ok) && [...entries.values()].every(e=>!e.dirty && !e.pending);
+    }
+    return { open, change, save:enqueue, flushAll, discard, version:()=>clock, get:(p,n)=>entries.get(key(p,n)) };
   }
   return { create };
 })();

@@ -8,6 +8,8 @@ __pycache__/
 # 打包产物：内置 Python 运行时（约 640 MB，由 build/rebuild-runtime.ps1 生成）
 # 不入库 —— 它全是第三方 wheel 解出来的二进制，重建一次就有了。
 build/python/
+build/runtime/
+build/runtime-report.json
 
 # pip 装依赖时的临时目录（会建在仓库根，容易漏）
 # 只锚定仓库根 + 前缀，避免误伤 tests/template.html、frontend/js/tmp.js 这类正常文件

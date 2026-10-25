@@ -73,7 +73,7 @@ def _pdf2zh_cmd():
     cli = here / "pdf2zh_cli.py"
     if cli.exists() and _module_available("pdf2zh.pdf2zh"):
         # 用当前这个解释器（打包版就是内置运行时）跑入口脚本
-        return [sys.executable, str(cli)]
+        return [sys.executable, "-B", str(cli)]
 
     exe = shutil.which("pdf2zh")
     if exe:
