@@ -5633,9 +5633,21 @@ async function pollTasks() {
         p.zhUrl = `${API_BASE}/api/papers/${p.id}/file?kind=translated`;
         p.compareUrl = `${API_BASE}/api/papers/${p.id}/file?kind=compare`;
         toast("翻译完成，已生成中文对照版");
-        renderReader(p.id);
+        // 原文文件没有变化；保留现有 PDF 实例、选区和滚动位置。
+        if (state.reader.mode === "en") {
+          const btn = $('.reader-bar [data-action="translate"]');
+          if (btn) { btn.innerHTML = `${I("check", 15)}已翻译`; btn.classList.remove("btn-primary"); }
+        } else {
+          renderReader(p.id);
+        }
       } else if (t && (t.status === "running" || t.status === "queued")) {
-        if (!$("#zh-pct")) { renderReader(p.id); } // 从空态切入翻译中状态
+        // 只有译文面板需要从空态切入进度态；原文/对照模式没有 zh-pct。
+        if ($("#pane-zh") && !$("#zh-pct")) { renderReader(p.id); }
+        const translateBtn = $('.reader-bar [data-action="translate"]');
+        if (translateBtn && !translateBtn.querySelector('.spin')) {
+          translateBtn.innerHTML = `${I("refresh", 15)}<span class="spin"></span>`;
+          translateBtn.classList.remove("btn-primary");
+        }
         const pct = $("#zh-pct"), note = $("#zh-note"), bar = $("#zh-progress span"), btn = $('.reader-bar [data-action="translate"] .spin');
         if (pct) pct.textContent = (t.progress || 0) + "%";
         if (note) note.textContent = t.note || "";

@@ -1,0 +1,25 @@
+{
+  "name": "lithub-promo",
+  "version": "1.0.0",
+  "private": true,
+  "description": "文枢 LitHub 软件宣传动画（Remotion）",
+  "scripts": {
+    "studio": "node scripts/remotion.mjs studio src/index.ts",
+    "typecheck": "tsc --noEmit",
+    "audio": "node scripts/make-audio.mjs",
+    "render": "node scripts/make-audio.mjs && node scripts/remotion.mjs render src/index.ts LitHubIntro out/lithub-intro.mp4 --codec=h264 --pixel-format=yuv420p --crf=17 --concurrency=4",
+    "poster": "node scripts/remotion.mjs still src/index.ts LitHubIntro out/lithub-poster.png --frame=600"
+  },
+  "dependencies": {
+    "@remotion/cli": "4.0.538",
+    "@remotion/google-fonts": "4.0.538",
+    "remotion": "4.0.538",
+    "react": "19.1.1",
+    "react-dom": "19.1.1"
+  },
+  "devDependencies": {
+    "@types/react": "19.1.10",
+    "@types/react-dom": "19.1.7",
+    "typescript": "5.9.2"
+  }
+}

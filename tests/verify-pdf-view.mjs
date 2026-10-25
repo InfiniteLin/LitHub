@@ -112,6 +112,38 @@ try {
   `);
   await until('real PDF bitmap and text layer render', `pane()?._pdf?.metas[0]?.sides[0].rendered && document.querySelector('.textLayer span')`);
   await evaluate(`
+    (async () => {
+    window.pollingOriginalLive = LithubAPI.live;
+    window.pollingOriginalTasks = LithubAPI.tasks;
+    window.pollingPdf = pane()._pdf;
+    window.pollingCanvas = side(0).canvas;
+    window.pollingTask = { paper_id: testPaper.id, status: 'queued', progress: 0 };
+    LithubAPI.live = true;
+    LithubAPI.tasks = async () => [{ ...pollingTask }];
+    testPaper.translated = false;
+    pane().scrollTop = 250;
+    window.pollingScroll = pane().scrollTop;
+    await pollTasks();
+    for (const progress of [10, 20, 50, 90]) {
+      Object.assign(pollingTask, {status: 'running', progress});
+      await pollTasks();
+    }
+    })()
+  `);
+  await check('translation polling preserves original PDF, canvas and scroll', `pane()._pdf===pollingPdf
+    && side(0).canvas===pollingCanvas && !pollingPdf.dead && pane().scrollTop===pollingScroll
+    && document.querySelector('.reader-bar [data-action="translate"] .spin').textContent==='翻译中 90%'`);
+  await evaluate(`(async () => { pollingTask.status='done'; await pollTasks(); await pollTasks(); })()`);
+  await check('translation completion preserves original PDF and updates button', `testPaper.translated
+    && pane()._pdf===pollingPdf && side(0).canvas===pollingCanvas && !pollingPdf.dead
+    && pane().scrollTop===pollingScroll
+    && document.querySelector('.reader-bar [data-action="translate"]').textContent==='已翻译'`);
+  await evaluate(`
+    testPaper.zhUrl='/fixture.pdf'; testPaper.compareUrl='/wide.pdf';
+    state.liveTasks=[];
+    LithubAPI.live=pollingOriginalLive; LithubAPI.tasks=pollingOriginalTasks;
+  `);
+  await evaluate(`
     window.renamePdf = pane()._pdf;
     window.renameCanvas = side(0).canvas;
     window.wasLive = LithubAPI.live;
