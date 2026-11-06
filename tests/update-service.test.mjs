@@ -17,7 +17,7 @@ function make(options = {}) {
   let time = Date.UTC(2026, 9, 25), response = async () => reply();
   const requests = [], events = [], opened = [];
   const storageFile = options.storageFile || path.join(root, `${seq++}.json`);
-  const service = createUpdateService({ version: options.version || '0.1.1', storageFile,
+  const service = createUpdateService({ version: options.version || '0.1.1', storageFile, useManifest:false,
     fetch: async (url, opts) => { requests.push({ url, opts }); return response(url, opts); },
     openExternal: async url => { opened.push(url); }, now: () => time,
     onChange: state => events.push(state), ...options });

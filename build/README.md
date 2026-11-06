@@ -18,7 +18,7 @@ Python 后端与翻译进程使用 `-B`，避免在安装目录重新生成大�
 
 安装器采用 `useZip: true` 与 `differentialPackage: false`，直接解压到安装目录。
 两个选项必须同时保留，避免压缩格式与解压器不一致。项目目前使用完整安装包更新，
-通过现有 GitHub Release API 下载完整安装包，无需 `latest.yml` 或差分包。
+检查更新优先读取 Release 的 `update.json`，失败时回退 GitHub API；无需 `latest.yml` 或差分包。
 升级和卸载继续通过 `preserve-pdfs.nsh` 保留用户 PDF。
 
 发布正式版本时，tag 使用 `v主版本.次版本.修订版本`，并上传构建生成的
@@ -86,10 +86,20 @@ ZIP 顶层目录必须是 `LitHub-版本-win-x64/`，包含完整程序与 `lith
 不要将运行后的用户文件夹混入打包目录。打包脚本拒绝 PDF、下载缓存和本地文献库。
 
 运行时以 NSIS 卸载程序是否存在区分安装版与免安装版，兼容没有标记的旧 ZIP。
-v0.2.4 起仅上传 ZIP 与校验文件；安装版用户的新更新器会在缺少 EXE 时使用 ZIP 原位更新，保留卸载入口和原目录。免安装版缺少 ZIP 时不会转而安装 EXE。
+v0.2.4 起仅上传 ZIP、`SHA256SUMS.txt` 与 `update.json`；安装版用户的新更新器会在缺少 EXE 时使用 ZIP 原位更新，保留卸载入口和原目录。免安装版缺少 ZIP 时不会转而安装 EXE。
 `npm run dist:installer -- --publish never` 仅供重建 v0.2.3 等历史安装包，正常发布不使用。
 ZIP 替换助手使用临时目录中的独立 Python 标准库运行时，不锁住原程序的 EXE 或 DLL。
 程序目录中的 `.lithub-update-*` 是更新事务目录：启动确认成功前保留旧文件；
 如遇断电或恢复失败，请保留其中的 `backup/` 和 `plan.json`，不要自行清理。
 目前支持替换失败和启动确认超时后的回滚，不保证断电期间的多文件替换具有原子性。
 文献元数据、PDF 和设置保持原来的存储方式，免安装不等于所有数据都随程序移动。
+
+## 公开更新清单
+
+`npm run dist` / `dist:zip` 会生成 ZIP、SHA256SUMS.txt、update.json，三个文件必须一起上传。
+更新器优先读取固定仓库的 `releases/latest/download/update.json`，不消耗 REST API 的匿名配额；
+清单缺失或不可访问时才回退 API。API 被限流时遵守等待时间，手动检查仍可读取公开清单。
+普通 HTTP 403 不再一律解释为限流，只有 429 或带限流响应头的 403 才设置等待状态。
+清单包含 schemaVersion、版本与 ZIP 名称/大小/SHA-256；客户端限制清单大小及重定向域名，
+下载链接始终从固定仓库与校验过的版本、文件名生成，不接受清单提供的任意下载 URL。
+覆盖历史附件时，需要同时更新清单中的哈希；清单不能指向旧 ZIP 的校验值。

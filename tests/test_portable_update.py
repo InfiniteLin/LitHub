@@ -99,6 +99,8 @@ class PortableTests(TestCase):
             file.write_bytes(b'MZfixture' if name=='LitHub.exe' else b'fixture')
         (unpacked/'resources/backend/main.py').write_text('SERVICE_VERSION = "0.3.0"',encoding='utf8')
         result=builder.package_zip(unpacked,self.root/'output','0.3.0')
+        manifest=json.loads((result.parent/'update.json').read_text(encoding='utf8'))
+        self.assertEqual(manifest['release']['assets'][0]['digest'],'sha256:'+hashlib.sha256(result.read_bytes()).hexdigest())
         worker.extract(result,self.root/'extracted','0.3.0')
         self.assertTrue((self.root/'extracted/LitHub.exe').exists())
         (unpacked/'pdfs').mkdir();(unpacked/'pdfs/personal.pdf').write_bytes(b'personal')

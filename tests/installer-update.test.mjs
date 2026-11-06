@@ -133,7 +133,7 @@ try {
 
   const metadata = {...raw, draft:false, prerelease:false};
   let checks = 0, installs = 0, assetRequests = 0;
-  const service = createUpdateService({version:'0.2.0',storageFile:path.join(root,'service.json'),canInstall:true,
+  const service = createUpdateService({version:'0.2.0',storageFile:path.join(root,'service.json'),canInstall:true,useManifest:false,
     fetch:async url=>{ if(url.includes('api.github.com')) { checks++; return new Response(JSON.stringify(metadata)); } assetRequests++;return new Response(payload); },
     install:async()=>{installs++;return false;},openExternal:async()=>{throw Error('should not open browser');} });
   await service.check({automatic:true});assert.equal(assetRequests,0,'automatic checks never download installers');

@@ -27,15 +27,16 @@ app.whenReady().then(async()=>{
   const digest=createHash('sha256').update(payload).digest('hex');
   server=createServer((req,res)=>{
     if(req.url==='/asset'){res.end(payload);return;}
-    res.setHeader('Content-Type','application/json');res.end(JSON.stringify({tag_name:'v0.1.2',draft:false,prerelease:false,body:'Integration release',
-      assets:[{name:'LitHub Setup 0.1.2.exe',size:payload.length,state:'uploaded',digest:'sha256:'+digest}]}));});
+    res.setHeader('Content-Type','application/json');const metadata={tag_name:'v0.1.2',draft:false,prerelease:false,body:'Integration release',
+      assets:[{name:'LitHub Setup 0.1.2.exe',size:payload.length,state:'uploaded',digest:'sha256:'+digest}]};res.end(JSON.stringify(req.url==='/manifest'?{schemaVersion:1,release:metadata}:metadata));});
   await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
   const opened=[];let installCalls=0;
   service=createUpdateService({version:'0.1.1',storageFile:${JSON.stringify(path.join(dir,'state.json'))},
     canInstall:true,install:async()=>{installCalls++;return false;},
-    fetch:(url,options)=>{const api=url==='https://api.github.com/repos/InfiniteLin/LitHub/releases/latest';
-      if(!api)assert.ok(url.startsWith('https://github.com/InfiniteLin/LitHub/releases/download/'));
-      return net.fetch('http://127.0.0.1:'+server.address().port+(api?'/':'/asset'),options);},
+    fetch:(url,options)=>{const manifest=url==='https://github.com/InfiniteLin/LitHub/releases/latest/download/update.json';
+      const api=url==='https://api.github.com/repos/InfiniteLin/LitHub/releases/latest';
+      if(!api&&!manifest)assert.ok(url.startsWith('https://github.com/InfiniteLin/LitHub/releases/download/'));
+      return net.fetch('http://127.0.0.1:'+server.address().port+(manifest?'/manifest':api?'/':'/asset'),options);},
     openExternal:async url=>opened.push(url),onChange:s=>win.webContents.send('updates:changed',s)});
   registerUpdateIPC(ipcMain,()=>service,e=>!!win && e.sender===win.webContents && e.senderFrame===win.webContents.mainFrame);
   win=new BrowserWindow({show:false,webPreferences:{contextIsolation:true,nodeIntegration:false,

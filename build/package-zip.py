@@ -1,5 +1,5 @@
 from pathlib import Path
-import argparse,json,re,zipfile
+import argparse,json,re,zipfile,hashlib
 
 
 def package_zip(unpacked, output, version):
@@ -27,6 +27,13 @@ def package_zip(unpacked, output, version):
         z.writestr(prefix+'/使用说明.txt',instructions.encode('utf-8-sig'))
     with zipfile.ZipFile(archive) as z:
         if z.testzip():raise ValueError('ZIP CRC verification failed')
+    with archive.open('rb') as stream: digest=hashlib.file_digest(stream,'sha256').hexdigest()
+    (output/'SHA256SUMS.txt').write_text(f'{digest}  {archive.name}\n',encoding='utf8')
+    notes=output/'RELEASE_NOTES.md'
+    manifest={'schemaVersion':1,'release':{'tag_name':'v'+version,'name':'文枢 LitHub v'+version,
+        'draft':False,'prerelease':False,'body':notes.read_text(encoding='utf8') if notes.exists() else '',
+        'assets':[{'name':archive.name,'size':archive.stat().st_size,'state':'uploaded','digest':'sha256:'+digest}]}}
+    (output/'update.json').write_text(json.dumps(manifest,ensure_ascii=False,indent=2)+'\n',encoding='utf8')
     return archive
 
 if __name__=='__main__':
