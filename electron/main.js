@@ -8,6 +8,7 @@ const { app, BrowserWindow, dialog, ipcMain, net, shell, screen, WebContentsView
 const path = require("node:path");
 const fs = require("node:fs");
 const { spawn } = require("node:child_process");
+const { requestUpdate } = require("./update-network");
 const { createUpdateService, registerUpdateIPC } = require("./update-service");
 const { randomUUID } = require("node:crypto");
 const { selectSidecarPort, waitForOwnedSidecar } = require("./sidecar-connection");
@@ -596,7 +597,7 @@ app.whenReady().then(async () => {
       app.quit();
       return true;
     },
-    fetch: (url, options) => net.fetch(url, options), openExternal: url => shell.openExternal(url),
+    fetch: (url, options) => requestUpdate(net, url, options), openExternal: url => shell.openExternal(url),
     onChange: snapshot => {
       if (win && !win.isDestroyed() && !win.webContents.isDestroyed()) win.webContents.send("updates:changed", snapshot);
     },
