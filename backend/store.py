@@ -541,7 +541,7 @@ class Store:
     # ---------- annotations（高亮 / 划线 / 批注） ----------
     def list_annotations(self, paper_id):
         with _lock:
-            items = list(self._db["annotations"].get(paper_id, []))
+            items = [dict(a, paint_order=i) for i, a in enumerate(self._db["annotations"].get(paper_id, []))]
         # 按页码、页内纵向位置排序，便于侧栏按文序展示
         items.sort(key=lambda a: (a.get("page") or 0, (a.get("rects") or [{}])[0].get("y", 0)))
         return [dict(a, view=a.get("view") or "legacy") for a in items]
@@ -556,9 +556,10 @@ class Store:
             "text": (data.get("text") or "")[:4000],   # 被标注的原文
             "color": data.get("color") or "yellow",
             "comment": (data.get("comment") or "")[:4000],
-            "created": datetime.now().isoformat(timespec="seconds"),
+            "created": datetime.now().isoformat(timespec="microseconds"),
         }
         with _lock:
+            ann["paint_order"] = len(self._db["annotations"].get(paper_id, []))
             self._db["annotations"].setdefault(paper_id, []).append(ann)
             self._flush()
         return dict(ann)
@@ -568,6 +569,8 @@ class Store:
             for a in self._db["annotations"].get(paper_id, []):
                 if a["id"] != ann_id:
                     continue
+                if fields.get("color") is not None and fields["color"] != a.get("color"):
+                    a["modified"] = datetime.now().isoformat(timespec="microseconds")
                 for k in ("kind", "color", "comment", "view"):
                     if k in fields and fields[k] is not None:
                         a[k] = str(fields[k])[:4000] if k == "comment" else str(fields[k])

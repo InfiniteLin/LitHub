@@ -13,7 +13,7 @@
 "use strict";
 
 window.PdfAnnot = (() => {
-  /* Opaque palette values; CSS controls fill opacity after same-color geometry is merged.
+  /* Opaque palette values; CSS controls fill opacity after overlaps are removed.
      Selection is drawn separately, so it never darkens an entire color group. */
   const COLORS = {
     yellow: { fill: "#ffd640", stroke: "#c69400" },
@@ -141,70 +141,44 @@ window.PdfAnnot = (() => {
 
   /* ---------- 绘制 ---------- */
 
-  /* 把「同色高亮」的矩形集合做并集，消除重叠区域。
-     为什么需要：即使色块用 opacity 而非 rgba，两个半透明块重叠时仍会合成变深
-     （0.38 叠 0.38 ≈ 0.62），用户看到的就是「重复高亮颜色加深」。
-     做法：对候选矩形逐条求并集（相交则合并为一个外接矩形），
-     并在合并后按「整行切分」避免把中间没选中的空隙也算进高亮。
-
-     这里采用简化但有效的策略：
-       1. 先按行（y 接近）分组
-       2. 同组内按 x 排序，区间重叠/相邻的合并成一段
-       这样同一行被多次高亮时只会画一段，不会叠加。
-     跨行的复杂重叠（不同批注选了交叠的多行）在行分组内同样被消解。 */
-  function unionByRow(rects) {
-    if (rects.length <= 1) return rects;
-
-    // 按纵向中心分行（容差取行高的 45%，与 mergeRects 保持一致）
-    const items = rects.map((r) => ({
-      x: r.x, y: r.y, w: r.w, h: r.h,
-      cy: r.y + r.h / 2,
-    })).sort((a, b) => a.cy - b.cy || a.x - b.x);
-
-    const rows = [];
-    for (const it of items) {
-      const row = rows.find((rw) => {
-        const hMin = Math.min(rw.h, it.h);
-        const hMax = Math.max(rw.h, it.h);
-        return Math.abs(rw.cy - it.cy) < Math.max(0.004, hMin * 0.5) && hMax <= hMin * 1.9;
-      });
-      if (row) {
-        row.items.push(it);
-        row.y = Math.min(row.y, it.y);
-        row.bottom = Math.max(row.bottom, it.y + it.h);
-        row.cy = (row.y + row.bottom) / 2;
-        row.h = row.bottom - row.y;
-      } else {
-        rows.push({ cy: it.cy, y: it.y, bottom: it.y + it.h, h: it.h, items: [it] });
-      }
-    }
-
-    const out = [];
-    for (const row of rows) {
-      const segs = row.items
-        .map((it) => ({ start: it.x, end: it.x + it.w }))
-        .sort((a, b) => a.start - b.start);
-      const merged = [];
-      for (const s of segs) {
-        const cur = merged[merged.length - 1];
-        // 重叠或间距极小（< 0.4% 页宽）就合并
-        if (cur && s.start <= cur.end + 0.004) {
-          cur.end = Math.max(cur.end, s.end);
-        } else {
-          merged.push({ start: s.start, end: s.end });
-        }
-      }
-      for (const m of merged) {
-        out.push({ x: m.start, y: row.y, w: m.end - m.start, h: row.h });
-      }
-    }
-    return out;
+  // Subtract exact rectangles instead of stacking translucent fills. Each visible
+  // point has one owner; partial overlaps preserve the older uncovered geometry.
+  function subtractRect(r, cover) {
+    const x = Math.max(r.x, cover.x), y = Math.max(r.y, cover.y);
+    const right = Math.min(r.x + r.w, cover.x + cover.w);
+    const bottom = Math.min(r.y + r.h, cover.y + cover.h);
+    if (right <= x || bottom <= y) return [r];
+    return [
+      {x:r.x, y:r.y, w:r.w, h:y-r.y},
+      {x:r.x, y:bottom, w:r.w, h:r.y+r.h-bottom},
+      {x:r.x, y, w:x-r.x, h:bottom-y},
+      {x:right, y, w:r.x+r.w-right, h:bottom-y},
+    ].filter(part => part.w > 1e-10 && part.h > 1e-10);
   }
 
-  /* 把某一页的批注画到页面的 .pdf-annot 层上。
-     核心：高亮分两阶段绘制 —— 先把**同色**的所有高亮矩形合起来做并集，
-     再统一画一层；这样无论几条批注重叠，同一位置都只叠一次色，
-     不会出现「重复高亮颜色越来越深」。 */
+  function paintOrder(list) {
+    // API lists are sorted by reading position, not by creation time. Storage
+    // order breaks ties in older records whose timestamps only have seconds.
+    return list.map((ann, index) => ({ann, index})).sort((a, b) =>
+      (a.ann.modified || a.ann.created || '').localeCompare(b.ann.modified || b.ann.created || '') ||
+      (a.ann.paint_order ?? a.index) - (b.ann.paint_order ?? b.index)
+    ).map(item => item.ann);
+  }
+
+  function visibleHighlights(list) {
+    let visible = [];
+    for (const ann of paintOrder(list)) {
+      if (ann.kind !== 'highlight') continue;
+      for (const r of ann.rects || []) {
+        if (![r.x,r.y,r.w,r.h].every(Number.isFinite) || r.w <= 0 || r.h <= 0) continue;
+        visible = visible.flatMap(piece => subtractRect(piece.rect, r).map(rect => ({ann:piece.ann, rect})));
+        visible.push({ann, rect:r});
+      }
+    }
+    return visible;
+  }
+
+  /* Paint mutually exclusive highlight pieces; later operations own overlaps. */
   function paintPage(pane, pageIndex) {
     const pdf = pane?._pdf;
     if (!pdf) return;
@@ -212,20 +186,11 @@ window.PdfAnnot = (() => {
     if (!meta) return;
     const list = storeFor(pane).byPage.get(pageIndex) || [];
 
-    /* 阶段一：把本页的高亮按颜色聚合并做并集。
-       colorKey -> { color, rects: [...], owners: Set<annId> } */
-    const highlightGroups = new Map();
-    for (const ann of list) {
-      if (ann.kind !== "highlight") continue;
-      const key = ann.color || "yellow";
-      if (!highlightGroups.has(key)) highlightGroups.set(key, []);
-      highlightGroups.get(key).push(ann);
-    }
-    // colorKey -> 合并后的矩形列表
-    const mergedHighlights = new Map();
-    for (const [key, anns] of highlightGroups) {
-      const allRects = anns.flatMap((a) => a.rects || []);
-      mergedHighlights.set(key, unionByRow(allRects));
+    const highlights = visibleHighlights(list);
+    const visibleById = new Map();
+    for (const {ann, rect} of highlights) {
+      if (!visibleById.has(ann.id)) visibleById.set(ann.id, []);
+      visibleById.get(ann.id).push(rect);
     }
 
     for (const side of meta.sides) {
@@ -233,29 +198,22 @@ window.PdfAnnot = (() => {
       if (!layer) continue;
       layer.innerHTML = "";
 
-      /* 阶段二：先画高亮（已经按颜色合并过，重叠不会再叠加） */
-      for (const [key, rects] of mergedHighlights) {
-        const color = COLORS[key] || COLORS.yellow;
-        const anns = highlightGroups.get(key) || [];
-        for (const r of rects) {
-          const d = document.createElement("div");
-          d.className = "annot-rect annot-highlight";
-          // Decorative paint group only; hitTest uses each annotation's original geometry.
-          d.dataset.annotId = anns[0]?.id || "";
-          d.dataset.annotIds = anns.map((a) => a.id).join(",");
-          d.style.left = `${r.x * 100}%`;
-          d.style.top = `${r.y * 100}%`;
-          d.style.width = `${r.w * 100}%`;
-          d.style.height = `${r.h * 100}%`;
-          d.style.background = color.fill;
-          layer.appendChild(d);
-        }
+      for (const {ann, rect:r} of highlights) {
+        const d = document.createElement("div");
+        d.className = "annot-rect annot-highlight";
+        d.dataset.annotId = ann.id;
+        d.style.left = `${r.x * 100}%`;
+        d.style.top = `${r.y * 100}%`;
+        d.style.width = `${r.w * 100}%`;
+        d.style.height = `${r.h * 100}%`;
+        d.style.background = (COLORS[ann.color] || COLORS.yellow).fill;
+        layer.appendChild(d);
       }
 
-      // Selection belongs to one annotation, independent of the merged color paint.
+      // Selection outlines only the visible portion belonging to this annotation.
       const selectedAnnotation = list.find(a => a.id === storeFor(pane).selected);
       if (selectedAnnotation?.kind === "highlight") {
-        for (const r of selectedAnnotation.rects || []) {
+        for (const r of visibleById.get(selectedAnnotation.id) || []) {
           const d = document.createElement("div");
           d.className = "annot-rect annot-selection is-selected";
           d.dataset.annotId = selectedAnnotation.id;
@@ -314,7 +272,7 @@ window.PdfAnnot = (() => {
       /* 阶段四：每条高亮的悬停删除按钮（挂在最后一行右端） */
       for (const ann of list) {
         if (ann.kind !== "highlight") continue;
-        const rects = ann.rects || [];
+        const rects = visibleById.get(ann.id) || [];
         if (!rects.length) continue;
         const last = rects.reduce((a, b) => (b.y > a.y || (b.y === a.y && b.x > a.x) ? b : a), rects[0]);
         const del = document.createElement("button");
@@ -431,7 +389,7 @@ window.PdfAnnot = (() => {
     if (idx == null || idx < 0) return null;
     const box = pageEl.getBoundingClientRect();
     const x = (clientX - box.left) / box.width, y = (clientY - box.top) / box.height;
-    return [...(storeFor(pane).byPage.get(idx) || [])].reverse().find(a =>
+    return paintOrder(storeFor(pane).byPage.get(idx) || []).reverse().find(a =>
       (a.rects || []).some(r => x >= r.x && x <= r.x+r.w && y >= r.y && y <= r.y+r.h)) || null;
   }
 

@@ -42,7 +42,7 @@
     "verify:annot-ui": "node tests/verify-annot-ui.mjs",
     "verify:annot-layout": "node tests/verify-annot-layout.mjs",
     "verify:annot-delete": "node tests/verify-annot-delete.mjs",
-    "verify:highlight-overlap": "node tests/verify-highlight-overlap.mjs",
+    "verify:highlight-overlap": "python tests/verify-highlight-order.py && node tests/verify-highlight-overlap.mjs",
     "verify:note-popup": "node tests/verify-note-popup.mjs",
     "verify:annot-drag": "node tests/verify-annot-drag.mjs",
     "verify:note-tab": "node tests/verify-note-tab.mjs",

@@ -920,8 +920,8 @@ body.webai-resizing * { cursor: col-resize !important; }
   pointer-events: none;
   transition: outline-color 0.12s var(--ease);
 }
-/* Same-color rectangles are merged before painting; a separate outline marks selection. */
-.annot-rect.annot-highlight { opacity: 0.30; }
+/* Disjoint highlight pieces avoid color stacking; square edges keep clipped seams closed. */
+.annot-rect.annot-highlight { opacity: 0.30; border-radius: 0; }
 .annot-rect.annot-underline,
 .annot-rect.annot-note-line { background: transparent !important; }
 /* 批注（note）自动划线：和划线同款，但颜色跟批注自身颜色走（边框色由 JS 内联） */
