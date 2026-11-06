@@ -48,6 +48,7 @@ window.AppUpdates = (() => {
     try { accept(await bridge[name]()); } catch (e) { failure(e); }
   }
   function html() {
+    const portable = snapshot?.distribution === 'portable';
     const s = snapshot, d = s?.download || { status: 'idle' };
     const transferring = ['preparing','downloading','verifying','installing'].includes(d.status);
     const busy = loading || s?.status === "checking" || transferring;
@@ -66,19 +67,20 @@ window.AppUpdates = (() => {
         ${release.publishedAt ? `<time>${esc(new Date(release.publishedAt).toLocaleDateString())}</time>` : ''}</div>
         <div class="update-notes">${esc(release.notes.trim() || '此版本尚未填写更新说明，可前往发布页面查看。')}</div></div>` : ''}
       <label class="update-auto"><input type="checkbox" id="set-update-auto" ${s?.autoCheck ? 'checked' : ''} ${!bridge || !s || saving ? 'disabled' : ''}>
-        <span>启动时自动检查更新<small>每天最多自动检查一次，发现新版本时轻量提醒。</small></span></label>
+        <span>启动时自动检查更新<small>每天自动检查一次，网络失败会稍后重试；发现新版本时轻量提醒。</small></span></label>
+      ${s?.lastUpdate && !s.lastUpdate.ok ? `<p class="update-warning">上次更新未完成，已尝试恢复旧程序：${esc(s.lastUpdate.error)}</p>` : ''}
       ${s?.settingsError ? `<p class="update-warning">${esc(s.settingsError)}</p>` : ''}
       ${transferring || d.status === 'ready' || d.error ? `<div class="update-download" role="status" aria-live="polite">
-        <p>${esc(({preparing:'正在获取安装包信息…', downloading:`正在下载 ${d.total ? Math.min(100, Math.floor(d.received / d.total * 100)) : 0}%`,
-          verifying:'正在校验安装包…', ready:`v${d.version || release?.version || ''} 已下载，可以重启安装。`, installing:'正在准备重启安装…'})[d.status] || '')}</p>
+        <p>${esc(({preparing:'正在获取更新包信息…', downloading:`正在下载 ${d.total ? Math.min(100, Math.floor(d.received / d.total * 100)) : 0}%`,
+          verifying:'正在校验更新包…', ready:`v${d.version || release?.version || ''} 已下载，可以重启更新。`, installing:'正在准备重启更新…'})[d.status] || '')}</p>
         ${d.status === 'downloading' ? `<progress max="${Number(d.total) || 1}" value="${Number(d.received) || 0}" aria-label="更新下载进度"></progress><small>${(d.received / 1048576).toFixed(1)} / ${(d.total / 1048576).toFixed(1)} MB</small>` : ''}
         ${d.error ? `<p class="update-warning">${esc(d.error)}</p>` : ''}</div>` : ''}
       <div class="set-foot update-actions"><button class="btn" data-action="updates-check" ${!bridge || busy ? 'disabled' : ''}>${busy ? '正在检查…' : '检查更新'}</button>
-        ${d.status === 'ready' ? '<button class="btn btn-primary" data-action="updates-install">重启并安装</button>'
+        ${d.status === 'ready' ? `<button class="btn btn-primary" data-action="updates-install">${portable ? '重启并更新' : '重启并安装'}</button>`
           : release ? `<button class="btn btn-primary" data-action="updates-download" ${!s.canInstall || busy ? 'disabled' : ''}>${transferring ? '正在更新…' : d.status === 'error' ? '重新下载' : '下载更新'}</button>` : ''}
         ${['preparing','downloading','verifying'].includes(d.status) ? '<button class="btn" data-action="updates-cancel">取消下载</button>' : ''}
         <button class="btn" data-action="updates-open" ${!bridge ? 'disabled' : ''}>发布记录</button></div>
-      <p class="update-source">更新来源：GitHub · InfiniteLin/LitHub。应用内下载并校验，点击重启安装后完成更新，保留文献与设置。${bridge && s && !s.canInstall ? '开发版仅支持检查更新，请使用 Windows 安装版安装更新。' : ''}</p>
+      <p class="update-source">更新来源：GitHub · InfiniteLin/LitHub。${portable ? '当前为免安装版，下载 ZIP 并原位更新；启动失败会尝试恢复旧程序。' : '当前为安装版，下载安装包并覆盖安装。'}更新会保留文献与设置。${bridge && s && !s.canInstall ? '开发版仅支持检查更新，请使用 Windows 发布版更新。' : ''}</p>
     </section>`;
   }
   return { init, html, check, setAutoCheck, openRelease,

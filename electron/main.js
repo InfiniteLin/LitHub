@@ -12,6 +12,7 @@ const { createUpdateService, registerUpdateIPC } = require("./update-service");
 const { randomUUID } = require("node:crypto");
 const { selectSidecarPort, waitForOwnedSidecar } = require("./sidecar-connection");
 const { acquireDesktopInstance } = require("./desktop-instance");
+const { distributionFor, launchPortableAfterExit, confirmPortableStartup, readPortableResult } = require("./portable-update");
 const { launchInstallerAfterExit } = require("./update-launcher");
 const { resolveUpdateDirectory } = require("./update-directory");
 const { pruneUpdateStaging } = require("./update-staging");
@@ -165,6 +166,16 @@ function createWindow() {
     .then(() => {
       sidecarReady = true;
       return win?.loadURL(`http://127.0.0.1:${SIDECAR_PORT}/`);
+    })
+    .then(async () => {
+      if (!process.env.LITHUB_UPDATE_ACK) return;
+      for (let i=0; i<100 && win && !win.isDestroyed(); i++) {
+        if (await win.webContents.executeJavaScript("!!document.querySelector('#app')?.children.length")) {
+          try { confirmPortableStartup(app.getPath('exe')); } catch (error) { log('更新启动确认失败:', error.message); }
+          break;
+        }
+        await new Promise(resolve => setTimeout(resolve,100));
+      }
     })
     .catch(error => {
       if (quitting) return;
@@ -556,26 +567,32 @@ ipcMain.handle("browser:close", () => closeBrowserSession());
 app.whenReady().then(async () => {
   if (isPackaged) await pruneUpdateStaging().catch(error => log("清理更新临时文件失败:", error.message));
   SIDECAR_PORT = await selectSidecarPort(process.env.LITHUB_API_PORT);
+  const distribution = distributionFor(app.getPath("exe"), isPackaged);
   updateService = createUpdateService({
     version: app.getVersion(), storageFile: path.join(app.getPath("userData"), "update-check.json"),
-    canInstall: isPackaged && process.platform === "win32",
+    canInstall: isPackaged && process.platform === "win32", distribution, lastUpdate: isPackaged && !process.env.LITHUB_UPDATE_TOKEN ? readPortableResult(app.getPath("exe")) : null,
     downloadDirectory: () => resolveUpdateDirectory({ executable: app.getPath("exe"), userData: app.getPath("userData") }),
-    install: async file => {
+    install: async (file, asset) => {
       if (quitting || !win || win.isDestroyed()) throw Error("窗口正在关闭，请重新打开程序后更新。");
-      const choice = await dialog.showMessageBox(win, { type: "question", buttons: ["重启并安装", "稍后"],
-        defaultId: 1, cancelId: 1, title: "安装更新", message: "现在重启并安装新版本？",
-        detail: "将保存笔记并退出软件，安装完成后自动重新打开。文献、PDF 和设置会保留。" });
+      const choice = await dialog.showMessageBox(win, { type: "question", buttons: [distribution === "portable" ? "重启并更新" : "重启并安装", "稍后"],
+        defaultId: 1, cancelId: 1, title: "更新软件", message: "现在重启并更新到新版本？",
+        detail: "将保存笔记并退出软件，更新完成后自动重新打开。文献、PDF 和设置会保留。" });
       if (choice.response !== 0) return false;
-      const prepared = await win.webContents.executeJavaScript("window.prepareForUpdate ? window.prepareForUpdate() : false");
-      if (!prepared) throw Error("笔记尚未保存或有操作正在进行，请保存后重试。");
-      const response = await net.fetch(`http://127.0.0.1:${SIDECAR_PORT}/api/tasks?active_only=true`,
-        { signal: AbortSignal.timeout(5000) });
-      if (!response.ok) throw Error("无法确认翻译任务状态，请稍后重试。");
-      const tasks = await response.json();
-      if (!Array.isArray(tasks) || tasks.length) throw Error("请先等待翻译完成，或在任务队列中取消翻译，再安装更新。");
+      const ensureReady = async () => {
+        if (quitting || !win || win.isDestroyed()) throw Error('窗口正在关闭，请稍后重试。');
+        const prepared = await win.webContents.executeJavaScript("window.prepareForUpdate ? window.prepareForUpdate() : false");
+        if (!prepared) throw Error("笔记尚未保存或有操作正在进行，请保存后重试。");
+        const response = await net.fetch(`http://127.0.0.1:${SIDECAR_PORT}/api/tasks?active_only=true`,
+          { signal: AbortSignal.timeout(5000) });
+        if (!response.ok) throw Error("无法确认翻译任务状态，请稍后重试。");
+        const tasks = await response.json();
+        if (!Array.isArray(tasks) || tasks.length) throw Error("请先等待翻译完成，或在任务队列中取消翻译，再安装更新。");
+      };
+      await ensureReady();
       // NSIS handles replacing this installation and restarting it (--force-run).
       // Use spawn arguments directly so spaces/Chinese paths never pass through a shell.
-      await launchInstallerAfterExit(file, app.getPath("exe"));
+      if (distribution === 'portable') await launchPortableAfterExit(file, app.getPath('exe'), asset, {beforeHandoff: ensureReady});
+      else await launchInstallerAfterExit(file, app.getPath("exe"));
       app.quit();
       return true;
     },

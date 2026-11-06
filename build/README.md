@@ -68,3 +68,26 @@ node build/benchmark-install.mjs release/install-benchmark/<已有目录> --quic
 
 同一版本的完整应用安装包从 313.9 MiB 增至 377.7 MiB，安装目录则从 1079.2 MiB
 减至 996.4 MiB。这里选择了更快安装、较大下载包的取舍。
+
+## ZIP 免安装版
+
+同一套源码构建安装版后，再从干净的 `win-unpacked` 生成 ZIP：
+
+```powershell
+npm run dist -- --config.directories.output=release/current --publish never
+npm run dist:zip -- --unpacked release/current/win-unpacked --output release/current
+npm run test:portable-update
+```
+
+脚本从 `package.json` 获取版本，校验打包后端版本，并输出 `LitHub-版本-win-x64.zip`。
+ZIP 顶层目录必须是 `LitHub-版本-win-x64/`，包含完整程序与 `lithub-portable.json`；
+更新器只接受版本和架构匹配的附件，必须提供 GitHub 的 SHA-256 digest。
+不要将运行后的用户文件夹混入打包目录。打包脚本拒绝 PDF、下载缓存和本地文献库。
+
+运行时以 NSIS 卸载程序是否存在区分安装版与免安装版，兼容没有标记的旧 ZIP。
+免安装版的 ZIP 和安装版 EXE 同时上传到对应 Release；缺少 ZIP 时不会转而安装 EXE。
+ZIP 替换助手使用临时目录中的独立 Python 标准库运行时，不锁住原程序的 EXE 或 DLL。
+程序目录中的 `.lithub-update-*` 是更新事务目录：启动确认成功前保留旧文件；
+如遇断电或恢复失败，请保留其中的 `backup/` 和 `plan.json`，不要自行清理。
+目前支持替换失败和启动确认超时后的回滚，不保证断电期间的多文件替换具有原子性。
+文献元数据、PDF 和设置保持原来的存储方式，免安装不等于所有数据都随程序移动。

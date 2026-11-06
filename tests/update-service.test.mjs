@@ -128,6 +128,23 @@ try {
   await exposed.updates.openRelease('javascript:ignored');assert.deepEqual(calls.at(-1),['updates:open-release']);
   console.log('PASS own-window IPC, typed preferences and preload event unsubscribe');
 
+  const retry=make();retry.setResponse(async()=>{throw Error('offline');});
+  await retry.service.check({automatic:true});
+  assert.equal(retry.requests.length,1);
+  retry.advance(4*60000);await retry.service.check({automatic:true});assert.equal(retry.requests.length,1);
+  retry.advance(60000);await retry.service.check({automatic:true});assert.equal(retry.requests.length,2);
+  retry.advance(14*60000);await retry.service.check({automatic:true});assert.equal(retry.requests.length,2);
+  retry.advance(60000);retry.setResponse(async()=>reply());await retry.service.check({automatic:true});assert.equal(retry.requests.length,3);
+  retry.advance(3600000);await retry.service.check({automatic:true});assert.equal(retry.requests.length,3,'success returns to daily schedule');
+  const persisted=make({storageFile:retry.storageFile});await persisted.service.check({automatic:true});
+  assert.equal(persisted.requests.length,0,'retry schedule survives restart');
+  const optout=make();optout.setResponse(async()=>{throw Error('offline');});await optout.service.check({automatic:true});
+  await optout.service.setAutoCheck(false);optout.advance(600000);await optout.service.check({automatic:true});assert.equal(optout.requests.length,1);
+  const limited=make();limited.setResponse(async()=>reply(null,429,{'retry-after':'1800'}));await limited.service.check({automatic:true});
+  limited.advance(5*60000);await limited.service.check({automatic:true});assert.equal(limited.requests.length,1);
+  limited.advance(25*60000);limited.setResponse(async()=>reply());await limited.service.check({automatic:true});assert.equal(limited.requests.length,2);
+  console.log('PASS persisted exponential retries, daily success cadence, rate-limit delay and opt-out during retry');
+
   const initial=deferred();let uiListener,uiNotices=0;
   const browser={lithub:{updates:{getState:()=>initial.promise,onChange:fn=>{uiListener=fn;return()=>{};},
     check:async()=>{throw Error('IPC unavailable');},setAutoCheck:async()=>{throw Error('write failed');}}}};

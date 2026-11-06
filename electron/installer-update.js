@@ -6,10 +6,10 @@ const { createHash } = require("node:crypto");
 const MAX_SIZE = 2 * 1024 ** 3;
 const PREFIX = "https://github.com/InfiniteLin/LitHub/releases/download/";
 
-function installerAsset(data) {
+function installerAsset(data, kind = 'installer') {
   const version = String(data.tag_name || '').replace(/^v/i, '');
   // GitHub normalizes spaces and non-ASCII characters in uploaded asset names.
-  const expectedNames = [`文枢 LitHub Setup ${version}.exe`, `LitHub Setup ${version}.exe`,
+  const expectedNames = kind === 'portable' ? [`LitHub-${version}-win-x64.zip`] : [`文枢 LitHub Setup ${version}.exe`, `LitHub Setup ${version}.exe`,
     `LitHub.Setup.${version}.exe`, `文枢.LitHub.Setup.${version}.exe`];
   const candidates = (Array.isArray(data.assets) ? data.assets : []).filter(a =>
     a && expectedNames.includes(a.name)
@@ -82,7 +82,7 @@ async function cachedInstaller(directory, asset, signal) {
       metadata = JSON.parse(await fs.promises.readFile(marker, 'utf8'));
     } catch { continue; }
     if (metadata?.sha256 !== asset.sha256 || metadata?.size !== asset.size) continue;
-    const file = path.join(folder, 'installer.exe');
+    const file = path.join(folder, asset.name.endsWith('.zip') ? 'package.zip' : 'installer.exe');
     try { await verifyFile(file, asset, signal); return file; }
     catch (error) {
       signal.throwIfAborted();
@@ -93,7 +93,7 @@ async function cachedInstaller(directory, asset, signal) {
   return null;
 }
 
-function createInstallerUpdate({ directory, fetch, resolveRelease, install, onChange = () => {}, enabled = true }) {
+function createInstallerUpdate({ directory, fetch, resolveRelease, install, onChange = () => {}, enabled = true, packageKind = 'installer' }) {
   let state = { status: "idle", received: 0, total: 0, error: "", version: "" };
   let flight = null, controller = null, ready = null, installing = false;
   const emit = patch => { state = { ...state, ...patch }; onChange(); };
@@ -117,8 +117,8 @@ function createInstallerUpdate({ directory, fetch, resolveRelease, install, onCh
         });
         const release = await Promise.race([resolveRelease(), aborted]).finally(() => signal.removeEventListener('abort', abort));
         signal.throwIfAborted();
-        const asset = release?.installer;
-        if (!asset) throw Error("此版本尚未提供可用的 Windows 安装包。");
+        const asset = packageKind === 'portable' ? release?.portable : release?.installer;
+        if (!asset) throw Error("此版本尚未提供适合当前版本类型的 Windows 更新包。");
         if (!asset.sha256) throw Error("此版本缺少 SHA-256 校验信息，请等待发布者重新上传安装包。");
         const destination = typeof directory === 'function' ? await directory() : directory;
         signal.throwIfAborted();
@@ -134,7 +134,7 @@ function createInstallerUpdate({ directory, fetch, resolveRelease, install, onCh
         }
         work = await fs.promises.mkdtemp(path.join(destination, "download-"));
         await fs.promises.writeFile(path.join(work, '.lithub-update'), '1');
-        const partial = path.join(work, "installer.part"), file = path.join(work, "installer.exe");
+        const partial = path.join(work, "installer.part"), file = path.join(work, asset.name.endsWith('.zip') ? 'package.zip' : 'installer.exe');
         emit({ status: "downloading", total: asset.size, version: release.version });
         const armTimeout = () => { clearTimeout(timeout); timeout = setTimeout(() => controller?.abort(new Error("下载超时，请重试。")), 60000); };
         armTimeout();
@@ -176,7 +176,7 @@ function createInstallerUpdate({ directory, fetch, resolveRelease, install, onCh
     installing = true; emit({ status: "installing", error: "" });
     try {
       await verifyFile(ready.file, ready);
-      const accepted = await install(ready.file);
+      const accepted = await install(ready.file, { ...ready, version: state.version });
       if (accepted === false) emit({ status: "ready" });
     } catch (error) {
       // Corrupt/deleted cached files must allow a fresh download rather than an endless install retry.
@@ -189,4 +189,4 @@ function createInstallerUpdate({ directory, fetch, resolveRelease, install, onCh
   return { getState: () => ({ ...state }), download, install: installReady,
     cancel: () => { controller?.abort(); }, stop: () => controller?.abort() };
 }
-module.exports = { installerAsset, createInstallerUpdate, fetchAsset, verifyFile };
+module.exports = { portableAsset: data => installerAsset(data, 'portable'), installerAsset, createInstallerUpdate, fetchAsset, verifyFile };

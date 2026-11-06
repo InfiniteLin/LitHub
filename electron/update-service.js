@@ -2,7 +2,7 @@
 
 const fs = require("node:fs");
 const path = require("node:path");
-const { installerAsset, createInstallerUpdate } = require("./installer-update");
+const { installerAsset, portableAsset, createInstallerUpdate } = require("./installer-update");
 const RELEASES_URL = "https://github.com/InfiniteLin/LitHub/releases";
 const API_URL = "https://api.github.com/repos/InfiniteLin/LitHub/releases/latest";
 const DAY = 24 * 60 * 60 * 1000;
@@ -47,23 +47,25 @@ function normalizeRelease(data) {
     name: typeof data.name === "string" ? data.name.slice(0, 200) : data.tag_name,
     notes: typeof data.body === "string" ? data.body.slice(0, 20000) : "",
     publishedAt: Number.isFinite(date) ? new Date(date).toISOString() : "",
-    installer: installerAsset(data),
+    installer: installerAsset(data), portable: portableAsset(data),
     // Derive all URLs from the fixed repository rather than trusting remote links.
     url: `${RELEASES_URL}/tag/${encodeURIComponent(data.tag_name)}`,
   };
 }
 
 function createUpdateService({ version, storageFile, fetch, openExternal, onChange = () => {},
-  install, downloadDirectory = path.join(path.dirname(storageFile), "updates"), canInstall = false,
+  install, downloadDirectory = path.join(path.dirname(storageFile), "updates"), canInstall = false, distribution = 'installer', lastUpdate = null,
   now = Date.now, timers = globalThis }) {
   if (!parseVersion(version)) throw Error("当前程序版本号格式无效");
-  let prefs = { autoCheck: true, lastAttemptAt: 0, checkedAt: 0, blockedUntil: 0, notifiedVersion: "", release: null };
+  let prefs = { autoCheck: true, lastAttemptAt: 0, checkedAt: 0, blockedUntil: 0, nextCheckAt: 0, failures: 0, notifiedVersion: "", release: null };
   try {
     if (fs.statSync(storageFile).size <= 65536) {
       const saved = JSON.parse(fs.readFileSync(storageFile, "utf8"));
-      for (const k of ["lastAttemptAt", "checkedAt", "blockedUntil"]) {
+      for (const k of ["lastAttemptAt", "checkedAt", "blockedUntil", "nextCheckAt"]) {
         if (Number.isFinite(saved[k]) && saved[k] >= 0 && saved[k] <= now() + DAY) prefs[k] = saved[k];
       }
+      prefs.failures = Number.isSafeInteger(saved.failures) ? Math.max(0, Math.min(10, saved.failures)) : 0;
+      if (!prefs.nextCheckAt && prefs.lastAttemptAt) prefs.nextCheckAt = prefs.lastAttemptAt + DAY;
       if (typeof saved.autoCheck === "boolean") prefs.autoCheck = saved.autoCheck;
       if (parseVersion(saved.notifiedVersion)) prefs.notifiedVersion = saved.notifiedVersion;
       if (saved.release) {
@@ -76,7 +78,7 @@ function createUpdateService({ version, storageFile, fetch, openExternal, onChan
   let status = baseStatus(), error = "", settingsError = "", revision = 0;
   let inFlight = null, controller = null, startupTimer = null, interval = null, stopped = false;
   const installer = createInstallerUpdate({ directory: downloadDirectory, fetch, install,
-    enabled: canInstall, onChange: () => emit(), resolveRelease: async () => {
+    enabled: canInstall, packageKind: distribution, onChange: () => emit(), resolveRelease: async () => {
       await check();
       if (status !== "available") throw Error(error || "暂无可安装的新版本。");
       return prefs.release;
@@ -89,7 +91,7 @@ function createUpdateService({ version, storageFile, fetch, openExternal, onChan
     return { currentVersion: version, autoCheck: prefs.autoCheck, status, error, settingsError,
       checkedAt: prefs.checkedAt, lastAttemptAt: prefs.lastAttemptAt, release: prefs.release && { ...prefs.release },
       hasUpdate: !!prefs.release && compareVersions(prefs.release.version, version) > 0, revision,
-      canInstall, download: installer.getState() };
+      canInstall, distribution, lastUpdate, nextCheckAt: prefs.nextCheckAt, download: installer.getState() };
   }
   function emit(notify = false) {
     revision++;
@@ -115,7 +117,7 @@ function createUpdateService({ version, storageFile, fetch, openExternal, onChan
   function check({ automatic = false } = {}) {
     if (stopped) return Promise.resolve(getState());
     if (inFlight) return inFlight;
-    if (automatic && (!prefs.autoCheck || (prefs.lastAttemptAt && now() - prefs.lastAttemptAt < DAY))) return Promise.resolve(getState());
+    if (automatic && (!prefs.autoCheck || (now() < Math.max(prefs.nextCheckAt, prefs.blockedUntil)))) return Promise.resolve(getState());
     inFlight = Promise.resolve().then(async () => {
       if (stopped) return getState();
       if (now() < prefs.blockedUntil) {
@@ -159,6 +161,11 @@ function createUpdateService({ version, storageFile, fetch, openExternal, onChan
           : (e instanceof TypeError ? "无法连接 GitHub，请检查网络后重试。" : e.message || "检查失败，请稍后重试。");
       } finally { timers.clearTimeout(timeout); controller = null; }
       if (stopped) return getState();
+      if (status === 'error') {
+        const delays = [5, 15, 60, 360];
+        prefs.failures++;
+        prefs.nextCheckAt = Math.max(prefs.blockedUntil, now() + delays[Math.min(prefs.failures - 1, delays.length - 1)] * 60000);
+      } else { prefs.failures = 0; prefs.nextCheckAt = now() + DAY; }
       const notify = automatic && prefs.autoCheck && status === "available" && prefs.notifiedVersion !== prefs.release.version;
       if (status === "available") prefs.notifiedVersion = prefs.release.version;
       persist(); emit(notify); return getState();
@@ -172,7 +179,7 @@ function createUpdateService({ version, storageFile, fetch, openExternal, onChan
   function start() {
     if (startupTimer !== null || stopped) return;
     startupTimer = timers.setTimeout(() => { void check({ automatic: true }); }, 10000);
-    interval = timers.setInterval(() => { void check({ automatic: true }); }, 60 * 60 * 1000);
+    interval = timers.setInterval(() => { void check({ automatic: true }); }, 60 * 1000);
     startupTimer.unref?.(); interval.unref?.();
   }
   function stop() {
