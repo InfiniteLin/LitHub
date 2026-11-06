@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import shutil
 import subprocess
+import tempfile
 import time
 
 MARKER = '.lithub-runtime-stage'
@@ -100,8 +101,21 @@ print('PASS staged runtime: backend, scientific/native libraries, PDF rendering 
     flags = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
     subprocess.run([str(python), '-B', '-c', code], check=True, creationflags=flags, timeout=90)
     cli = Path(__file__).resolve().parents[1] / 'backend' / 'pdf2zh_cli.py'
-    subprocess.run([str(python), '-B', str(cli), '--help'], check=True,
-                   stdout=subprocess.DEVNULL, creationflags=flags, timeout=90)
+    # pdf2zh/BabelDOC opens a cache database even for --help. Keep this build
+    # probe independent of the developer's existing cache and its permissions.
+    cli_probe = '''
+import runpy, sys
+from pathlib import Path
+cache_home = sys.argv[2]
+Path.home = classmethod(lambda cls: Path(cache_home))
+cli = sys.argv[1]
+sys.argv = [cli, '--help']
+runpy.run_path(cli, run_name='__main__')
+'''
+    # Clean up only after the child exits and SQLite releases its Windows handles.
+    with tempfile.TemporaryDirectory(prefix='lithub-runtime-probe-') as cache_home:
+        subprocess.run([str(python), '-B', '-c', cli_probe, str(cli), cache_home], check=True,
+                       stdout=subprocess.DEVNULL, creationflags=flags, timeout=90)
     if set(runtime.rglob('*.pyc')) - existing_bytecode:
         raise RuntimeError('Runtime verification unexpectedly created bytecode')
     print('PASS staged runtime: complete pdf2zh command line import chain')
