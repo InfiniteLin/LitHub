@@ -5,7 +5,7 @@
 pwsh -File build/rebuild-runtime.ps1
 
 # 每次打包自动生成并验证精简运行时
-npm run dist -- --publish never
+npm run dist  # 默认仅生成 ZIP，不上传
 ```
 
 `build/python/` 是 pip 管理的原始依赖，`build/runtime/` 是生成的发布副本。
@@ -71,11 +71,12 @@ node build/benchmark-install.mjs release/install-benchmark/<已有目录> --quic
 
 ## ZIP 免安装版
 
-同一套源码构建安装版后，再从干净的 `win-unpacked` 生成 ZIP：
+从 v0.2.4 起仅发布 ZIP。默认构建会生成干净的 `win-unpacked` 并自动打 ZIP：
 
 ```powershell
-npm run dist -- --config.directories.output=release/current --publish never
-npm run dist:zip -- --unpacked release/current/win-unpacked --output release/current
+npm run dist -- --config.directories.output=release/current
+# 已有干净的 win-unpacked 时也可单独打 ZIP：
+# npm run dist:zip -- --unpacked release/current/win-unpacked --output release/current
 npm run test:portable-update
 ```
 
@@ -85,7 +86,8 @@ ZIP 顶层目录必须是 `LitHub-版本-win-x64/`，包含完整程序与 `lith
 不要将运行后的用户文件夹混入打包目录。打包脚本拒绝 PDF、下载缓存和本地文献库。
 
 运行时以 NSIS 卸载程序是否存在区分安装版与免安装版，兼容没有标记的旧 ZIP。
-免安装版的 ZIP 和安装版 EXE 同时上传到对应 Release；缺少 ZIP 时不会转而安装 EXE。
+v0.2.4 起仅上传 ZIP 与校验文件；安装版用户的新更新器会在缺少 EXE 时使用 ZIP 原位更新，保留卸载入口和原目录。免安装版缺少 ZIP 时不会转而安装 EXE。
+`npm run dist:installer -- --publish never` 仅供重建 v0.2.3 等历史安装包，正常发布不使用。
 ZIP 替换助手使用临时目录中的独立 Python 标准库运行时，不锁住原程序的 EXE 或 DLL。
 程序目录中的 `.lithub-update-*` 是更新事务目录：启动确认成功前保留旧文件；
 如遇断电或恢复失败，请保留其中的 `backup/` 和 `plan.json`，不要自行清理。

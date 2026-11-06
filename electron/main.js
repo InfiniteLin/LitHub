@@ -574,7 +574,7 @@ app.whenReady().then(async () => {
     downloadDirectory: () => resolveUpdateDirectory({ executable: app.getPath("exe"), userData: app.getPath("userData") }),
     install: async (file, asset) => {
       if (quitting || !win || win.isDestroyed()) throw Error("窗口正在关闭，请重新打开程序后更新。");
-      const choice = await dialog.showMessageBox(win, { type: "question", buttons: [distribution === "portable" ? "重启并更新" : "重启并安装", "稍后"],
+      const choice = await dialog.showMessageBox(win, { type: "question", buttons: [asset.kind === "portable" ? "重启并更新" : "重启并安装", "稍后"],
         defaultId: 1, cancelId: 1, title: "更新软件", message: "现在重启并更新到新版本？",
         detail: "将保存笔记并退出软件，更新完成后自动重新打开。文献、PDF 和设置会保留。" });
       if (choice.response !== 0) return false;
@@ -591,7 +591,7 @@ app.whenReady().then(async () => {
       await ensureReady();
       // NSIS handles replacing this installation and restarting it (--force-run).
       // Use spawn arguments directly so spaces/Chinese paths never pass through a shell.
-      if (distribution === 'portable') await launchPortableAfterExit(file, app.getPath('exe'), asset, {beforeHandoff: ensureReady});
+      if (asset.kind === 'portable') await launchPortableAfterExit(file, app.getPath('exe'), asset, {beforeHandoff: ensureReady});
       else await launchInstallerAfterExit(file, app.getPath("exe"));
       app.quit();
       return true;

@@ -18,7 +18,7 @@ function installerAsset(data, kind = 'installer') {
   // An ambiguous release must not arbitrarily pick an architecture or installer.
   if (candidates.length !== 1) return null;
   const a = candidates[0];
-  return { name: a.name, size: a.size,
+  return { kind, name: a.name, size: a.size,
     url: `${PREFIX}${encodeURIComponent(data.tag_name)}/${encodeURIComponent(a.name)}`,
     sha256: /^sha256:[a-f0-9]{64}$/i.test(a.digest || "") ? a.digest.slice(7).toLowerCase() : "" };
 }
@@ -117,13 +117,14 @@ function createInstallerUpdate({ directory, fetch, resolveRelease, install, onCh
         });
         const release = await Promise.race([resolveRelease(), aborted]).finally(() => signal.removeEventListener('abort', abort));
         signal.throwIfAborted();
-        const asset = packageKind === 'portable' ? release?.portable : release?.installer;
+        // Installed editions can migrate in place when a release only supplies ZIP.
+        const asset = packageKind === 'portable' ? release?.portable : (release?.installer || release?.portable);
         if (!asset) throw Error("此版本尚未提供适合当前版本类型的 Windows 更新包。");
         if (!asset.sha256) throw Error("此版本缺少 SHA-256 校验信息，请等待发布者重新上传安装包。");
         const destination = typeof directory === 'function' ? await directory() : directory;
         signal.throwIfAborted();
         await fs.promises.mkdir(destination, { recursive: true });
-        emit({ status: 'verifying', total: asset.size, version: release.version });
+        emit({ status: 'verifying', total: asset.size, version: release.version, kind: asset.kind || 'installer' });
         const cached = await cachedInstaller(destination, asset, signal);
         signal.throwIfAborted();
         await pruneDownloads(destination, cached && path.dirname(cached));

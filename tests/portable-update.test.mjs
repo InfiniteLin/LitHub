@@ -38,10 +38,16 @@ try {
   const missing=createUpdateService({version:'0.2.3',storageFile:path.join(root,'missing.json'),canInstall:true,distribution:'portable',downloadDirectory:path.join(root,'updates'),
     fetch:async()=>new Response(JSON.stringify({...raw,assets:raw.assets.slice(0,1)}))});
   await missing.download();assert.equal(missing.getState().download.status,'error','portable never silently switches to installer');missing.stop();
+  let migrated=false;
+  const migration=createUpdateService({version:'0.2.3',storageFile:path.join(root,'migration.json'),canInstall:true,distribution:'installer',downloadDirectory:path.join(root,'updates'),
+    fetch:async url=>url.includes('/releases/latest')?new Response(JSON.stringify({...raw,assets:raw.assets.slice(1)})):new Response(data),
+    install:async(file,asset)=>{assert.equal(asset.kind,'portable');assert.ok(file.endsWith('.zip'));migrated=true;return false;}});
+  await migration.download();assert.equal(migration.getState().download.kind,'portable');
+  await migration.install();assert.equal(migrated,true,'installed edition uses ZIP for ZIP-only releases');migration.stop();
   const uiContext={window:{lithub:{updates:{onChange:()=>()=>{},getState:async()=>({revision:1,distribution:'portable',currentVersion:'0.2.3',status:'available',hasUpdate:true,canInstall:true,release:{version:'0.3.0',notes:''},download:{status:'ready',version:'0.3.0'},lastUpdate:{ok:false,error:'<unsafe>'}})}}}};
   vm.runInNewContext(readFileSync('frontend/js/app-updates.js','utf8'),uiContext);
   await uiContext.window.AppUpdates.init();const html=uiContext.window.AppUpdates.html();
-  assert.ok(html.includes('重启并更新') && html.includes('免安装版') && html.includes('&lt;unsafe&gt;'));
+  assert.ok(html.includes('重启并更新') && html.includes('ZIP 原位更新') && html.includes('&lt;unsafe&gt;'));
   console.log('PASS legacy ZIP/installed detection, scoped startup acknowledgment, ZIP-only download/integrity/cache and missing ZIP behavior');
 } finally {
   for(const [key,value] of [['LITHUB_UPDATE_ACK',oldEnv.ack],['LITHUB_UPDATE_TOKEN',oldEnv.token]]){if(value===undefined)delete process.env[key];else process.env[key]=value;}

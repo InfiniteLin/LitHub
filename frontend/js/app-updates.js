@@ -48,7 +48,8 @@ window.AppUpdates = (() => {
     try { accept(await bridge[name]()); } catch (e) { failure(e); }
   }
   function html() {
-    const portable = snapshot?.distribution === 'portable';
+    const portable = snapshot?.distribution === 'portable' || snapshot?.download?.kind === 'portable' ||
+      (snapshot?.hasUpdate && !snapshot.release?.installer && !!snapshot.release?.portable);
     const s = snapshot, d = s?.download || { status: 'idle' };
     const transferring = ['preparing','downloading','verifying','installing'].includes(d.status);
     const busy = loading || s?.status === "checking" || transferring;
@@ -80,7 +81,7 @@ window.AppUpdates = (() => {
           : release ? `<button class="btn btn-primary" data-action="updates-download" ${!s.canInstall || busy ? 'disabled' : ''}>${transferring ? '正在更新…' : d.status === 'error' ? '重新下载' : '下载更新'}</button>` : ''}
         ${['preparing','downloading','verifying'].includes(d.status) ? '<button class="btn" data-action="updates-cancel">取消下载</button>' : ''}
         <button class="btn" data-action="updates-open" ${!bridge ? 'disabled' : ''}>发布记录</button></div>
-      <p class="update-source">更新来源：GitHub · InfiniteLin/LitHub。${portable ? '当前为免安装版，下载 ZIP 并原位更新；启动失败会尝试恢复旧程序。' : '当前为安装版，下载安装包并覆盖安装。'}更新会保留文献与设置。${bridge && s && !s.canInstall ? '开发版仅支持检查更新，请使用 Windows 发布版更新。' : ''}</p>
+      <p class="update-source">更新来源：GitHub · InfiniteLin/LitHub。${portable ? '使用 ZIP 原位更新，保留现有文献与设置；启动失败会尝试恢复旧程序。' : '当前为安装版，下载安装包并覆盖安装。'}更新会保留文献与设置。${bridge && s && !s.canInstall ? '开发版仅支持检查更新，请使用 Windows 发布版更新。' : ''}</p>
     </section>`;
   }
   return { init, html, check, setAutoCheck, openRelease,
