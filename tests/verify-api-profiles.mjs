@@ -58,6 +58,12 @@ try {
   await fill('set-api-name','论文总结');await fill('set-base',upstreamBase+'/alpha/v1');await fill('set-model','alpha-model');await fill('set-key','sk-fictional-alpha-only');await fill('set-temp','0.2');
   await until('model list is discovered implicitly without replacing the typed model',`document.querySelector('#api-model-list option[value="alpha-second"]') && document.getElementById('set-model').value==='alpha-model' && document.getElementById('api-model-hint').textContent.includes('2')`);
   assert.equal(upstreamRequests.length,1,'typing is debounced into one upstream model-list request');
+  await fill('set-model','manual-unlisted-model');
+  assert.equal(await evaluate(`document.getElementById('api-model-list').tagName==='SELECT' && !document.getElementById('set-model').hasAttribute('list') && [...document.querySelectorAll('#api-model-list option')].filter(o=>o.value).length===2`),true,'manual input never filters discovered models');
+  await evaluate(`document.getElementById('api-model-list').value='alpha-second';document.getElementById('api-model-list').dispatchEvent(new Event('change',{bubbles:true}));`);
+  assert.equal(await evaluate(`document.getElementById('set-model').value==='alpha-second' && state.db.providers.find(p=>p.id===state.db.settings.provider).model==='alpha-second'`),true,'choosing a model updates the independent editable field and draft');
+  await fill('set-model','alpha-model');
+
   await fill('set-webai-url','https://example.com/');
   const alpha=await evaluate('state.db.settings.provider');
   await click('api-add');

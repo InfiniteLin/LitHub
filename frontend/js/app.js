@@ -2816,7 +2816,9 @@ function refreshApiModelOptions(id) {
   const list = $('#api-model-list'), hint = $('#api-model-hint');
   if (!list || !hint) return;
   const result = apiModelDiscovery.get(id);
-  list.replaceChildren(...result.models.map(value=>{ const option = document.createElement('option'); option.value = value; return option; }));
+  const placeholder = document.createElement('option'); placeholder.value = ''; placeholder.textContent = '选择模型';
+  list.replaceChildren(placeholder, ...result.models.map(value=>{ const option = document.createElement('option'); option.value = value; option.textContent = value; return option; }));
+  list.value = ''; list.disabled = result.models.length === 0;
   hint.textContent = result.message;
   hint.dataset.status = result.status;
   $('#set-model')?.setAttribute('aria-busy', String(result.status === 'loading'));
@@ -2865,8 +2867,8 @@ function apiSettingsHTML() {
       <label class="field api-name-field"><span>API 名称</span><input id="set-api-name" maxlength="80" value="${esc(selected.name)}" placeholder="给这个 API 起个名字"></label>
       <label class="field"><span>Base URL</span><input type="url" id="set-base" value="${esc(selected.base)}" placeholder="https://api.example.com/v1"></label>
       <label class="field"><span>API Key</span><div class="key-row"><input type="password" id="set-key" value="${esc(keyMaskFor(s.provider))}" placeholder="填写 API Key" autocomplete="off" spellcheck="false"><button class="btn sm" data-action="peek-key" title="显示或隐藏 API Key">显示</button></div></label>
-      <label class="field"><span>模型</span><input id="set-model" list="api-model-list" aria-describedby="api-model-hint" value="${esc(selected.model)}" placeholder="输入或选择模型" autocomplete="off">
-        <datalist id="api-model-list"></datalist><small id="api-model-hint" class="field-hint" role="status" aria-live="polite"></small></label>
+      <label class="field"><span>模型</span><div class="model-field-control"><input id="set-model" aria-describedby="api-model-hint" value="${esc(selected.model)}" placeholder="输入模型名称" autocomplete="off">
+        <select id="api-model-list" aria-label="选择上游模型" aria-describedby="api-model-hint"><option value="">选择模型</option></select></div><small id="api-model-hint" class="field-hint" role="status" aria-live="polite"></small></label>
       <label class="field"><span>温度 <b id="temp-val">${selected.temperature ?? 0.3}</b></span><input type="range" id="set-temp" min="0" max="1" step="0.1" value="${selected.temperature ?? 0.3}"></label>
     </div>` : ''}`}
     <div class="set-foot api-settings-foot">
@@ -4471,6 +4473,11 @@ document.addEventListener("input", (e) => {
 });
 document.addEventListener('focusin', e => { if (e.target.id === 'set-model') scheduleApiModels(); });
 document.addEventListener("change", (e) => {
+  if (e.target.id === 'api-model-list' && e.target.value) {
+    $('#set-model').value = e.target.value;
+    captureApiDraft();
+    e.target.value = '';
+  }
   if (e.target.id === "set-update-auto") {
     void AppUpdates.setAutoCheck(e.target.checked).catch(error => toast(esc(error.message), 'err'));
   }

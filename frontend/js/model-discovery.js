@@ -27,7 +27,7 @@ const ApiModelDiscovery = (() => {
           if (generation !== current || abort.signal.aborted) return;
           const models = Array.isArray(result.models) ? [...new Set(result.models.filter(m=>typeof m === 'string' && m.length > 0 && m.length <= 256))].slice(0,1000) : [];
           records.set(id,{status:result.ok ? 'ready' : 'unavailable',models,signature,at:now(),
-            message:models.length ? `已获取 ${models.length} 个模型，可输入筛选或手动填写。` : result.message || '未获取到模型列表，可手动填写模型。'});
+            message:models.length ? `已获取 ${models.length} 个模型，可从完整列表选择或手动填写。` : result.message || '未获取到模型列表，可手动填写模型。'});
         } catch {
           if (generation !== current || abort.signal.aborted) return;
           records.set(id,{status:'unavailable',models:[],signature,at:now(),message:'暂时无法获取模型列表，可继续手动填写。'});
