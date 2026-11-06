@@ -8,7 +8,9 @@ const PREFIX = "https://github.com/InfiniteLin/LitHub/releases/download/";
 
 function installerAsset(data) {
   const version = String(data.tag_name || '').replace(/^v/i, '');
-  const expectedNames = [`文枢 LitHub Setup ${version}.exe`, `LitHub Setup ${version}.exe`];
+  // GitHub normalizes spaces and non-ASCII characters in uploaded asset names.
+  const expectedNames = [`文枢 LitHub Setup ${version}.exe`, `LitHub Setup ${version}.exe`,
+    `LitHub.Setup.${version}.exe`, `文枢.LitHub.Setup.${version}.exe`];
   const candidates = (Array.isArray(data.assets) ? data.assets : []).filter(a =>
     a && expectedNames.includes(a.name)
     && Number.isSafeInteger(a.size) && a.size > 0 && a.size <= MAX_SIZE

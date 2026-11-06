@@ -45,6 +45,13 @@ try {
 
   assert.match(release.installer.url, /^https:\/\/github.com\/InfiniteLin\/LitHub\/releases\/download\/v0.3.0\//);
   assert.ok(!release.installer.url.includes('evil'));
+  for (const name of ['LitHub.Setup.0.3.0.exe', '文枢.LitHub.Setup.0.3.0.exe']) {
+    const normalized = installerAsset({ ...raw, assets: [{ ...raw.assets[0], name }] });
+    assert.equal(normalized.name, name, 'GitHub-normalized names remain discoverable');
+    assert.equal(normalized.sha256, release.installer.sha256);
+    assert.ok(normalized.url.endsWith(encodeURIComponent(name)));
+  }
+  assert.equal(installerAsset({ ...raw, assets: [{ ...raw.assets[0], name: 'LitHub.Setup.0.3.1.exe' }] }), null);
   for (const name of ['../../evil.exe', 'LitHub Setup 0.3.0-arm64.exe/evil.exe', 'uninstall.exe']) {
     assert.equal(installerAsset({ ...raw, assets: [{ ...raw.assets[0], name }] }), null);
   }
