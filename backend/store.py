@@ -7,6 +7,7 @@ PDF 根目录下 files/ 存原文，out/<id>/ 存译文与对照版。
 """
 
 import json
+import copy
 import os
 import shutil
 import threading
@@ -16,6 +17,7 @@ from datetime import datetime
 from pathlib import Path
 
 import secret
+from api_profiles import migrate_profiles, update_profiles
 from paths import DATA_DIR
 from pdf_storage import PdfStorage
 
@@ -25,11 +27,13 @@ _lock = threading.RLock()
 
 DEFAULT_SETTINGS = {
     "service": "bing",          # bing | openai（OpenAI 兼容）
-    "provider": "",             # deepseek | zhipu | openai | custom（当前选中的服务商）
+    "provider": "",             # 当前选中的用户 API ID
     "base_url": "",
     "api_key": "",              # 当前 provider 的 Key（冗余镜像，便于老代码直接读取）
     "api_keys": {},             # provider -> 加密后的 Key（每个服务商各存各的）
+    "api_profiles": [],         # 用户创建的 API；新库不预设服务商
     "model": "",
+    "temperature": 0.3,
     "target_lang": "zh",
     # ---- 网页 AI（免 token 路线）：在系统浏览器里打开，沿用本机已登录的账号 ----
     "web_ai_url": "https://chat.deepseek.com/",   # 默认站点，可在设置里改
@@ -87,7 +91,7 @@ def _ensure_dirs():
 
 def _empty():
     return {
-        "papers": {}, "tasks": {}, "settings": dict(DEFAULT_SETTINGS),
+        "papers": {}, "tasks": {}, "settings": copy.deepcopy(DEFAULT_SETTINGS),
         "prompts": {p["id"]: dict(p) for p in DEFAULT_PROMPTS}, "summaries": {},
         "categories": [{"id": "local", "name": "本地文献", "parent": None}],
         "notes": {},       # paper_id -> [note]
@@ -147,6 +151,8 @@ class Store:
 
     def __init__(self):
         self._db = _load()
+        if migrate_profiles(self._db["settings"]):
+            self._flush()
         self._annotation_trash = {}
         self._note_trash = {}
         program = Path(os.environ.get("LITHUB_PROGRAM_DIR") or Path(__file__).resolve().parent.parent)
@@ -350,10 +356,10 @@ class Store:
     # ---------- settings ----------
     def _key_for(self, cfg: dict, provider: str | None = None) -> str:
         """取某个 provider 名下的明文 Key；provider 为空则取当前选中的。
-        兼容老数据：api_keys 里没有时回落到全局 api_key。"""
+        不存在的 ID 返回空 Key，避免把其他 API 的凭据用于该服务。"""
         keys = cfg.get("api_keys") or {}
         prov = provider if provider is not None else (cfg.get("provider") or "")
-        enc = keys.get(prov) or (cfg.get("api_key") if prov in ("", cfg.get("provider") or "") else "")
+        enc = keys.get(prov) or ""
         return secret.decrypt(enc or "")
 
     def get_settings(self, provider: str | None = None):
@@ -365,8 +371,11 @@ class Store:
         """
         with _lock:
             # 老数据可能缺新加的键（如 web_ai_*）：用默认值补齐，保证对外字段稳定
-            cfg = {**{k: (v if not isinstance(v, (list, dict)) else (list(v) if isinstance(v, list) else dict(v)))
-                      for k, v in DEFAULT_SETTINGS.items()}, **dict(self._db["settings"])}
+            cfg = copy.deepcopy({**DEFAULT_SETTINGS, **self._db["settings"]})
+        if provider is not None:
+            selected = next((p for p in cfg["api_profiles"] if p["id"] == provider), None)
+            cfg.update(provider=provider, base_url=selected["base_url"] if selected else "",
+                       model=selected["model"] if selected else "", temperature=selected.get("temperature", 0.3) if selected else 0.3)
         cfg["api_key"] = self._key_for(cfg, provider)
         return cfg
 
@@ -392,33 +401,17 @@ class Store:
         约定：`api_key` 写到「当前 provider」名下（同时镜像到全局字段）；
         `api_keys` 可直接传 provider->明文 的整表（前端一次保存多个服务商时用）。
         """
-        fields = dict(fields)
-        per_provider = fields.pop("api_keys", None)
         with _lock:
             clean = {k: v for k, v in fields.items() if k in DEFAULT_SETTINGS and v is not None}
-            key_plain = clean.pop("api_key", None)
-            target_prov = clean.get("provider", self._db["settings"].get("provider") or "")
-
-            keys = dict(self._db["settings"].get("api_keys") or {})
-            if isinstance(per_provider, dict):
-                for prov, plain in per_provider.items():
-                    if plain is None:
-                        continue
-                    if plain == "":
-                        keys.pop(prov, None)
-                    elif not secret.is_encrypted(plain):
-                        keys[prov] = secret.encrypt(plain)
-                    else:
-                        keys[prov] = plain
-            if key_plain:
-                if not secret.is_encrypted(key_plain):
-                    key_plain = secret.encrypt(key_plain)
-                keys[target_prov] = key_plain
-                clean["api_key"] = key_plain       # 老字段镜像，兼容直接读它的代码
-
-            clean["api_keys"] = keys
-            self._db["settings"].update(clean)
-            self._flush()
+            updated = update_profiles(self._db["settings"], clean)
+            updated.update({k: v for k, v in clean.items() if k not in {"api_profiles", "api_keys", "api_key", "provider", "base_url", "model", "temperature"}})
+            previous = self._db["settings"]
+            self._db["settings"] = updated
+            try:
+                self._flush()
+            except Exception:
+                self._db["settings"] = previous
+                raise
             cfg = dict(self._db["settings"])
         cfg["api_key"] = self._key_for(cfg)
         return cfg

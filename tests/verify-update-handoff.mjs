@@ -25,19 +25,30 @@ SectionEnd
 `);
 execFileSync(compiler,['/V2',source],{windowsHide:true});
 writeFileSync(entry,`const {launchInstallerAfterExit}=require(${JSON.stringify(path.resolve('electron/update-launcher.js'))});
-(async()=>{await launchInstallerAfterExit(${JSON.stringify(installer)},process.execPath);
+(async()=>{const staging=await launchInstallerAfterExit(${JSON.stringify(installer)},process.execPath);
+ console.log('staging:'+JSON.stringify(staging));
+ require('node:fs').unlinkSync(${JSON.stringify(installer)});
  console.log('handoff-ready');
  await new Promise(r=>setTimeout(r,750));
  if(require('node:fs').existsSync(${JSON.stringify(marker)})) throw Error('Installer ran before parent exit');
 })().then(()=>process.exit(0)).catch(e=>{console.error(e);process.exit(1)});`);
+let stagingDirectory;
 try {
   const child=spawn(process.env.LITHUB_TEST_ELECTRON || require('electron'),[entry],{env:{...process.env,ELECTRON_RUN_AS_NODE:'1'},windowsHide:true,stdio:['ignore','pipe','pipe']});
   let output='';child.stdout.on('data',b=>output+=b);child.stderr.on('data',b=>output+=b);
   const timer=setTimeout(()=>child.kill(),20000);
   const code=await new Promise((resolve,reject)=>{child.once('exit',resolve);child.once('error',reject);});
   clearTimeout(timer);assert.equal(code,0,output);assert.ok(output.includes('handoff-ready'));
+  stagingDirectory=JSON.parse(output.match(/^staging:(.+)$/m)[1]);
   for(let i=0;i<200&&!existsSync(marker);i++)await new Promise(r=>setTimeout(r,100));
   assert.equal(existsSync(marker),true,'NSIS fixture started after Electron parent exited');
   assert.equal(readFileSync(marker,'utf8'),'installed:');
   console.log('PASS real Electron handoff waits for exit, runs NSIS and removes run-as-node environment');
-} finally {rmSync(root,{recursive:true,force:true,maxRetries:10,retryDelay:150});}
+} finally {
+  if(stagingDirectory){
+    const relative=path.relative(os.tmpdir(),stagingDirectory);
+    assert.ok(!relative.startsWith('..')&&!path.isAbsolute(relative)&&path.basename(stagingDirectory).startsWith('lithub-update-handoff-'));
+    rmSync(stagingDirectory,{recursive:true,force:true,maxRetries:10,retryDelay:150});
+  }
+  rmSync(root,{recursive:true,force:true,maxRetries:10,retryDelay:150});
+}

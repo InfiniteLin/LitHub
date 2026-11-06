@@ -24,6 +24,9 @@ with tempfile.TemporaryDirectory(prefix='lithub-installer-test-') as temporary:
         (install / 'pdfs/files').mkdir(parents=True)
         (install / 'app.exe').write_bytes(b'application binary')
         (install / 'resources/engine.bin').write_bytes(b'runtime binary')
+        (install / 'updates').mkdir()
+        update_payload = install / 'updates/installer.exe'
+        update_payload.write_bytes(b'updater cache fixture')
         pdf = install / 'pdfs/files/keep.pdf'
         pdf.write_bytes(b'user PDF fixture')
         script = f'''Unicode true
@@ -58,4 +61,5 @@ SectionEnd
         assert pdf.read_bytes() == b'user PDF fixture'
         assert not (install / 'app.exe').exists()
         assert not (install / 'resources').exists()
+        assert update_payload.exists() == updated, 'updates cache must survive upgrades and be removed on uninstall'
         print(f'PASS NSIS {"update" if updated else "uninstall"} removes binaries and preserves program-local PDFs')

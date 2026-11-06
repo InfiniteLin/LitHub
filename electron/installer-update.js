@@ -46,24 +46,49 @@ async function fetchAsset(fetch, url, signal) {
   throw Error("安装包下载跳转次数过多。");
 }
 
-async function verifyFile(file, expected) {
+async function verifyFile(file, expected, signal) {
+  signal?.throwIfAborted();
   const stat = await fs.promises.stat(file);
   if (stat.size !== expected.size) throw Error("安装包大小校验失败，请重新下载。");
   const hash = createHash("sha256");
-  for await (const chunk of fs.createReadStream(file)) hash.update(chunk);
+  for await (const chunk of fs.createReadStream(file)) { signal?.throwIfAborted(); hash.update(chunk); }
+  signal?.throwIfAborted();
   if (hash.digest("hex") !== expected.sha256) throw Error("安装包校验失败，请重新下载。");
 }
 
-async function pruneDownloads(directory) {
+async function pruneDownloads(directory, keep) {
   for (const entry of await fs.promises.readdir(directory, { withFileTypes: true })) {
     if (!entry.isDirectory() || !entry.name.startsWith('download-')) continue;
     const folder = path.join(directory, entry.name), marker = path.join(folder, '.lithub-update');
+    if (folder === keep) continue;
     try {
       const stat = await fs.promises.stat(marker);
       if (Date.now() - stat.mtimeMs > 24 * 60 * 60 * 1000)
         await fs.promises.rm(folder, { recursive: true, force: true });
     } catch { /* Only remove recognized, expired updater folders. */ }
   }
+}
+
+async function cachedInstaller(directory, asset, signal) {
+  for (const entry of await fs.promises.readdir(directory, { withFileTypes: true })) {
+    signal.throwIfAborted();
+    if (!entry.isDirectory() || !entry.name.startsWith('download-')) continue;
+    const folder = path.join(directory, entry.name), marker = path.join(folder, '.lithub-update');
+    let metadata;
+    try {
+      if ((await fs.promises.stat(marker)).size > 4096) continue;
+      metadata = JSON.parse(await fs.promises.readFile(marker, 'utf8'));
+    } catch { continue; }
+    if (metadata?.sha256 !== asset.sha256 || metadata?.size !== asset.size) continue;
+    const file = path.join(folder, 'installer.exe');
+    try { await verifyFile(file, asset, signal); return file; }
+    catch (error) {
+      signal.throwIfAborted();
+      // Recognized invalid caches are disposable; personal files and unmarked folders are untouched.
+      await fs.promises.rm(folder, { recursive: true, force: true }).catch(() => {});
+    }
+  }
+  return null;
 }
 
 function createInstallerUpdate({ directory, fetch, resolveRelease, install, onChange = () => {}, enabled = true }) {
@@ -93,9 +118,19 @@ function createInstallerUpdate({ directory, fetch, resolveRelease, install, onCh
         const asset = release?.installer;
         if (!asset) throw Error("此版本尚未提供可用的 Windows 安装包。");
         if (!asset.sha256) throw Error("此版本缺少 SHA-256 校验信息，请等待发布者重新上传安装包。");
-        await fs.promises.mkdir(directory, { recursive: true });
-        await pruneDownloads(directory);
-        work = await fs.promises.mkdtemp(path.join(directory, "download-"));
+        const destination = typeof directory === 'function' ? await directory() : directory;
+        signal.throwIfAborted();
+        await fs.promises.mkdir(destination, { recursive: true });
+        emit({ status: 'verifying', total: asset.size, version: release.version });
+        const cached = await cachedInstaller(destination, asset, signal);
+        signal.throwIfAborted();
+        await pruneDownloads(destination, cached && path.dirname(cached));
+        if (cached) {
+          ready = { file: cached, ...asset };
+          emit({ status: 'ready', received: asset.size, error: '' });
+          return;
+        }
+        work = await fs.promises.mkdtemp(path.join(destination, "download-"));
         await fs.promises.writeFile(path.join(work, '.lithub-update'), '1');
         const partial = path.join(work, "installer.part"), file = path.join(work, "installer.exe");
         emit({ status: "downloading", total: asset.size, version: release.version });
@@ -121,6 +156,7 @@ function createInstallerUpdate({ directory, fetch, resolveRelease, install, onCh
         emit({ status: "verifying", received });
         if (received !== asset.size || hash.digest("hex") !== asset.sha256) throw Error("安装包校验失败，请重新下载。");
         await fs.promises.rename(partial, file);
+        await fs.promises.writeFile(path.join(work, '.lithub-update'), JSON.stringify({ sha256: asset.sha256, size: asset.size }));
         ready = { file, ...asset };
         emit({ status: "ready", error: "" });
       } catch (error) {

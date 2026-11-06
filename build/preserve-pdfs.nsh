@@ -1,4 +1,5 @@
 ; Keep the program-local PDF library during both updates and uninstall.
+; Keep downloaded update packages across upgrades; remove their cache on a full uninstall.
 ; Preserve electron-builder's atomic move/restore behavior for installed binaries.
 !macro customRemoveFiles
   SetOutPath $TEMP
@@ -16,6 +17,9 @@
     StrCmp $R7 "." lithub_remove_next
     StrCmp $R7 ".." lithub_remove_next
     StrCmp $R7 "pdfs" lithub_remove_next
+    ${if} ${isUpdated}
+      StrCmp $R7 "updates" lithub_remove_next
+    ${endif}
     IfFileExists "$INSTDIR\$R7\*.*" lithub_remove_dir lithub_remove_file
   lithub_remove_dir:
     ${if} ${isUpdated}

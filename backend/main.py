@@ -516,12 +516,12 @@ MASK_PREFIX_LEN = 6   # 保留前 6 位做「是哪个 Key」的辨识，其余�
 
 
 def _mask(key: str) -> str:
-    """掩码与真实 Key **等长**（前 6 位明文 + 其余用 * 补足），
+    """掩码与真实 Key **等长**（最多显示前 6 位，至少隐藏末尾 4 位），
     这样输入框宽度/字符数与真实值一致，看起来就是一把真实 key。
     真实 Key 不会含 `*`，因此「含 * 即未修改」是可靠的判定。"""
     if not key:
         return ""
-    keep = min(MASK_PREFIX_LEN, len(key))
+    keep = min(MASK_PREFIX_LEN, max(0, len(key) - 4))
     return key[:keep] + MASK_CHAR * (len(key) - keep)
 
 
@@ -541,13 +541,23 @@ def _public_settings(cfg: dict, key_map: dict | None = None) -> dict:
     return out
 
 
+class ApiProfileBody(BaseModel):
+    id: str
+    name: str
+    base_url: str = ""
+    model: str = ""
+    temperature: float = 0.3
+
+
 class SettingsBody(BaseModel):
     service: str | None = None
     provider: str | None = None
     base_url: str | None = None
     api_key: str | None = None
     api_keys: dict[str, str] | None = None
+    api_profiles: list[ApiProfileBody] | None = None
     model: str | None = None
+    temperature: float | None = None
     target_lang: str | None = None
     web_ai_url: str | None = None
     web_ai_sites: list[dict] | None = None
@@ -566,13 +576,8 @@ def get_settings():
 
 @app.post("/api/settings")
 def set_settings(body: SettingsBody):
-    raw = body.model_dump()
-    fields = {k: v for k, v in raw.items() if v not in (None, "")}
-    # 这几个字段的「空串」是有意义的值（= 清空 / 回到自动检测），不能被上面的过滤吃掉。
-    # 只认前端**显式传过**的字段（model_fields_set），没传的不动，避免误清空。
-    for k in ("web_ai_browser_path", "web_ai_browser"):
-        if k in body.model_fields_set and raw.get(k) == "":
-            fields[k] = ""
+    raw = body.model_dump(exclude_unset=True)
+    fields = {k: v for k, v in raw.items() if v is not None}
     # api_key 是掩码（未修改）时不覆盖真实值
     if _is_mask(fields.get("api_key", "")):
         fields.pop("api_key")
@@ -582,7 +587,10 @@ def set_settings(body: SettingsBody):
             p: v for p, v in fields["api_keys"].items()
             if not _is_mask(str(v or ""))
         }
-    saved = store.set_settings(fields)
+    try:
+        saved = store.set_settings(fields)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
     return _public_settings(saved, store.get_api_key_map())
 
 
@@ -595,6 +603,24 @@ class TestConnectionBody(BaseModel):
     model: str | None = None
 
 
+@app.post("/api/settings/models")
+def list_upstream_models(body: TestConnectionBody):
+    from model_discovery import discover_models, same_origin
+    cfg = store.get_settings(body.provider)
+    base = (body.base_url if body.base_url is not None else cfg.get("base_url") or "").strip().rstrip("/")
+    typed = (body.api_key or "").strip()
+    if body.api_key is None or _is_mask(typed):
+        # A masked saved key belongs to its original host, not a newly typed address.
+        if not same_origin(base, cfg.get("base_url") or ""):
+            return {"ok": False, "models": [], "message": "地址已更改，请重新填写 API Key 后自动获取模型。"}
+        key = (cfg.get("api_key") or "").strip()
+    else:
+        key = typed
+    if not base or not key:
+        return {"ok": False, "models": [], "message": "填写 Base URL 和 API Key 后将自动获取模型。"}
+    return discover_models(base, key)
+
+
 @app.post("/api/settings/test")
 def test_settings(body: TestConnectionBody | None = None):
     """测试连接：用『界面当前填写值』优先，缺省回落到该 provider 已保存的配置。"""
@@ -602,16 +628,17 @@ def test_settings(body: TestConnectionBody | None = None):
     cfg = store.get_settings(draft.provider)
     key_map = store.get_api_key_map()
 
-    base_url = (draft.base_url or "").strip() or cfg.get("base_url") or "https://api.deepseek.com/v1"
-    model = (draft.model or "").strip() or cfg.get("model") or "deepseek-chat"
+    base_url = (draft.base_url if draft.base_url is not None else cfg.get("base_url") or "").strip()
+    model = (draft.model if draft.model is not None else cfg.get("model") or "").strip()
+    if not base_url or not model:
+        raise HTTPException(400, "请先添加 API 并填写 Base URL 和模型")
 
     # Key：界面填了明文就用它；填的是掩码/没填 → 用「该 provider 名下」已保存的 Key
     typed = (draft.api_key or "").strip()
-    if typed and not _is_mask(typed):
+    if draft.api_key is not None and not _is_mask(typed):
         api_key = typed
     else:
-        api_key = (key_map.get(draft.provider or cfg.get("provider") or "") or "").strip() \
-            or (cfg.get("api_key") or "")
+        api_key = (key_map.get(draft.provider or cfg.get("provider") or "") or "").strip()
     if not api_key or _is_mask(api_key):
         raise HTTPException(400, "尚未配置 API Key，请在上方填写后再测试")
 
@@ -625,7 +652,7 @@ def test_settings(body: TestConnectionBody | None = None):
             max_tokens=1,
         )
     except Exception as exc:
-        raise HTTPException(400, f"连接失败：{exc}")
+        raise HTTPException(400, f"连接失败：{str(exc).replace(api_key, '[API Key]')}")
     return {"ok": True, "model": model, "base_url": base_url}
 
 
@@ -791,9 +818,11 @@ def create_summary(body: SummaryBody):
     cfg = store.get_settings()
     api_key = (cfg.get("api_key") or "").strip()
     if not api_key or _is_mask(api_key):
-        raise HTTPException(400, "尚未配置 API Key，请到「设置 → AI 服务」填写")
-    base_url = cfg.get("base_url") or "https://api.deepseek.com/v1"
-    model = cfg.get("model") or "deepseek-chat"
+        raise HTTPException(400, "请先到「设置 → AI 服务」添加并配置 API")
+    base_url = cfg.get("base_url") or ""
+    model = cfg.get("model") or ""
+    if not base_url or not model:
+        raise HTTPException(400, "请到「设置 → AI 服务」填写当前 API 的 Base URL 和模型")
 
     mode = body.mode if body.mode in ("text", "vision") else "text"
     text = _extract_text(store.paper_file(body.paper_id))
@@ -841,7 +870,7 @@ def create_summary(body: SummaryBody):
                     user_message,
                 ],
                 stream=True,
-                temperature=0.3,
+                temperature=cfg.get("temperature", 0.3),
             )
             for chunk in stream:
                 delta = chunk.choices[0].delta.content if chunk.choices and chunk.choices[0].delta else None

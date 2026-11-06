@@ -85,7 +85,7 @@ try {
   await check('cached release is explicitly labelled after failure',`document.querySelector('.update-release-head').textContent.includes('上次发现的版本')`);
   await evaluate(`document.querySelector('[data-action="updates-check"]').click();finishCheck({status:'up-to-date',error:'',hasUpdate:false,release:null})`);
   await until('up-to-date state removes obsolete release card',`!document.querySelector('.update-release') && document.querySelector('.update-status').textContent.includes('最新正式版本')`);
-  await evaluate(`document.querySelector('[data-action="set-tab"][data-id="ai"]').click();document.querySelector('#set-model').value='Unsaved model choice';
+  await evaluate(`document.querySelector('[data-action="set-tab"][data-id="ai"]').click();document.querySelector('[data-action="api-add"]').click();document.querySelector('#set-model').value='Unsaved model choice';
     emitUpdate({status:'available',hasUpdate:true,notify:true,release:{version:'0.1.3',notes:'修复 PDF 渲染\\n改进笔记保存',publishedAt:'2026-10-25T00:00:00Z'}})`);
   await check('background result preserves unsaved settings form',`document.querySelector('#set-model').value==='Unsaved model choice' && document.querySelector('.toast-update') && document.querySelector('.set-tab[data-id="about"]').classList.contains('has-update')`);
   await evaluate(`location.hash='#/library'`);

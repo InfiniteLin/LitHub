@@ -116,7 +116,6 @@ def _run_one(task_id: str):
 
     cfg = store.get_settings()
     service = cfg.get("service") or "bing"
-    provider = cfg.get("provider") or ""
     cmd = [
         *_pdf2zh_cmd(),
         str(src),
@@ -127,19 +126,13 @@ def _run_one(task_id: str):
     # 复用 pdf2zh 内置翻译器：1.9.x 经环境变量配置（set_envs 读取 os.environ），
     # 键名与各翻译器类声明的 envs 一致
     env_extra: dict[str, str] = {}
-    if provider == "deepseek" and cfg.get("api_key"):
-        service = "deepseek"  # pdf2zh 原生 DeepseekTranslator（内置 base_url）
-        cmd = [*_pdf2zh_cmd(), str(src), "-s", service,
-               "-lo", cfg.get("target_lang", "zh"), "-o", str(out_dir)]
+    if service == "openai":
+        if not all(cfg.get(k) for k in ("api_key", "base_url", "model")):
+            raise ValueError("请先在「设置 → AI 服务」添加并配置 API，或改用必应翻译")
         env_extra = {
-            "DEEPSEEK_API_KEY": cfg["api_key"],
-            "DEEPSEEK_MODEL": cfg.get("model") or "deepseek-chat",
-        }
-    elif service == "openai" and cfg.get("api_key"):
-        env_extra = {
-            "OPENAI_BASE_URL": cfg.get("base_url") or "https://api.openai.com/v1",
+            "OPENAI_BASE_URL": cfg["base_url"],
             "OPENAI_API_KEY": cfg["api_key"],
-            "OPENAI_MODEL": cfg.get("model") or "gpt-4o-mini",
+            "OPENAI_MODEL": cfg["model"],
         }
 
     env = {**os.environ, "PYTHONIOENCODING": "utf-8", **env_extra}

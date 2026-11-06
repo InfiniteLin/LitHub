@@ -138,7 +138,7 @@ window.LithubAPI = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(fields),
     });
-    if (!r.ok) throw new Error("保存设置失败");
+    if (!r.ok) { const body = await r.json().catch(()=>({})); throw new Error(typeof body.detail === 'string' ? body.detail : '保存设置失败，请检查 API 配置'); }
     return r.json();
   },
 
@@ -158,6 +158,14 @@ window.LithubAPI = {
       body: JSON.stringify(draft),
     });
     if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || "连接失败");
+    return r.json();
+  },
+
+  async discoverModels(draft, { signal } = {}) {
+    const r = await fetch(`${API_BASE}/api/settings/models`, {
+      method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(draft), signal,
+    });
+    if (!r.ok) throw new Error('暂时无法获取模型列表');
     return r.json();
   },
 

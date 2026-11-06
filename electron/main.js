@@ -13,6 +13,8 @@ const { randomUUID } = require("node:crypto");
 const { selectSidecarPort, waitForOwnedSidecar } = require("./sidecar-connection");
 const { acquireDesktopInstance } = require("./desktop-instance");
 const { launchInstallerAfterExit } = require("./update-launcher");
+const { resolveUpdateDirectory } = require("./update-directory");
+const { pruneUpdateStaging } = require("./update-staging");
 
 let SIDECAR_PORT;
 const SIDECAR_INSTANCE = randomUUID();
@@ -552,11 +554,12 @@ ipcMain.handle("browser:close", () => closeBrowserSession());
 
 /* ---------------- 生命周期 ---------------- */
 app.whenReady().then(async () => {
+  if (isPackaged) await pruneUpdateStaging().catch(error => log("清理更新临时文件失败:", error.message));
   SIDECAR_PORT = await selectSidecarPort(process.env.LITHUB_API_PORT);
   updateService = createUpdateService({
     version: app.getVersion(), storageFile: path.join(app.getPath("userData"), "update-check.json"),
     canInstall: isPackaged && process.platform === "win32",
-    downloadDirectory: path.join(app.getPath("userData"), "updates"),
+    downloadDirectory: () => resolveUpdateDirectory({ executable: app.getPath("exe"), userData: app.getPath("userData") }),
     install: async file => {
       if (quitting || !win || win.isDestroyed()) throw Error("窗口正在关闭，请重新打开程序后更新。");
       const choice = await dialog.showMessageBox(win, { type: "question", buttons: ["重启并安装", "稍后"],

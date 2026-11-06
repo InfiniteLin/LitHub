@@ -2806,6 +2806,78 @@ function renderTasks() {
 }
 
 /* ---------------- 设置页 ---------------- */
+let settingsSaving = false, deletingApi = '';
+const apiModelDiscovery = ApiModelDiscovery.create({
+  request: (draft, options) => LithubAPI.discoverModels(draft, options),
+  onChange: id => refreshApiModelOptions(id),
+});
+function refreshApiModelOptions(id) {
+  if (state.route.view !== 'settings' || state.settingsTab !== 'ai' || state.db.settings.provider !== id) return;
+  const list = $('#api-model-list'), hint = $('#api-model-hint');
+  if (!list || !hint) return;
+  const result = apiModelDiscovery.get(id);
+  list.replaceChildren(...result.models.map(value=>{ const option = document.createElement('option'); option.value = value; return option; }));
+  hint.textContent = result.message;
+  hint.dataset.status = result.status;
+  $('#set-model')?.setAttribute('aria-busy', String(result.status === 'loading'));
+}
+function scheduleApiModels() {
+  if (!LithubAPI.live || state.route.view !== 'settings' || state.settingsTab !== 'ai') { apiModelDiscovery.cancel(); return; }
+  const s = state.db.settings, profile = state.db.providers.find(p=>p.id === s.provider);
+  apiModelDiscovery.schedule({ id:profile?.id, baseURL:profile?.base, key:profile ? keyMaskFor(profile.id) : '' });
+}
+function captureApiDraft() {
+  const s = state.db.settings, profile = state.db.providers.find(p=>p.id === s.provider);
+  if (profile && $('#set-api-name')) {
+    profile.name = $('#set-api-name').value;
+    profile.base = $('#set-base').value;
+    profile.model = $('#set-model').value;
+    profile.temperature = Number($('#set-temp').value);
+    const key = $('#set-key').value.trim();
+    if (!isKeyMask(key)) s.pendingKeys[profile.id] = key;
+    s.baseURL = profile.base; s.model = profile.model; s.temperature = profile.temperature;
+    const card = $$('.prov-card').find(card=>card.dataset.id === profile.id);
+    if (card) { card.querySelector('b').textContent = profile.name || '未命名 API'; card.querySelector('span').textContent = profile.base || '尚未配置地址'; }
+  }
+  // API card changes must also preserve edits in the web AI section below it.
+  for (const [id, field] of [['set-webai-url','webAiURL'],['set-webai-browser','webAiBrowser'],['set-webai-browser-path','webAiBrowserPath']]) {
+    if ($('#'+id)) s[field] = $('#'+id).value;
+  }
+  if ($('#webai-sites')) s.webAiSites = $$('#webai-sites .webai-site-row').map(row=>({
+    name: row.querySelector('.webai-site-name')?.value.trim() || '', url: row.querySelector('.webai-site-url')?.value.trim() || ''
+  }));
+}
+function selectApiProfile(id) {
+  const s = state.db.settings, profile = state.db.providers.find(p=>p.id === id);
+  s.provider = profile?.id || '';
+  s.baseURL = profile?.base || ''; s.model = profile?.model || ''; s.temperature = profile?.temperature ?? 0.3;
+}
+function apiSettingsHTML() {
+  const s = state.db.settings, profiles = state.db.providers, selected = profiles.find(p=>p.id === s.provider);
+  return `<section class="set-card api-settings">
+    <div class="set-card-head"><div><h3>模型服务</h3><p class="set-desc">添加你自己的 OpenAI 兼容 API，用于 AI 总结与问答。修改后保存设置。</p></div>
+      ${profiles.length ? `<button class="btn sm" data-action="api-add">${I('plus',14)}添加 API</button>` : ''}</div>
+    ${!profiles.length ? `<div class="api-empty"><span class="api-empty-icon">${I('sliders',24)}</span><h4>尚未添加 API</h4>
+      <p>添加服务地址、API Key 和模型后，即可使用 AI 总结。</p><button class="btn btn-primary" data-action="api-add">${I('plus',14)}添加 API</button></div>` : `
+    <div class="prov-grid">${profiles.map(p=>`<button class="prov-card ${s.provider === p.id ? 'active' : ''}" data-action="provider" data-id="${esc(p.id)}" aria-pressed="${s.provider === p.id}">
+      <b>${esc(p.name || '未命名 API')}</b><span>${esc(p.base || '尚未配置地址')}</span></button>`).join('')}</div>
+    ${selected ? `<div class="form-grid">
+      <label class="field api-name-field"><span>API 名称</span><input id="set-api-name" maxlength="80" value="${esc(selected.name)}" placeholder="给这个 API 起个名字"></label>
+      <label class="field"><span>Base URL</span><input type="url" id="set-base" value="${esc(selected.base)}" placeholder="https://api.example.com/v1"></label>
+      <label class="field"><span>API Key</span><div class="key-row"><input type="password" id="set-key" value="${esc(keyMaskFor(s.provider))}" placeholder="填写 API Key" autocomplete="off" spellcheck="false"><button class="btn sm" data-action="peek-key" title="显示或隐藏 API Key">显示</button></div></label>
+      <label class="field"><span>模型</span><input id="set-model" list="api-model-list" aria-describedby="api-model-hint" value="${esc(selected.model)}" placeholder="输入或选择模型" autocomplete="off">
+        <datalist id="api-model-list"></datalist><small id="api-model-hint" class="field-hint" role="status" aria-live="polite"></small></label>
+      <label class="field"><span>温度 <b id="temp-val">${selected.temperature ?? 0.3}</b></span><input type="range" id="set-temp" min="0" max="1" step="0.1" value="${selected.temperature ?? 0.3}"></label>
+    </div>` : ''}`}
+    <div class="set-foot api-settings-foot">
+      ${selected ? deletingApi === selected.id ? `<span class="api-delete-confirm">删除这个 API？<button class="btn sm" data-action="api-delete-confirm">删除</button><button class="btn sm" data-action="api-delete-cancel">取消</button></span>`
+        : `<button class="btn sm api-delete" data-action="api-delete">${I('trash',14)}删除 API</button>` : ''}
+      <span class="conn-state" id="conn-state"></span>
+      ${selected ? `<button class="btn" data-action="test-conn">${I('play',14)}测试连接</button>` : ''}
+      <button class="btn btn-primary" data-action="save-settings">保存设置</button>
+    </div>
+  </section>`;
+}
 const TABS = [
   { id: "ai", name: "AI 服务" },
   { id: "translate", name: "翻译" },
@@ -2822,34 +2894,7 @@ function renderSettings() {
     about: () => AppUpdates.html(),
     storage: storageSettingsHTML,
     ai: () => `
-      <section class="set-card">
-        <h3>模型服务</h3>
-        <p class="set-desc">选择 OpenAI 兼容的 API 提供商，用于 AI 总结与对话式问答。</p>
-        <div class="prov-grid">
-          ${state.db.providers.map((pv) => `
-            <button class="prov-card ${s.provider === pv.id ? "active" : ""}" data-action="provider" data-id="${pv.id}">
-              <b>${esc(pv.name)}</b><span>${esc(pv.base || "自定义 Base URL")}</span>
-            </button>`).join("")}
-        </div>
-        <div class="form-grid">
-          <label class="field"><span>Base URL</span><input type="text" id="set-base" value="${esc(s.baseURL)}" placeholder="https://api.example.com/v1"></label>
-          <label class="field"><span>API Key</span>
-            <div class="key-row"><input type="text" id="set-key" value="${esc(keyMaskFor(s.provider))}" placeholder="sk-…" autocomplete="off" spellcheck="false"></div>
-          </label>
-          <label class="field"><span>模型</span>
-            <input type="text" id="set-model" list="model-list" value="${esc(s.model)}" placeholder="deepseek-chat">
-            <datalist id="model-list">${(state.db.providers.find((x) => x.id === s.provider)?.models || []).map((m) => `<option value="${esc(m)}">`).join("")}</datalist>
-          </label>
-          <label class="field"><span>温度 <b id="temp-val">${s.temperature}</b></span>
-            <input type="range" id="set-temp" min="0" max="1" step="0.1" value="${s.temperature}">
-          </label>
-        </div>
-        <div class="set-foot">
-          <span class="conn-state" id="conn-state"></span>
-          <button class="btn" data-action="test-conn">${I("play", 14)}测试连接</button>
-          <button class="btn btn-primary" data-action="save-settings">保存设置</button>
-        </div>
-      </section>
+      ${apiSettingsHTML()}
 
       <section class="set-card" style="margin-top:18px">
         <h3>网页 AI</h3>
@@ -2972,8 +3017,10 @@ function renderSettings() {
   </header>
   <div class="set-tabs">${TABS.map((t) => `<button class="set-tab ${t.id === tab ? "active" : ""} ${t.id === 'about' && AppUpdates.hasUpdate() ? 'has-update' : ''}" data-action="set-tab" data-id="${t.id}">${t.name}</button>`).join("")}</div>
   <div class="set-body">${body}</div>`;
+  if (settingsSaving) $$('.set-card input, .set-card select, .set-card button').forEach(el=>{ el.disabled = true; });
   // AI 服务页：探测已安装的浏览器，填入「使用哪个浏览器」下拉
-  if (tab === "ai") refreshBrowserSelect();
+  if (tab === "ai") { refreshBrowserSelect(); scheduleApiModels(); refreshApiModelOptions(s.provider); }
+  else apiModelDiscovery.cancel();
   if (tab === "storage" && !pdfStorageState.info && !pdfStorageState.loading) loadPdfStorage();
 }
 
@@ -3357,6 +3404,7 @@ function render(opts = {}) {
   const hash = location.hash || "#/library";
   const [, view, id] = hash.split("/");
   const nextRoute = { view: view || "library", id };
+  if (nextRoute.view !== 'settings') apiModelDiscovery.cancel();
   // 路由切换会清掉 overlay-root / 重建视图，而 saveCurrentNote() 是从编辑器 DOM
   // 读值的 —— 必须在 DOM 还在时先把未保存的笔记刷出去。
   flushNoteEditor();
@@ -4245,30 +4293,37 @@ document.addEventListener("click", (e) => {
         .catch(error => toast(error.message, "err"));
       break;
     case "pdf-storage-apply": applyPdfStorage(); break;
-    case "set-tab": state.settingsTab = id; render(); break;
+    case "set-tab": captureApiDraft(); deletingApi = ''; state.settingsTab = id; render(); break;
+    case "api-add": {
+      if (settingsSaving) break;
+      captureApiDraft(); deletingApi = '';
+      const profile = {id:'api_'+crypto.randomUUID(),name:'新 API',base:'',model:'',temperature:0.3};
+      state.db.providers.push(profile); selectApiProfile(profile.id); render();
+      $('#set-api-name')?.focus(); $('#set-api-name')?.select();
+      break;
+    }
+    case "api-delete": if (!settingsSaving) { captureApiDraft(); deletingApi = state.db.settings.provider; render(); } break;
+    case "api-delete-cancel": captureApiDraft(); deletingApi = ''; render(); break;
+    case "api-delete-confirm": {
+      if (settingsSaving || deletingApi !== state.db.settings.provider) break;
+      captureApiDraft();
+      const s = state.db.settings, removed = s.provider;
+      state.db.providers = state.db.providers.filter(p=>p.id !== removed);
+      delete s.pendingKeys[removed]; delete s.keyMasks[removed];
+      apiModelDiscovery.forget(removed);
+      selectApiProfile(state.db.providers[0]?.id); deletingApi = ''; render();
+      toast('API 已移除，保存设置后生效'); break;
+    }
     case "provider": {
-      // 切服务商：先把当前输入框里的 Key 暂存到「原服务商」名下，
-      // 再切到新服务商并回显它自己的 Key（各服务商互不干扰）。
-      const s = state.db.settings;
-      const prev = s.provider;
-      const typedKey = ($("#set-key")?.value || "").trim();
-      s.keyMasks = s.keyMasks || {};
-      if (prev && typedKey && !isKeyMask(typedKey)) {
-        // 用户改过（不是掩码）才记录为待保存的新 Key
-        s.pendingKeys[prev] = typedKey;
-      }
-      s.provider = id;
-      const pv = state.db.providers.find((x) => x.id === id);
-      if (pv) {
-        s.baseURL = pv.base;
-        if (pv.models[0]) s.model = pv.models[0];
-      }
+      if (settingsSaving) break;
+      captureApiDraft(); selectApiProfile(id); deletingApi = '';
       render(); break;
     }
     case "engine": state.db.settings.engine = id; render(); break;
     case "peek-key": {
       const k = $("#set-key");
       k.type = k.type === "password" ? "text" : "password";
+      t.textContent = k.type === "password" ? "显示" : "隐藏";
       break;
     }
     case "test-conn": {
@@ -4302,7 +4357,10 @@ document.addEventListener("click", (e) => {
       break;
     }
     case "save-settings": {
+      if (settingsSaving) break;
+      captureApiDraft();
       const s = state.db.settings;
+      if (state.db.providers.some(p=>!p.name.trim())) { toast('请填写 API 名称', 'err'); break; }
       if ($("#set-base")) s.baseURL = $("#set-base").value;
       const keyInput = ($("#set-key")?.value.trim()) || "";
       if ($("#set-model")) s.model = $("#set-model").value;
@@ -4325,16 +4383,19 @@ document.addEventListener("click", (e) => {
       }
       if (LithubAPI.live) {
         const service = s.engine === "openai" ? "openai" : "bing";
-        // 掩码（含 *）或空 = 该服务商没改 Key，不提交，保留服务端真值。
-        const keyIsMask = !keyInput || isKeyMask(keyInput);
+        // 掩码不修改已保存的 Key；明确清空输入框则删除该 API 的 Key。
+        const keyIsMask = !$('#set-key') || isKeyMask(keyInput);
         // 合并所有待保存的服务商 Key（切服务商时暂存过的 + 当前这个）
         const keys = { ...(s.pendingKeys || {}) };
-        if (!keyIsMask) keys[s.provider] = keyInput;
+        if (!keyIsMask && s.provider) keys[s.provider] = keyInput;
+        settingsSaving = true;
+        $$('.set-card input, .set-card select, .set-card button').forEach(el=>{ el.disabled = true; });
         LithubAPI.saveSettings({
           service,
           provider: s.provider || "",
+          api_profiles: state.db.providers.map(p=>({id:p.id,name:p.name.trim(),base_url:p.base,model:p.model,temperature:p.temperature})),
           base_url: s.baseURL || "",
-          ...(keyIsMask ? {} : { api_key: keyInput }),
+          ...(!keyIsMask && s.provider ? { api_key: keyInput } : {}),
           ...(Object.keys(keys).length ? { api_keys: keys } : {}),
           model: s.model || "",
           target_lang: "zh",
@@ -4349,7 +4410,8 @@ document.addEventListener("click", (e) => {
           applyLiveSettings(saved);
           render();
           toast("设置已保存，已同步到本地服务");
-        }).catch(() => toast("设置已保存（同步本地服务失败）", "err"));
+        }).catch(error => toast(error.message || '保存失败，修改已保留，请重试', 'err'))
+          .finally(()=>{ settingsSaving = false; if (state.route.view === 'settings') render(); });
       } else {
         s.apiKey = keyInput;
         s.hasKey = Boolean(keyInput) && !isKeyMask(keyInput);
@@ -4384,6 +4446,8 @@ document.addEventListener("click", (e) => {
 
 /* 搜索输入 / 排序 / 温度滑杆 / 提示词切换 */
 document.addEventListener("input", (e) => {
+  if (e.target.matches('#set-api-name, #set-base, #set-key, #set-model, #set-temp, #set-webai-url, #set-webai-browser-path, .webai-site-name, .webai-site-url')) captureApiDraft();
+  if (e.target.matches('#set-base, #set-key')) scheduleApiModels();
   if (e.target.id==='note-search') renderNoteList();
   if (e.target.id === "set-temp") $("#temp-val").textContent = e.target.value;
   if (e.target.id === "prompt-sel") {
@@ -4405,6 +4469,7 @@ document.addEventListener("input", (e) => {
     updateNoteTabTitle();
   }
 });
+document.addEventListener('focusin', e => { if (e.target.id === 'set-model') scheduleApiModels(); });
 document.addEventListener("change", (e) => {
   if (e.target.id === "set-update-auto") {
     void AppUpdates.setAutoCheck(e.target.checked).catch(error => toast(esc(error.message), 'err'));
@@ -5569,16 +5634,16 @@ document.addEventListener("auxclick", (e) => {
 
 const coverIndex = (id) => [...id].reduce((a, c) => a + c.charCodeAt(0), 0) % 6;
 
-/* 服务端配置 → 前端状态。api_key 只有掩码，明文不进入渲染进程。
-   注意 sidecar 的 provider 决定翻译引擎（bing/openai/deepseek），与前端
-   「模型服务」卡片是两套字段：模型服务卡片只更新 baseURL/model，不覆盖 provider。
-   keys 是 provider -> 掩码 的映射：每个服务商各存各的 Key，切换时回显自己的。 */
+/* 服务端 API 列表 → 前端状态。已保存的 Key 仅返回掩码；新输入的明文只暂存在内存。
+   provider 是当前 API 的稳定 ID，重命名不改变 ID；翻译引擎由 service 单独决定。 */
 function applyLiveSettings(cfg) {
   if (!cfg || typeof cfg !== "object") return;
   const s = state.db.settings;
-  if (cfg.base_url) s.baseURL = cfg.base_url;
-  if (cfg.model) s.model = cfg.model;
-  if (cfg.provider) s.provider = cfg.provider;
+  if (Array.isArray(cfg.api_profiles)) state.db.providers = cfg.api_profiles.map(p=>({id:p.id,name:p.name,base:p.base_url || '',model:p.model || '',temperature:p.temperature ?? 0.3}));
+  if (typeof cfg.base_url === 'string') s.baseURL = cfg.base_url;
+  if (typeof cfg.model === 'string') s.model = cfg.model;
+  if (typeof cfg.provider === 'string') s.provider = cfg.provider;
+  if (typeof cfg.temperature === 'number') s.temperature = cfg.temperature;
   // 翻译引擎：bing | openai（与设置页「翻译 → 引擎」对应）
   if (cfg.service) s.engine = cfg.service === "openai" ? "openai" : "bing";
   // 每个服务商的 Key 掩码表
@@ -5613,8 +5678,6 @@ function keyMaskFor(provider) {
   if (provider in pending) return pending[provider];
   const masks = s.keyMasks || {};
   if (provider in masks) return masks[provider] || "";
-  // 演示模式（从未与服务端同步过）才用本地值兜底
-  if (!Object.keys(masks).length && s.provider === provider) return s.apiKey || "";
   return "";
 }
 

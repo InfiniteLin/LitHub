@@ -148,13 +148,13 @@ window.DB = {
 
   /* ---------- 设置 ---------- */
   settings: {
-    provider: "deepseek",
-    baseURL: "https://api.deepseek.com/v1",
+    provider: "",
+    baseURL: "",
     apiKey: "",
     hasKey: false,
     keyMasks: {},             // provider -> 已保存 Key 的掩码
     pendingKeys: {},          // provider -> 用户刚输入、尚未保存的 Key 明文
-    model: "deepseek-chat",
+    model: "",
     temperature: 0.3,
     /* 网页 AI：把本机浏览器嵌进应用，沿用已登录账号 */
     webAiURL: "https://chat.deepseek.com/",
@@ -173,12 +173,7 @@ window.DB = {
     accent: "zhu",
   },
 
-  providers: [
-    { id: "openai",   name: "OpenAI 兼容", base: "https://api.openai.com/v1",            models: ["gpt-4o-mini", "gpt-4o"] },
-    { id: "deepseek", name: "DeepSeek",    base: "https://api.deepseek.com/v1",          models: ["deepseek-chat", "deepseek-reasoner"] },
-    { id: "zhipu",    name: "智谱 AI",     base: "https://open.bigmodel.cn/api/paas/v4", models: ["glm-4-flash", "glm-4-plus"] },
-    { id: "custom",   name: "自定义",      base: "",                                     models: [] },
-  ],
+  providers: [],
 };
 
 /* ============================================================
