@@ -1,0 +1,2 @@
+Muya @muyajs/core 0.2.0 (MIT), https://github.com/marktext/marktext
+Built with build/editor/build.cjs. Third-party license notices are included alongside bundled scripts.

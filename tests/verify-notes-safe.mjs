@@ -126,7 +126,7 @@ try {
     LithubAPI.annotations=async()=>[];LithubAPI.summaryCache=async()=>({});
     location.hash='#/note/'+testPaper.id;
   `);
-  await until('real Vditor note and outline mounted', `NoteEditor._ready() && noteState.currentId==='na' && document.querySelector('#note-title').value==='方法笔记' && document.querySelectorAll('#note-outline-list button').length===1`);
+  await until('real Muya note and outline mounted', `NoteEditor._ready() && noteState.currentId==='na' && document.querySelector('#note-title').value==='方法笔记' && document.querySelectorAll('#note-outline-list button').length===1`);
   await evaluate(`holdSave=true;NoteEditor.setValue('First snapshot');markNoteDirty();void saveCurrentNote(true);`);
   await until('first save is pending', `typeof resolveSave==='function'`);
   await evaluate(`NoteEditor.setValue('Latest while saving');markNoteDirty();resolveSave();`);
@@ -157,51 +157,18 @@ try {
   await evaluate(`LithubAPI.uploadNoteImage=async()=>({url:'/api/notes/image/'+'b'.repeat(32)+'.png'});document.querySelector('[data-action="note-upload-retry"]').click();`);
   await until('image retry replaces its placeholder', `!document.querySelector('#note-uploads').textContent.trim() && NoteEditor.getValue().includes('![retry]')`);
   await evaluate(`NoteEditor.setValue('# Method\\n\\nFormat this text\\n\\n## Results\\n\\nDone');markNoteDirty();`);
-  await until('note outline updates', `document.querySelectorAll('#note-outline-list button').length===2 && document.querySelector('.vditor-ir p')?.textContent.includes('Format this')`);
-  await evaluate(`const p=[...document.querySelectorAll('.vditor-ir p')].find(n=>n.textContent.includes('Format this'));const r=document.createRange();r.selectNodeContents(p);const sel=getSelection();sel.removeAllRanges();sel.addRange(r);p.dispatchEvent(new MouseEvent('mouseup',{bubbles:true}));`);
-  await check('selection format bar stays compact', `document.querySelector('.note-formatbar').getBoundingClientRect().width<120`);
-  await evaluate(`document.querySelector('.note-formatbar button[aria-label="粗体"]').click()`);
-  await until('format toolbar changes real Markdown', `NoteEditor.getValue().includes('**Format this text**')`);
-  await evaluate(`NoteEditor.setValue('');NoteEditor.focus();`);
-  await sleep(300);
-  await send('Input.insertText',{text:'/'});
-  await send('Input.dispatchKeyEvent',{type:'keyUp',key:'/',code:'Slash',windowsVirtualKeyCode:191});
-  await until('slash opens insertion menu', `!!document.querySelector('.note-command-menu')`);
-  await evaluate(`[...document.querySelectorAll('.note-command-menu button')].find(b=>b.textContent==='表格').click()`);
-  await until('slash table command inserts Markdown table', `NoteEditor.getValue().includes('| 列一 | 列二 |') && !document.querySelector('.note-command-menu')`);
-  for (const [label,expected] of [['标题','## 标题'],['项目列表','- 条目'],['任务列表','- [ ] 待办事项'],['代码块','```python'],['公式','E = mc^2']]) {
-    await evaluate(`NoteEditor.setValue('');NoteEditor.focus()`);
-    await send('Input.insertText',{text:'/'});
-    await send('Input.dispatchKeyEvent',{type:'keyUp',key:'/',code:'Slash',windowsVirtualKeyCode:191});
-    await until(`slash ${label} ready`, `!!document.querySelector('.note-command-menu')`);
-    await evaluate(`[...document.querySelectorAll('.note-command-menu button')].find(b=>b.textContent===${JSON.stringify(label)}).click()`);
-    await check(`slash ${label} inserts expected Markdown`, `NoteEditor.getValue().replace(/ +/g,' ').includes(${JSON.stringify(expected)}) && !NoteEditor.getValue().split('\\n').some(line=>line.trim()==='/')`);
-  }
+  await until('native note outline updates', `document.querySelectorAll('#note-outline-list button').length===2 && document.querySelector('.note-muya-host p')?.textContent.includes('Format this')`);
   await evaluate(`NoteEditor.setValue('# Mode check\\n\\nInline $a^2$ and **bold**');markNoteDirty();`);
-  for (const mode of ['source','read','live']) {
+  for(const mode of ['read','live']) {
     await evaluate(`document.querySelector('[data-action="note-mode"][data-id="${mode}"]').click()`);
-    await until(`${mode} mode preserves Markdown`, `NoteEditor._ready() && NoteEditor.getMode()==='${mode}' && NoteEditor.getValue().includes('Mode check') && NoteEditor.getValue().includes('$a^2$')`);
-    if (mode!=='source') await until(`${mode} mode renders local math`, `!!document.querySelector('${mode==='read'?'.note-read-host':'.vditor-ir'} .katex')`);
+    await until(`${mode} preserves Markdown`, `NoteEditor._ready() && NoteEditor.getMode()==='${mode}' && NoteEditor.getValue().includes('Mode check') && NoteEditor.getValue().includes('$a^2$')`);
+    if(mode!=='source')await until(`${mode} renders local math`,`!!document.querySelector('${mode==='read'?'.note-md-preview':'.note-muya-host'} .katex')`);
   }
-  // Real pointer resize must modify only the selected duplicate image.
-  await evaluate(`const c=document.createElement('canvas');c.width=160;c.height=80;window.imageURL=c.toDataURL();
-    NoteEditor.setValue('![first]('+imageURL+')\\n\\n![second]('+imageURL+')');markNoteDirty();`);
-  await until('duplicate images render', `document.querySelectorAll('.vditor-ir img').length===2`);
-  const drag=await evaluate(`(()=>{const img=document.querySelectorAll('.vditor-ir img')[1];img.dispatchEvent(new PointerEvent('pointerover',{bubbles:true}));const r=NoteEditor._grip().getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2}})()`);
-  await send('Input.dispatchMouseEvent',{type:'mouseMoved',x:drag.x,y:drag.y});
-  await send('Input.dispatchMouseEvent',{type:'mousePressed',x:drag.x,y:drag.y,button:'left',clickCount:1});
-  await send('Input.dispatchMouseEvent',{type:'mouseMoved',x:drag.x+65,y:drag.y+30,buttons:1});
-  await send('Input.dispatchMouseEvent',{type:'mouseReleased',x:drag.x+65,y:drag.y+30,button:'left',clickCount:1});
-  await check('resizing second duplicate leaves first Markdown untouched', `NoteEditor.getValue().includes('![first](') && !NoteEditor.getValue().includes('![second](') && (NoteEditor.getValue().match(/<img/g)||[]).length===1`);
-  await evaluate(`document.querySelector('.vditor-ir img[style]').dispatchEvent(new MouseEvent('dblclick',{bubbles:true}));`);
-  await check('image preview offers original size', `!!document.querySelector('.note-image-preview .note-image-reset') && !document.querySelector('.vditor-img')`);
-  await evaluate(`document.querySelector('.note-image-reset').click()`);
-  await check('reset only removes dimensions from selected image', `NoteEditor.getValue().includes('![first](') && !NoteEditor.getValue().includes('width:')`);
   // Save a real caret and scroll position, then tear down and reopen the editor.
   await evaluate(`switchNote('nb');NoteEditor.setValue(Array.from({length:90},(_,i)=>'Paragraph '+i+' content.').join('\\n\\n'));markNoteDirty();`);
-  await until('long note renders for position recovery', `document.querySelectorAll('.vditor-ir p').length===90`);
-  await evaluate(`(()=>{const root=NoteEditor._instance().vditor.ir.element, p=[...root.querySelectorAll('p')].find(n=>n.textContent.includes('Paragraph 20 '));
-    const range=document.createRange();range.setStart(p.firstChild,4);range.collapse(true);getSelection().removeAllRanges();getSelection().addRange(range);root.scrollTop=420;window.positionBefore=NoteEditor.bookmark();})()`);
+  await until('long note renders for position recovery', `document.querySelectorAll('.note-muya-host p').length===90`);
+  await evaluate(`(()=>{const root=document.querySelector('.note-native-scroll'), p=[...root.querySelectorAll('p')].find(n=>n.textContent.includes('Paragraph 20 '));
+    const range=document.createRange();const node=p.querySelector('.mu-plain-text').firstChild;range.setStart(node,4);range.collapse(true);getSelection().removeAllRanges();getSelection().addRange(range);root.scrollTop=420;window.positionBefore=NoteEditor.bookmark();})()`);
   await evaluate(`(async()=>{await saveCurrentNote(true);location.hash='#/library'})()`);
   await until('notes unmount cleanly', `state.route.view==='library' && !NoteEditor.isMounted()`);
   await evaluate(`location.hash='#/note/'+testPaper.id`);

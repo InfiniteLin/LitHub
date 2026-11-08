@@ -1,7 +1,7 @@
 {
   "name": "lithub",
   "productName": "文枢 LitHub",
-  "version": "0.2.5",
+  "version": "0.2.6",
   "description": "文献管理与 AI 翻译对照阅读桌面应用",
   "author": "LitHub",
   "main": "electron/main.js",
@@ -17,12 +17,13 @@
     "runtime:prepare": "python -B build/prepare-runtime.py",
     "test:runtime": "python -m unittest discover -s tests -p test_runtime_staging.py",
     "benchmark:install": "node build/benchmark-install.mjs",
-    "test": "node tests/update-service.test.mjs && node tests/release-manifest.test.mjs && node tests/note-drafts.test.mjs && node tests/pdf-annot.geometry.test.mjs && node tests/pdf-view.lazy.test.mjs && node tests/pdf-view.lifecycle.test.mjs && node tests/pdf-render.quality.test.mjs && node tests/webai-controller.test.mjs && node tests/webai-electron.test.mjs",
+    "test": "node tests/update-service.test.mjs && node tests/release-manifest.test.mjs && node tests/update-download-cache.test.mjs && node tests/note-drafts.test.mjs && node tests/pdf-annot.geometry.test.mjs && node tests/pdf-view.lazy.test.mjs && node tests/pdf-view.lifecycle.test.mjs && node tests/pdf-render.quality.test.mjs && node tests/webai-controller.test.mjs && node tests/webai-electron.test.mjs",
     "verify:updates": "node tests/installer-update.test.mjs && node tests/verify-updates.mjs && node tests/verify-updates-electron.mjs && node tests/verify-update-handoff.mjs && npm run test:portable-update",
     "verify:api-profiles": "python tests/verify-api-profiles.py && node tests/verify-api-profiles.mjs",
     "test:model-discovery": "node tests/model-discovery.test.mjs && python -m unittest discover -s tests -p test_model_discovery.py",
     "verify:notes-safe": "python tests/verify-notes-safe.py && node tests/verify-notes-safe.mjs",
     "verify:pdf-view": "node tests/verify-pdf-view.mjs",
+    "verify:pdf-references": "node tests/verify-pdf-references.mjs",
     "verify:translation": "python tests/verify-translation-tasks.py && node tests/verify-pdf-view.mjs",
     "verify:translation-plugin": "python -m unittest discover -s tests -p test_translation_plugin.py && python tests/verify-translation-plugin.py && node tests/verify-translation-plugin.mjs",
     "verify:sidecar": "node tests/desktop-instance.test.mjs && node tests/sidecar-connection.test.mjs && node tests/verify-sidecar-isolation.mjs",
@@ -42,6 +43,8 @@
     "verify:library-ux": "node tests/verify-library-interaction.mjs",
     "verify:titlebar": "node tests/verify-titlebar.mjs",
     "verify:titlebar-desktop": "node tests/verify-titlebar-desktop.mjs",
+    "editor:build": "node build/editor/build.cjs",
+    "verify:note-muya": "python -m unittest discover -s tests -p test_note_import.py && node tests/verify-note-muya.mjs",
     "verify:notes": "node tests/verify-notes-annotations.mjs",
     "verify:annot": "node tests/verify-annot-accurate.mjs",
     "verify:annot-ui": "node tests/verify-annot-ui.mjs",
@@ -51,14 +54,17 @@
     "verify:note-popup": "node tests/verify-note-popup.mjs",
     "verify:annot-drag": "node tests/verify-annot-drag.mjs",
     "verify:note-tab": "node tests/verify-note-tab.mjs",
-    "verify:note-live": "node tests/verify-note-live.mjs",
+    "verify:note-live": "node tests/verify-note-muya.mjs",
     "verify:copy-pdf": "node tests/verify-copy-pdf.mjs",
     "verify:paste-file": "python tests/verify-paste-file.py"
   },
   "license": "MIT",
   "devDependencies": {
+    "@muyajs/core": "0.2.0",
     "electron": "^44.5.1",
-    "electron-builder": "^26.15.3"
+    "electron-builder": "^26.15.3",
+    "esbuild": "0.25.12",
+    "ot-json1": "1.0.2"
   },
   "dependencies": {
     "pdfjs-dist": "^6.4.299"

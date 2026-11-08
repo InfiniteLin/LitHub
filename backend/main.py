@@ -38,7 +38,7 @@ try:
 except Exception:  # 非 Windows / 缺依赖时不影响其它接口
     browser_embed = None
 
-SERVICE_VERSION = "0.2.5"
+SERVICE_VERSION = "0.2.6"
 
 
 @contextlib.asynccontextmanager
@@ -942,6 +942,31 @@ def update_note(pid: str, nid: str, body: NoteBody):
     if not note:
         raise HTTPException(404, "笔记不存在")
     return note
+
+
+@app.post("/api/papers/{pid}/notes/import")
+async def import_note(pid: str, file: UploadFile = File(...)):
+    if not store.get_paper(pid):
+        raise HTTPException(404, "文献不存在")
+    from note_import import prepare_import, MAX_BYTES
+    data = await file.read(MAX_BYTES + 1)
+    try:
+        imported = prepare_import(file.filename or '', data)
+    except (ValueError, UnicodeError, OSError) as exc:
+        raise HTTPException(400, str(exc)) from exc
+    written = []
+    try:
+        NOTE_IMAGE_DIR.mkdir(parents=True, exist_ok=True)
+        for name, image in imported['images'].items():
+            target = NOTE_IMAGE_DIR / name
+            target.write_bytes(image)
+            written.append(target)
+        note = store.add_note(pid, title=imported['title'], content=imported['content'])
+        return {'note': note, 'warnings': imported['warnings']}
+    except Exception:
+        for target in written:
+            target.unlink(missing_ok=True)
+        raise
 
 
 @app.delete("/api/papers/{pid}/notes/{nid}")

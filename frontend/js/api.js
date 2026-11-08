@@ -286,6 +286,11 @@ window.LithubAPI = {
     return r.json();
   },
 
+  async importNote(paperId, file) {
+    const data=new FormData();data.append('file',file);
+    const response=await fetch(`${API_BASE}/api/papers/${encodeURIComponent(paperId)}/notes/import`,{method:'POST',body:data});
+    const result=await response.json();if(!response.ok)throw new Error(result.detail||'导入笔记失败');return result;
+  },
   async createNote(paperId, { title = "", content = "" } = {}) {
     const r = await fetch(`${API_BASE}/api/papers/${paperId}/notes`, {
       method: "POST", headers: { "Content-Type": "application/json" },

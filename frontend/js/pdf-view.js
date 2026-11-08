@@ -66,6 +66,7 @@ window.PdfView = (() => {
     }
   }
   function invalidate(side) {
+    window.PdfReferences?.clear(side);
     side.revision++;
     side.rendered = false;
     side.paintedKey = null;
@@ -80,6 +81,7 @@ window.PdfView = (() => {
   function release(side) {
     // cancel() 异步生效，等绘制退出后再改 canvas 或清理 PageProxy。
     if (side.running) return;
+    window.PdfReferences?.clear(side);
     if (side.canvas) { side.canvas.width = 0; side.canvas.height = 0; }
     if (side.textDiv) side.textDiv.innerHTML = "";
     side.textLayer = null;
@@ -98,6 +100,7 @@ window.PdfView = (() => {
   function dispose(pane) {
     const pdf = pane?._pdf;
     if (!pdf) return Promise.resolve();
+    window.PdfReferences?.dispose(pane);
     pdf.dead = true;
     pane._pdf = null;
     pdf.io?.disconnect();
@@ -391,6 +394,7 @@ window.PdfView = (() => {
       side.paintedK = k;
       side.rendered = true;
       side.textDiv.style.visibility = "";
+      if (window.PdfReferences) ignore(window.PdfReferences.paint(pane, side, vp));
       window.PdfAnnot?.paintPage(pane, side.rowIndex);
       await paintDetail(pane, pdf, side, current);
     } catch (err) {
@@ -511,6 +515,7 @@ window.PdfView = (() => {
   async function mountDocuments(pane, urls, opts, bilingual) {
     dispose(pane);
     const pdf = { dead: false, entries: [], docs: [], doc: null, metas: [], perRow: bilingual ? 2 : 1,
+      referenceColumns: opts.referenceColumns === 2 ? 2 : 1,
       gap: 20, queue: new Set(), near: new Set(), byElement: new Map(), running: 0,
       fit: opts.fit || (bilingual ? "page" : "width"), zoom: Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, opts.zoom || 1)), bilingual };
     pane._pdf = pdf;
@@ -530,6 +535,7 @@ window.PdfView = (() => {
         ratio: pdf.pageRatio, lang: column ? "zh" : "en", revision: 0, rendered: false, near: false,
       })) }));
       buildRows(pane, pdf);
+      window.PdfReferences?.attach(pane);
       observe(pane, pdf);
       watchResize(pane, pdf);
       return n;

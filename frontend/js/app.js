@@ -1170,7 +1170,7 @@ function mountPdfHosts(p) {
   $$(".pdf-host").forEach(async (host) => {
     const pane = host.parentElement;
     host.remove();
-    const opts = { fit: state.reader.fit, zoom: state.reader.zoom };
+    const opts = { fit: state.reader.fit, zoom: state.reader.zoom, referenceColumns: host.dataset.srcCompare ? 2 : 1 };
     try {
       if (host.dataset.srcCompare) {
         // 左右并排对照版：单文档（页宽 = 原文 + 译文），按页面宽度自适应
@@ -1435,7 +1435,7 @@ const noteState = {
   currentId: null,
   dirty: false,
   saveTimer: 0,
-  mode: "live",        // live | source | read
+  mode: "live",        // live | read
   ready: false,        // 编辑器实例是否已就绪
   loading: false,
   query: '',
@@ -1507,12 +1507,12 @@ function noteToolsHTML({ compact = false } = {}) {
           <div class="note-browser-pop"><input id="note-search" type="search" placeholder="搜索标题或正文" aria-label="搜索笔记"><div id="note-list"></div></div>
         </details>
         <button class="icon-btn" data-action="note-new" title="新建笔记">${I("plus", 15)}</button>
+        <button class="btn sm" data-action="note-import" title="导入 Markdown 或包含图片的 ZIP">${I('upload',14)}导入 MD</button>
         <button class="icon-btn danger" data-action="note-del" title="删除当前笔记">${I("trash", 15)}</button>
         <details class="note-outline"><summary title="笔记目录">目录</summary><div id="note-outline-list"></div></details>
         <button class="icon-btn" data-action="note-export" title="导出 Markdown 和图片">${I('external', 15)}</button>
         <div class="seg seg-note-mode" title="视图模式">
-          <button class="seg-btn" data-action="note-mode" data-id="live" title="即时渲染（Obsidian 风格：边写边渲染）">${I("sparkle", 13)}</button>
-          <button class="seg-btn" data-action="note-mode" data-id="source" title="源码模式（左源码右预览）">${I("columns", 13)}</button>
+          <button class="seg-btn" data-action="note-mode" data-id="live" title="即时编辑（Muya / MarkText）">${I("sparkle", 13)}</button>
           <button class="seg-btn" data-action="note-mode" data-id="read" title="只读阅读">${I("book", 13)}</button>
         </div>`;
 }
@@ -1534,7 +1534,7 @@ function noteBodyHTML() {
     <div class="note-uploads" id="note-uploads" aria-live="polite"></div>
     <div class="note-body" id="note-body">
       <div class="note-editor-wrap" id="note-editor-wrap">
-        <div class="note-drop-hint" id="note-drop-hint">松开以插入图片</div>
+        <div class="note-drop-hint" id="note-drop-hint">松开以导入笔记或插入图片</div>
       </div>
     </div>
     <footer class="ai-foot">
@@ -2054,11 +2054,12 @@ function fillNoteForm(note) {
   renderNoteUploads();
 }
 
-/* 视图三态：即时渲染 / 源码分屏 / 只读。
-   真正的切换交给 NoteEditor（Vditor 4.x 没有 setMode，内部会销毁重建并保留内容） */
+/* 笔记视图：即时编辑 / 只读。
+   真正的切换交给 NoteEditor；保留 Muya 实例以维持原生历史和选区 */
 function layoutNoteMode() {
   const body = $("#note-body");
-  const mode = noteState.mode;
+  const mode = noteState.mode === 'read' ? 'read' : 'live';
+  noteState.mode = mode;
   if (!body) return;
   body.dataset.mode = mode;
   $$(".seg-note-mode .seg-btn").forEach((b) => b.classList.toggle("active", b.dataset.id === mode));
@@ -2071,7 +2072,7 @@ async function mountNoteEditor() {
   if (!host) return false;
   host.querySelector('.note-editor-fail')?.remove();
   const target = document.createElement("div");
-  target.className = "note-vditor-mount";
+  target.className = "note-editor-mount";
   host.appendChild(target);
   const ok = await NoteEditor.mount(target, {
     value: "",
@@ -2083,7 +2084,7 @@ async function mountNoteEditor() {
   });
   if (!host.isConnected || !target.isConnected) return false;
   if (!ok) {
-    host.innerHTML = `<div class="note-editor-fail">编辑器资源加载失败：请确认 frontend/vendor/vditor 存在</div>`;
+    host.innerHTML = `<div class="note-editor-fail">编辑器资源加载失败：请确认 frontend/vendor/muya 存在</div>`;
     toast("笔记编辑器加载失败", "err");
   }
   return ok;
@@ -2159,6 +2160,19 @@ async function createNote() {
     syncNoteCount(paperId);
     $('#note-title')?.focus();
   } catch (error) { toast('新建失败：' + error.message, 'err'); }
+}
+async function importNoteFiles(files) {
+  if(!LithubAPI.live||noteState.loading||!files?.length)return;
+  const paperId=noteState.paperId,generation=noteState.generation;
+  await flushNoteEditor();let count=0;
+  for(const file of files)try{
+    const result=await LithubAPI.importNote(paperId,file);count++;
+    if(generation===noteState.generation&&paperId===noteState.paperId&&NoteEditor.isMounted()){
+      noteState.notes.unshift(result.note);selectNote(result.note.id);syncNoteCount(paperId);
+    }
+    if(result.warnings?.length)toast(`${file.name}：${result.warnings.length} 张本地图片未导入，请将 MD 与图片一起打包为 ZIP。`,'warn');
+  }catch(error){toast(`${file.name} 导入失败：${error.message}`,'err');}
+  if(count)toast(`已导入 ${count} 篇笔记`,'ok');
 }
 async function deleteCurrentNote() {
   if (!LithubAPI.live || noteState.loading) return;
@@ -2239,9 +2253,9 @@ async function uploadNoteImage(blob, filename = "image.png") {
 }
 
 /* 在光标处插入文本（保持滚动位置与选区） */
-function insertAtCursor(text) {
+async function insertAtCursor(text) {
   if (!noteState.ready) return;
-  NoteEditor.insertValue(text);
+  await NoteEditor.insertValue(text);
   markNoteDirty();
 }
 
@@ -2256,7 +2270,14 @@ async function handleNoteImageFiles(files) {
     const id=crypto.randomUUID(), token=`【图片上传中·${id}】`;
     const job={id,entry,file,token,status:'上传中'};
     noteUploads.set(id,job);
-    insertAtCursor(`\n${token}\n`);
+    await insertAtCursor(`\n\n${token}\n\n`);
+    // Native image/HTML selections can have no text insertion point. Keep the
+    // upload bound to its original note and append a paragraph in that case.
+    if (!entry.data.content.includes(token)) {
+      const content=(noteMatches(entry)?NoteEditor.getValue():entry.data.content)+`\n\n${token}\n\n`;
+      noteDrafts.change(entry,{...entry.data,content});
+      if(noteMatches(entry)){NoteEditor.setValue(content);markNoteDirty();}
+    }
     renderNoteUploads();
     runNoteUpload(job);
   }
@@ -3858,6 +3879,10 @@ document.addEventListener("click", (e) => {
       break;
     }
     case "note-new": createNote(); break;
+    case "note-import": {
+      const input=document.createElement('input');input.type='file';input.accept='.md,.markdown,.zip';input.multiple=true;
+      input.onchange=()=>importNoteFiles(input.files);input.click();break;
+    }
     case "note-del": deleteCurrentNote(); break;
     case "note-save": saveCurrentNote(false); break;
     case "note-select": switchNote(id); break;
@@ -4505,9 +4530,7 @@ document.addEventListener("change", (e) => {
   }
 });
 
-/* 笔记图片粘贴 / 拖入由 Vditor 内部的 upload.handler 接管
-   （见 note-editor.js 的 uploadImages → uploadNoteImage）。
-   这里只需在编辑器容器上显示拖放提示。 */
+/* Muya 负责正文编辑，宿主负责将图片和 Markdown 文件保存到当前文献。 */
 document.addEventListener("dragover", (e) => {
   if (!e.target.closest?.("#note-editor-wrap")) return;
   e.preventDefault();
@@ -4519,8 +4542,10 @@ document.addEventListener("dragleave", (e) => {
 });
 document.addEventListener("drop", (e) => {
   if (!e.target.closest?.("#note-editor-wrap")) return;
-  // Vditor 自己会读取 dataTransfer.files 并调用 upload.handler；
-  // 这里只做两件事：收起提示、阻止冒泡触发「拖入 PDF 导入」
+  // 文件交给笔记导入或图片上传；正文编辑交给 Muya。
+  const files=[...(e.dataTransfer?.files||[])];
+  if(files.some(file=>/\.(md|markdown|zip)$/i.test(file.name))){e.preventDefault();void importNoteFiles(files);}
+  else if(files.some(file=>file.type.startsWith('image/'))){e.preventDefault();void handleNoteImageFiles(files);}
   $("#note-drop-hint")?.classList.remove("show");
   e.stopPropagation();
 }, true);

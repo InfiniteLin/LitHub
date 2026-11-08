@@ -69,6 +69,7 @@ try {
   await until('download action reaches desktop bridge',`updateOpened===1`);
   await evaluate(`document.querySelector('[data-action="updates-download"]').click()`);
   await until('in-app download shows progress and prevents duplicate actions',`document.querySelector('.update-download progress')?.value===40 && document.querySelector('[data-action="updates-check"]').disabled && document.querySelector('[data-action="updates-download"]').disabled`);
+  await check('download does not masquerade as an update check',`document.querySelector('[data-action="updates-check"]').textContent==='检查更新'`);
   await evaluate(`document.querySelector('[data-action="updates-cancel"]').click()`);
   await until('cancel restores download action',`!document.querySelector('.update-download') && !document.querySelector('[data-action="updates-download"]').disabled`);
   await evaluate(`emitUpdate({download:{status:'ready',version:'0.1.2'}})`);

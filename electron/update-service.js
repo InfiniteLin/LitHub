@@ -72,7 +72,11 @@ function createUpdateService({ version, storageFile, fetch, openExternal, onChan
       if (saved.release) {
         // Revalidate the cache; never load an external URL from preferences.
         const r = saved.release;
-        prefs.release = normalizeRelease({ tag_name: r.tag, name: r.name, body: r.notes, published_at: r.publishedAt });
+        const assets = [r.installer, r.portable].filter(a => a && typeof a === 'object').map(a => ({
+          name: a.name, size: a.size, state: 'uploaded', digest: `sha256:${a.sha256}`,
+        }));
+        prefs.release = normalizeRelease({ tag_name: r.tag, name: r.name, body: r.notes,
+          published_at: r.publishedAt, assets });
       }
     }
   } catch { /* Missing/corrupt preferences use defaults; the library is untouched. */ }
@@ -80,9 +84,15 @@ function createUpdateService({ version, storageFile, fetch, openExternal, onChan
   let inFlight = null, controller = null, startupTimer = null, interval = null, stopped = false;
   const installer = createInstallerUpdate({ directory: downloadDirectory, fetch, install,
     enabled: canInstall, packageKind: distribution, onChange: () => emit(), resolveRelease: async () => {
-      await check();
-      if (status !== "available") throw Error(error || "暂无可安装的新版本。");
-      return prefs.release;
+      // Download the discovered release, independently of later check failures/backoff.
+      // Old caches without asset metadata require an explicit check, never a hidden one.
+      const release = prefs.release;
+      if (!release || compareVersions(release.version, version) <= 0)
+        throw Error("尚未发现可下载的新版本，请先点击「检查更新」。");
+      const asset = distribution === 'portable' ? release.portable : (release.installer || release.portable);
+      if (!asset?.sha256)
+        throw Error("已保存的更新信息缺少下载地址或校验信息，请点击「检查更新」后重试。");
+      return release;
     } });
 
   function baseStatus() {

@@ -955,6 +955,11 @@ body.webai-resizing * { cursor: col-resize !important; }
 }
 .annot-del-float:hover { background: var(--err); transform: translate(-50%, -50%) scale(1.15); }
 .textLayer ::selection { background: rgba(73, 132, 203, .25); }
+.pdf-reference-layer { position:absolute; inset:0; z-index:3; pointer-events:none; }
+.pdf-reference-link { position:absolute; margin:0; padding:0; border:0; border-radius:2px; background:transparent; pointer-events:auto; cursor:pointer; }
+.pdf-reference-link:hover,.pdf-reference-link:focus-visible { background:#4984cb18; outline:1px solid #4984cb80; }
+.pdf-reference-nav { position:fixed; z-index:20; display:flex; align-items:center; gap:8px; max-width:min(450px,70vw); padding:4px; border:1px solid var(--line); border-radius:9px; background:var(--surface); box-shadow:var(--shadow-page); font-size:12px; }
+.pdf-reference-nav[hidden],.pdf-reference-nav [hidden] { display:none; }
 /* 批注标记：页边的小铅笔按钮 */
 .annot-mark {
   position: absolute; transform: translate(-50%, -50%);
@@ -1501,6 +1506,16 @@ body.note-resizing .panes { transition: none; }
 /* 编辑区：Vditor 挂载容器（三种视图由 JS 切换，见 note-editor.js） */
 .note-body { flex: 1; display: flex; min-height: 0; border-top: 1px solid var(--line); margin-top: 8px; }
 .note-editor-wrap { position: relative; display: flex; flex-direction: column; flex: 1; min-width: 0; }
+.note-muya-mount { flex:1; min-height:0; min-width:0; display:flex; flex-direction:column; color:var(--text); background:var(--surface); }
+.note-native-scroll { flex:1; min-height:0; overflow:auto; padding:22px 30px 90px; }
+.note-muya-host { min-height:240px; }
+.note-md-preview { padding:16px 0; overflow-wrap:anywhere; line-height:1.5; }
+.note-md-preview img { max-width:100%; }
+.note-md-preview pre { overflow:auto; padding:14px; background:var(--bg); border-radius:6px; }
+.note-md-preview table { border-collapse:collapse; width:100%; }
+.note-md-preview :is(th,td) { border:1px solid var(--line); padding:6px 10px; }
+.note-muya-mount [hidden] { display:none!important; }
+.muya-ui { z-index:330; }
 .note-vditor-mount { flex: 1; min-height: 0; display: flex; }
 .note-vditor-mount > .note-vditor-host { flex: 1; min-height: 0; }
 .note-vditor-mount .note-read-host { flex: 1; min-height: 0; overflow-y: auto; }
@@ -2109,3 +2124,15 @@ button.note-save-state.err { text-decoration:underline dotted; }
 .sidebar-resize::before { content: ''; position: absolute; top: 0; bottom: 0; left: 3px; width: 2px; background: var(--accent); opacity: 0; transition: opacity .15s; }
 .sidebar-resize:hover::before, .sidebar-resize:focus-visible::before, body.sidebar-resizing .sidebar-resize::before { opacity: .7; }
 body.sidebar-resizing, body.sidebar-resizing * { cursor: col-resize !important; user-select: none !important; }
+
+/* Muya colors follow the application, including its native floating menus. */
+.note-muya-mount,.mu-float-container { --editor-color:var(--text); --editor-bg-color:var(--surface); --float-bg-color:var(--surface); --float-border-color:var(--line); --table-border-color:var(--line); --code-block-bg-color:var(--bg); --icon-color:var(--muted); }
+.note-md-preview { color:var(--text); }
+.note-native-scroll { container-type:inline-size; }
+
+.note-muya-host .mu-container { max-width:860px; padding:0 22px 70px; }
+.note-muya-host { --editor-color-80:color-mix(in srgb,var(--text) 85%,transparent); --editor-color-50:var(--muted); --editor-color-30:var(--line); --editor-color-10:var(--line); --editor-color-04:var(--bg); }
+
+.note-muya-host .mu-container :is(p,blockquote,ul,ol,dl,table,figure:not(.mu-table)) { padding-top:.2em; padding-bottom:.2em; }
+.note-muya-host .mu-container :is(h1,h2,h3,h4,h5,h6) { padding-top:.3em; padding-bottom:.25em; }
+.note-md-preview p { margin:.4em 0; }

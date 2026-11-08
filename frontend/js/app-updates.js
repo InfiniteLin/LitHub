@@ -72,11 +72,11 @@ window.AppUpdates = (() => {
       ${s?.lastUpdate && !s.lastUpdate.ok ? `<p class="update-warning">上次更新未完成，已尝试恢复旧程序：${esc(s.lastUpdate.error)}</p>` : ''}
       ${s?.settingsError ? `<p class="update-warning">${esc(s.settingsError)}</p>` : ''}
       ${transferring || d.status === 'ready' || d.error ? `<div class="update-download" role="status" aria-live="polite">
-        <p>${esc(({preparing:'正在获取更新包信息…', downloading:`正在下载 ${d.total ? Math.min(100, Math.floor(d.received / d.total * 100)) : 0}%`,
+        <p>${esc(({preparing:'正在准备下载…', downloading:`正在下载 ${d.total ? Math.min(100, Math.floor(d.received / d.total * 100)) : 0}%`,
           verifying:'正在校验更新包…', ready:`v${d.version || release?.version || ''} 已下载，可以重启更新。`, installing:'正在准备重启更新…'})[d.status] || '')}</p>
         ${d.status === 'downloading' ? `<progress max="${Number(d.total) || 1}" value="${Number(d.received) || 0}" aria-label="更新下载进度"></progress><small>${(d.received / 1048576).toFixed(1)} / ${(d.total / 1048576).toFixed(1)} MB</small>` : ''}
         ${d.error ? `<p class="update-warning">${esc(d.error)}</p>` : ''}</div>` : ''}
-      <div class="set-foot update-actions"><button class="btn" data-action="updates-check" ${!bridge || busy ? 'disabled' : ''}>${busy ? '正在检查…' : '检查更新'}</button>
+      <div class="set-foot update-actions"><button class="btn" data-action="updates-check" ${!bridge || busy ? 'disabled' : ''}>${loading || s?.status === 'checking' ? '正在检查…' : '检查更新'}</button>
         ${d.status === 'ready' ? `<button class="btn btn-primary" data-action="updates-install">${portable ? '重启并更新' : '重启并安装'}</button>`
           : release ? `<button class="btn btn-primary" data-action="updates-download" ${!s.canInstall || busy ? 'disabled' : ''}>${transferring ? '正在更新…' : d.status === 'error' ? '重新下载' : '下载更新'}</button>` : ''}
         ${['preparing','downloading','verifying'].includes(d.status) ? '<button class="btn" data-action="updates-cancel">取消下载</button>' : ''}

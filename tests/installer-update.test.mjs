@@ -138,7 +138,7 @@ try {
     install:async()=>{installs++;return false;},openExternal:async()=>{throw Error('should not open browser');} });
   await service.check({automatic:true});assert.equal(assetRequests,0,'automatic checks never download installers');
   await service.download();
-  assert.equal(checks, 2, 'fresh metadata before downloading');
+  assert.equal(checks, 1, 'download uses discovered metadata without another update check');
   assert.equal(service.getState().download.status, 'ready');
   await service.install(); assert.equal(installs, 1); assert.equal(service.getState().download.status, 'ready');
   service.stop();
@@ -165,5 +165,5 @@ try {
   if (before===undefined) delete process.env.ELECTRON_RUN_AS_NODE; else process.env.ELECTRON_RUN_AS_NODE=before;
   for(let i=0;i<100&&!existsSync(marker);i++) await new Promise(r=>setTimeout(r,30));
   assert.deepEqual(JSON.parse(readFileSync(marker)), {env:'',args:['/S','--updated']});
-  console.log('PASS fresh release metadata, postpone install and wait-for-exit handoff with clean restart environment');
+  console.log('PASS discovered release download, postpone install and wait-for-exit handoff with clean restart environment');
 } finally { rmSync(root, { recursive:true, force:true }); }

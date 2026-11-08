@@ -108,7 +108,7 @@ function createInstallerUpdate({ directory, fetch, resolveRelease, install, onCh
       let timeout;
       try {
         emit({ status: "preparing", received: 0, total: 0, error: "" });
-        // Refresh metadata, including GitHub's SHA-256 digest; never trust a disk cache for execution.
+        // Use the discovered release metadata; bytes are still verified before download reuse/install.
         let abort;
         const aborted = new Promise((_, reject) => {
           abort = () => reject(signal.reason);

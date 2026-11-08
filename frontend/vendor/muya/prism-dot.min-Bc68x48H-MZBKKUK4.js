@@ -1,0 +1,5 @@
+(function(n){var r="(?:"+["[a-zA-Z_\\x80-\\uFFFF][\\w\\x80-\\uFFFF]*","-?(?:\\.\\d+|\\d+(?:\\.\\d*)?)",'"[^"\\\\]*(?:\\\\[^][^"\\\\]*)*"',`<(?:[^<>]|(?!<!--)<(?:[^<>"']|"[^"]*"|'[^']*')+>|<!--(?:[^-]|-(?!->))*-->)*>`].join("|")+")",a={markup:{pattern:/(^<)[\s\S]+(?=>$)/,lookbehind:!0,alias:["language-markup","language-html","language-xml"],inside:n.languages.markup}};function e(t,i){return RegExp(t.replace(/<ID>/g,(function(){return r})),i)}n.languages.dot={comment:{pattern:/\/\/.*|\/\*[\s\S]*?\*\/|^#.*/m,greedy:!0},"graph-name":{pattern:e(`(\\b(?:digraph|graph|subgraph)[ 	\r
+]+)<ID>`,"i"),lookbehind:!0,greedy:!0,alias:"class-name",inside:a},"attr-value":{pattern:e(`(=[ 	\r
+]*)<ID>`),lookbehind:!0,greedy:!0,inside:a},"attr-name":{pattern:e(`([\\[;, 	\r
+])<ID>(?=[ 	\r
+]*=)`),lookbehind:!0,greedy:!0,inside:a},keyword:/\b(?:digraph|edge|graph|node|strict|subgraph)\b/i,"compass-point":{pattern:/(:[ \t\r\n]*)(?:[ewc_]|[ns][ew]?)(?![\w\x80-\uFFFF])/,lookbehind:!0,alias:"builtin"},node:{pattern:e("(^|[^-.\\w\\x80-\\uFFFF\\\\])<ID>"),lookbehind:!0,greedy:!0,inside:a},operator:/[=:]|-[->]/,punctuation:/[\[\]{};,]/},n.languages.gv=n.languages.dot})(Prism);
