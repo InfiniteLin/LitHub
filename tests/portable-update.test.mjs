@@ -36,7 +36,7 @@ try {
   const checksBeforeDownload=urls.length;
   await service.download();assert.equal(service.getState().download.status,'ready');
   assert.ok(urls.slice(checksBeforeDownload).every(u=>!u.includes('/releases/latest')));
-  assert.ok(urls.some(u=>u.endsWith('.zip')));assert.ok(!urls.some(u=>u.endsWith('.exe')));
+  assert.ok(urls.some(u=>new URL(u).pathname.endsWith('.zip')));assert.ok(!urls.some(u=>new URL(u).pathname.endsWith('.exe')));
   await service.install();assert.equal(installs,1);assert.equal(service.getState().download.status,'ready');service.stop();
   const missing=createUpdateService({version:'0.2.3',storageFile:path.join(root,'missing.json'),canInstall:true,distribution:'portable',downloadDirectory:path.join(root,'updates'),
     fetch:async()=>new Response(JSON.stringify({...raw,assets:raw.assets.slice(0,1)}))});

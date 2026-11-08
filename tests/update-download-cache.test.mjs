@@ -21,7 +21,10 @@ function make(options={}) {
       if(url.includes('api.github.com'))return failure
         ? new Response('',{status:429,headers:{'retry-after':'3600'}})
         : new Response(JSON.stringify(metadata));
-      assert.equal(url,'https://github.com/InfiniteLin/LitHub/releases/download/v0.2.5/LitHub-0.2.5-win-x64.zip');
+      const requested=new URL(url);
+      assert.ok(requested.searchParams.get('lithub_download'));
+      requested.search='';
+      assert.equal(requested.href,'https://github.com/InfiniteLin/LitHub/releases/download/v0.2.5/LitHub-0.2.5-win-x64.zip');
       return new Response(corrupt?Buffer.from('bad'):payload);
     },...options});
   services.push(service);

@@ -1,7 +1,7 @@
 "use strict";
 const fs = require("node:fs");
 const path = require("node:path");
-const { createHash } = require("node:crypto");
+const { createHash, randomUUID } = require("node:crypto");
 
 const MAX_SIZE = 2 * 1024 ** 3;
 const PREFIX = "https://github.com/InfiniteLin/LitHub/releases/download/";
@@ -30,22 +30,55 @@ function allowedDownloadURL(value) {
       u.hostname === "release-assets.githubusercontent.com" || u.hostname === "objects.githubusercontent.com");
 }
 
-// Redirects are validated before each request. No renderer-provided URL/path is used.
-async function fetchAsset(fetch, url, signal) {
-  for (let redirects = 0; redirects <= 5; redirects++) {
-    if (!allowedDownloadURL(url)) throw Error("安装包下载地址无效。");
-    const response = await fetch(url, { signal, redirect: "manual", credentials: "omit" });
-    if ([301, 302, 303, 307, 308].includes(response.status)) {
-      const location = response.headers.get("location");
-      await response.body?.cancel();
-      if (!location) throw Error("安装包下载跳转无效。");
-      url = new URL(location, url).href;
-    } else {
-      if (!response.ok) throw Error(`下载失败（HTTP ${response.status}），请重试。`);
-      return response;
+async function discardResponse(response) {
+  // Electron returns a Node stream; tests/other fetch implementations may use a Web stream.
+  if (typeof response.body?.cancel === 'function') await response.body.cancel();
+  else response.body?.destroy();
+}
+
+function freshAssetURL(value) {
+  const url = new URL(value);
+  // Bust intermediary caches only at the stable GitHub endpoint. Modifying the
+  // signed storage URL (including its query string) invalidates its signature.
+  if (url.hostname === 'github.com') url.searchParams.set('lithub_download', randomUUID());
+  return url.href;
+}
+
+// Resolve a fresh signed attachment URL, independently of release discovery/API limits.
+async function fetchAsset(fetch, source, signal, transport) {
+  if (!allowedDownloadURL(source)) throw Error("安装包下载地址无效。");
+  for (let attempt = 0; attempt < 2; attempt++) {
+    let url = freshAssetURL(source);
+    for (let redirects = 0; redirects <= 5; redirects++) {
+      signal?.throwIfAborted();
+      if (!allowedDownloadURL(url)) throw Error("安装包下载地址无效。");
+      const response = await fetch(url, { signal, transport, redirect: "manual", credentials: "omit", cache: 'no-store',
+        headers: { 'Cache-Control': 'no-cache, no-store', Pragma: 'no-cache' } });
+      if ([301, 302, 303, 307, 308].includes(response.status)) {
+        const location = response.headers.get("location");
+        await discardResponse(response);
+        if (!location) throw Error("安装包下载跳转无效。");
+        url = new URL(location, url).href;
+      } else {
+        if (response.ok) return response;
+        await discardResponse(response);
+        // Cached/expired signed URLs can fail with 400/401/403. Retry the fixed
+        // attachment endpoint once, never the expired URL or the GitHub API.
+        if (attempt === 0 && new URL(source).hostname === 'github.com' &&
+            new URL(url).hostname !== 'github.com' && [400, 401, 403].includes(response.status)) break;
+        const error = Error(`下载失败（HTTP ${response.status}），请重试。`);
+        if ([400, 401, 403].includes(response.status) && new URL(url).hostname !== 'github.com')
+          error.code = 'ERR_UPDATE_SIGNED_URL';
+        throw error;
+      }
+      if (redirects === 5) throw Error("安装包下载跳转次数过多。");
     }
   }
-  throw Error("安装包下载跳转次数过多。");
+}
+
+function retryableTransfer(error) {
+  return /ERR_UPDATE_SIGNED_URL|ERR_HTTP2_PROTOCOL_ERROR|ERR_QUIC_PROTOCOL_ERROR|ERR_SPDY_PROTOCOL_ERROR|ERR_CONNECTION_(?:RESET|CLOSED)|ERR_CONTENT_LENGTH_MISMATCH|ERR_INCOMPLETE_CHUNKED_ENCODING|ECONNRESET|ERR_STREAM_PREMATURE_CLOSE/.test(
+    `${error?.code || ''} ${error?.message || ''}`);
 }
 
 async function verifyFile(file, expected, signal) {
@@ -138,26 +171,40 @@ function createInstallerUpdate({ directory, fetch, resolveRelease, install, onCh
         const partial = path.join(work, "installer.part"), file = path.join(work, asset.name.endsWith('.zip') ? 'package.zip' : 'installer.exe');
         emit({ status: "downloading", total: asset.size, version: release.version });
         const armTimeout = () => { clearTimeout(timeout); timeout = setTimeout(() => controller?.abort(new Error("下载超时，请重试。")), 60000); };
-        armTimeout();
-        const response = await fetchAsset(fetch, asset.url, signal);
-        if (!response.body) throw Error("安装包下载内容为空。");
-        const handle = await fs.promises.open(partial, "wx");
-        const hash = createHash("sha256");
-        let received = 0, lastEmit = 0;
-        try {
-          for await (const chunk of response.body) {
-            signal.throwIfAborted(); armTimeout();
-            received += chunk.length;
-            if (received > asset.size) throw Error("安装包大小不符合发布信息。");
-            hash.update(chunk);
-            let offset = 0;
-            while (offset < chunk.length) offset += (await handle.write(chunk, offset, chunk.length - offset)).bytesWritten;
-            if (Date.now() - lastEmit > 200) { emit({ received }); lastEmit = Date.now(); }
+        for (let transfer = 0; transfer < 2; transfer++) {
+          let response;
+          try {
+            armTimeout();
+            response = await fetchAsset(fetch, asset.url, signal, transfer ? 'http1' : undefined);
+            if (!response.body) throw Error("安装包下载内容为空。");
+            signal.throwIfAborted();
+            const handle = await fs.promises.open(partial, "wx");
+            const hash = createHash("sha256");
+            let received = 0, lastEmit = 0;
+            try {
+              for await (const chunk of response.body) {
+                signal.throwIfAborted(); armTimeout();
+                received += chunk.length;
+                if (received > asset.size) throw Error("安装包大小不符合发布信息。");
+                hash.update(chunk);
+                let offset = 0;
+                while (offset < chunk.length) offset += (await handle.write(chunk, offset, chunk.length - offset)).bytesWritten;
+                if (Date.now() - lastEmit > 200) { emit({ received }); lastEmit = Date.now(); }
+              }
+            } finally { await handle.close(); }
+            signal.throwIfAborted();
+            emit({ status: "verifying", received });
+            if (received !== asset.size || hash.digest("hex") !== asset.sha256) throw Error("安装包校验失败，请重新下载。");
+            break;
+          } catch (error) {
+            if (response) await discardResponse(response).catch(() => {});
+            if (signal.aborted || transfer || !retryableTransfer(error)) throw error;
+            // Restart the entire transfer with a clean file/hash and fresh redirect.
+            // Never append to an unverified partial file or re-check release metadata.
+            await fs.promises.rm(partial, { force: true });
+            emit({ status: 'downloading', received: 0 });
           }
-        } finally { await handle.close(); }
-        signal.throwIfAborted();
-        emit({ status: "verifying", received });
-        if (received !== asset.size || hash.digest("hex") !== asset.sha256) throw Error("安装包校验失败，请重新下载。");
+        }
         await fs.promises.rename(partial, file);
         await fs.promises.writeFile(path.join(work, '.lithub-update'), JSON.stringify({ sha256: asset.sha256, size: asset.size }));
         ready = { file, ...asset };

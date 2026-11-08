@@ -16,7 +16,11 @@ const NoteEditor=(()=>{
     })().catch(e=>{loading=null;throw e;});
     return loading;
   }
-  const localImages=text=>String(text||'').replace(/https?:\/\/(?:127\.0\.0\.1|localhost)(?::\d+)?(\/api\/notes\/image\/[a-f0-9]{32}\.(?:png|jpg|jpeg|webp|gif|svg))\b/gi,'$1');
+  const localImages=text=>String(text||'').replace(/(?:https?:\/\/(?:127\.0\.0\.1|localhost)(?::\d+)?|file:\/\/)(\/api\/notes\/image\/[a-f0-9]{32}\.(?:png|jpg|jpeg|webp|gif|svg))\b/gi,'$1');
+  // Muya treats root-relative image sources as file:// paths. Resolve owned
+  // attachments for the editor only; getValue keeps storage/export port-free.
+  const editorImages=text=>localImages(text).replace(/(?<![\w:/])\/api\/notes\/image\/[a-f0-9]{32}\.(?:png|jpg|jpeg|webp|gif|svg)\b/gi,
+    src=>new URL(src,typeof API_BASE==='string'?API_BASE:document.baseURI).href);
   function notify(){if(ready)callbacks.onChange?.();}
   function getValue(){
     if(mode==='live'&&instance&&ready){
@@ -33,7 +37,7 @@ const NoteEditor=(()=>{
     if(instance&&ready)instance._lithubBoundary?.flush();
     value=incoming;lastSelection=null;
     if(!ready)return;
-    if(instance){instance.setContent(value,false);liveHost=instance.domNode;setEditable(editable);}
+    if(instance){instance.setContent(editorImages(value),false);liveHost=instance.domNode;setEditable(editable);}
     if(mode!=='live')renderPreview();
   }
   function setEditable(next){
@@ -89,7 +93,7 @@ const NoteEditor=(()=>{
     target.classList.add('note-muya-mount');
     target.innerHTML='<div class="note-native-scroll"><div class="note-muya-host"></div><article class="note-md-preview" hidden></article></div>';
     scroll=target.querySelector('.note-native-scroll');liveHost=target.querySelector('.note-muya-host');preview=target.querySelector('article');
-    instance=new kit.Muya(liveHost,{markdown:value,lineHeight:1.5,math:true,footnote:true,frontMatter:true,codeBlockLineNumbers:true,disableHtml:false});
+    instance=new kit.Muya(liveHost,{markdown:editorImages(value),lineHeight:1.5,math:true,footnote:true,frontMatter:true,codeBlockLineNumbers:true,disableHtml:false});
     instance.locale(kit.zh);instance.init();instance._lithubBoundary=kit.persistenceBoundary(instance);liveHost=instance.domNode;ready=true;
     instance.on('json-change',()=>{if(container===target&&mode==='live'){value=getValue();notify();}});
     instance.on('selection-change',()=>{const b=bookmark();if(b.selection)lastSelection=b;});
@@ -110,7 +114,7 @@ const NoteEditor=(()=>{
       if(selection?.isCollapsed){const block=selection.anchorBlock,prefix=/^#{1,6}\s+/.exec(block.text)?.[0].length||0;if(selection.anchor.offset<prefix)block.setCursor(prefix,prefix,true);}
       await new Promise(requestAnimationFrame);
       if(ticket!==serial||revision!==contentRevision)return;
-      const data=new DataTransfer();data.setData('text/plain',text);
+      const data=new DataTransfer();data.setData('text/plain',editorImages(text));
       await instance.editor.clipboard.pasteHandler(new ClipboardEvent('paste',{clipboardData:data}));
       if(ticket===serial){value=getValue();notify();}
     });return insertion;

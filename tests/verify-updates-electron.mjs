@@ -29,6 +29,7 @@ app.whenReady().then(async()=>{
   server=createServer((req,res)=>{
     if(req.url==='/redirect'){res.writeHead(302,{location:'/asset'});res.end();return;}
     if(req.url==='/slow'){res.write('started');return;}
+    if(req.url==='/broken'){res.writeHead(200,{'Content-Length':'1000'});res.write('partial');setTimeout(()=>res.destroy(),50);return;}
     if(req.url==='/asset'){res.end(payload);return;}
     res.setHeader('Content-Type','application/json');const metadata={tag_name:'v0.1.2',draft:false,prerelease:false,body:'Integration release',
       assets:[{name:'LitHub Setup 0.1.2.exe',size:payload.length,state:'uploaded',digest:'sha256:'+digest}]};res.end(JSON.stringify(req.url==='/manifest'?{schemaVersion:1,release:metadata}:metadata));});
@@ -39,6 +40,8 @@ app.whenReady().then(async()=>{
   const aborter=new AbortController();const pendingSlow=requestUpdate(net,local+'/slow',{signal:aborter.signal});
   const abortTimer=setTimeout(()=>aborter.abort(),100);
   try {await assert.rejects((async()=>{const slow=await pendingSlow;for await(const chunk of slow.body){void chunk;}})());}finally{clearTimeout(abortTimer);}
+  await assert.rejects((async()=>{const broken=await requestUpdate(net,local+'/broken');for await(const chunk of broken.body){void chunk;}})(),
+    error=>error.code==='ERR_STREAM_PREMATURE_CLOSE'||/ERR_CONTENT_LENGTH_MISMATCH/.test(error.message));
   console.log('PASS native manual redirect capture, forbidden redirects and request cancellation');
   const opened=[];let installCalls=0;
   service=createUpdateService({version:'0.1.1',storageFile:${JSON.stringify(path.join(dir,'state.json'))},

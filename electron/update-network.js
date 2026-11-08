@@ -3,6 +3,8 @@
 // net.fetch rejects manual redirects in Electron. Expose each redirect as a
 // response so the update caller can validate its destination before requesting it.
 function requestUpdate(net,url,options={}) {
+  if(options.transport==='http1')return require('./update-http1').requestHTTP1(url,options,
+    value=>require('electron').session.defaultSession.resolveProxy(value));
   return new Promise((resolve,reject)=>{
     const {signal}=options;
     if(signal?.aborted){reject(signal.reason);return;}
@@ -28,7 +30,10 @@ function requestUpdate(net,url,options={}) {
     request.on('response',response=>{
       body=response;
       body.once('end',cleanup);body.once('close',cleanup);
-      response.on('aborted',()=>body.destroy(signal?.reason||Error('更新请求已中断。')));
+      response.on('aborted',()=>{
+        const error=signal?.reason||Object.assign(Error('更新下载连接中断。'),{code:'ERR_STREAM_PREMATURE_CLOSE'});
+        body.destroy(error);
+      });
       resolve({status:response.statusCode,ok:response.statusCode>=200&&response.statusCode<300,
         headers:headersFor(response.headers),body,
         json:async()=>{const chunks=[];for await(const chunk of body)chunks.push(Buffer.from(chunk));return JSON.parse(Buffer.concat(chunks).toString('utf8'));}});
