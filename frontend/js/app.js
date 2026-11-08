@@ -368,6 +368,7 @@ function renderSidebar() {
         <span class="nav-ico">${I("sliders", 16)}</span><span class="nav-label">设置</span>
       </button>
     </footer>`;
+  SidebarResize.attach($("#sidebar"));
 
   document.documentElement.dataset.theme = state.db.settings.theme;
   document.documentElement.dataset.accent = state.db.settings.accent;
@@ -2941,6 +2942,7 @@ function renderSettings() {
         </div>
       </section>`,
     translate: () => `
+      ${TranslationPlugin.html()}
       <section class="set-card">
         <h3>翻译引擎</h3>
         <p class="set-desc">全文翻译基于本地 pdf2zh 管线（版面级替换，保留公式与图表）。默认使用免费 Bing 引擎；在「AI 服务」中配置 Key 后可切换为 OpenAI 兼容 API。</p>
@@ -3024,6 +3026,7 @@ function renderSettings() {
   if (tab === "ai") { refreshBrowserSelect(); scheduleApiModels(); refreshApiModelOptions(s.provider); }
   else apiModelDiscovery.cancel();
   if (tab === "storage" && !pdfStorageState.info && !pdfStorageState.loading) loadPdfStorage();
+  TranslationPlugin.mount();
 }
 
 const pdfStorageState = { info: null, loading: false, error: "", busy: false };

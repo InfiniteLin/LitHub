@@ -146,6 +146,7 @@ body:not(.desktop) .tb-drag { display: none; }
 
 /* ---------- 侧边栏 ---------- */
 #sidebar {
+  position: relative; min-width: 0;
   width: 248px; flex: none;
   display: flex; flex-direction: column;
   background: var(--bg-side);
@@ -2103,3 +2104,8 @@ button.note-save-state.err { text-decoration:underline dotted; }
 .model-field-control { display: flex; gap: 8px; min-width: 0; }
 .model-field-control input { flex: 1; min-width: 0; width: 0; }
 .model-field-control select { flex: 0 0 114px; width: 114px; min-width: 0; }
+
+.sidebar-resize { position: absolute; top: 0; right: -4px; bottom: 0; width: 8px; z-index: 6; cursor: col-resize; touch-action: none; -webkit-app-region: no-drag; }
+.sidebar-resize::before { content: ''; position: absolute; top: 0; bottom: 0; left: 3px; width: 2px; background: var(--accent); opacity: 0; transition: opacity .15s; }
+.sidebar-resize:hover::before, .sidebar-resize:focus-visible::before, body.sidebar-resizing .sidebar-resize::before { opacity: .7; }
+body.sidebar-resizing, body.sidebar-resizing * { cursor: col-resize !important; user-select: none !important; }

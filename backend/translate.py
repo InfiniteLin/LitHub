@@ -11,6 +11,7 @@ import time
 from pathlib import Path
 
 from store import store
+from translation_plugin import manager as plugin_manager
 
 _progress_re = re.compile(r"(\d{1,3})%\|")
 _queue: "queue.Queue[str]" = queue.Queue()
@@ -22,7 +23,9 @@ _ACTIVE = {"queued", "running"}
 
 def submit(paper_id: str) -> dict:
     """创建和入队共用锁，并发请求复用同一篇文献的活动任务。"""
-    with _procs_lock:
+    with plugin_manager.lock, _procs_lock:
+        if plugin_manager.snapshot()["status"] == "installing":
+            raise ValueError("翻译插件正在更新，请完成或取消更新后再开始翻译")
         paper = store.get_paper(paper_id)
         if not paper:
             raise KeyError("文献不存在")
@@ -69,6 +72,9 @@ def _pdf2zh_cmd():
       2. 开发机：PATH 里的 pdf2zh（普通 pip install 会在 Scripts/ 下生成）。
       3. 当前解释器旁边的 pdf2zh.exe。
     """
+    independent = plugin_manager.command()
+    if independent:
+        return independent
     here = Path(__file__).resolve().parent
     cli = here / "pdf2zh_cli.py"
     if cli.exists() and _module_available("pdf2zh.pdf2zh"):
@@ -239,3 +245,11 @@ def enqueue(task_id: str):
         _worker = threading.Thread(target=_worker_loop, daemon=True)
         _worker.start()
     _queue.put(task_id)
+
+
+def _plugin_switch_guard():
+    if any(t["status"] in _ACTIVE for t in store.list_tasks(limit=None)):
+        raise ValueError("请先完成或取消翻译任务，再更新或恢复翻译插件")
+
+
+plugin_manager.guard = _plugin_switch_guard

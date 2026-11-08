@@ -588,6 +588,10 @@ app.whenReady().then(async () => {
         if (!response.ok) throw Error("无法确认翻译任务状态，请稍后重试。");
         const tasks = await response.json();
         if (!Array.isArray(tasks) || tasks.length) throw Error("请先等待翻译完成，或在任务队列中取消翻译，再安装更新。");
+        const pluginResponse = await net.fetch(`http://127.0.0.1:${SIDECAR_PORT}/api/settings/translation-plugin`,
+          { signal: AbortSignal.timeout(5000) });
+        if (!pluginResponse.ok) throw Error("无法确认翻译插件状态，请稍后重试。");
+        if ((await pluginResponse.json()).busy) throw Error("请先完成或取消翻译插件更新，再更新软件。");
       };
       await ensureReady();
       // NSIS handles replacing this installation and restarting it (--force-run).
@@ -620,8 +624,14 @@ app.on("before-quit", (event) => {
   if (quitting) return;
   quitting = true;
   // Keep the sidecar alive until pending native launches have been cancelled and closed.
-  closeBrowserSession(true).then(result => {
-    if (!result.ok) log("退出时清理浏览器失败:", result.error);
+  Promise.allSettled([
+    closeBrowserSession(true).then(result => {
+      if (!result.ok) log("退出时清理浏览器失败:", result.error);
+    }),
+    net.fetch(`http://127.0.0.1:${SIDECAR_PORT}/api/settings/translation-plugin/cancel`,
+      { method: 'POST', signal: AbortSignal.timeout(5000) }),
+  ]).then(results => {
+    if (results[1].status === 'rejected') log('退出时取消插件更新失败:', results[1].reason?.message);
   }).finally(() => {
     shutdownComplete = true;
     stopSidecar();

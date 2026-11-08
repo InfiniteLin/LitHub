@@ -38,7 +38,7 @@ try:
 except Exception:  # 非 Windows / 缺依赖时不影响其它接口
     browser_embed = None
 
-SERVICE_VERSION = "0.2.4"
+SERVICE_VERSION = "0.2.5"
 
 
 @contextlib.asynccontextmanager
@@ -55,6 +55,7 @@ async def lifespan(_app: FastAPI):
 
     threading.Thread(target=_rebuild, daemon=True).start()
     yield
+    translate.plugin_manager.cancel()
     try:
         _browser_session.shutdown()
     finally:
@@ -491,6 +492,20 @@ def tasks(active_only: bool = False):
 
 
 # ---------- 设置 ----------
+
+@app.get("/api/settings/translation-plugin")
+def translation_plugin_status():
+    return translate.plugin_manager.snapshot()
+
+
+@app.post("/api/settings/translation-plugin/{operation}")
+def translation_plugin_operation(operation: Literal["check", "install", "cancel", "restore"]):
+    try:
+        if operation == "cancel":
+            return translate.plugin_manager.cancel()
+        return translate.plugin_manager.start(operation)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc))
 
 class PdfStorageBody(BaseModel):
     directory: str | None = None

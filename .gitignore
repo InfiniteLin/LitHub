@@ -28,6 +28,7 @@ build/runtime-report.json
 backend/data/
 /pdfs/
 /updates/
+/translation-plugins/
 backend/*.log
 *.log
 

@@ -36,6 +36,8 @@ let finish;
 const lifecycle = {
   app: { on: (name, run) => events.set(name, run), quit: () => order.push('quit') },
   quitting: false, stopSidecar: () => order.push('stop'), log: () => {},
+  SIDECAR_PORT: 8130, AbortSignal,
+  net: { fetch: async url => { assert.ok(url.endsWith('/translation-plugin/cancel')); order.push('cancel-plugin'); return {ok:true}; } },
   closeBrowserSession: shutdown => { assert.equal(shutdown, true); order.push('close'); return new Promise(resolve => { finish = resolve; }); },
 };
 vm.runInNewContext(source.slice(source.indexOf('let shutdownComplete = false;')), lifecycle);
@@ -43,9 +45,9 @@ let prevented = 0;
 events.get('before-quit')({ preventDefault() { prevented++; } });
 events.get('before-quit')({ preventDefault() { prevented++; } });
 assert.equal(prevented, 2);
-assert.deepEqual(order, ['close'], 'sidecar stays alive during native cleanup');
+assert.deepEqual(order, ['close', 'cancel-plugin'], 'sidecar stays alive during native and plugin cleanup');
 finish({ ok: true });
 await new Promise(resolve => setImmediate(resolve));
-assert.deepEqual(order, ['close', 'stop', 'quit']);
+assert.deepEqual(order, ['close', 'cancel-plugin', 'stop', 'quit']);
 events.get('before-quit')({ preventDefault() { throw Error('completed shutdown must not be prevented'); } });
 console.log('PASS application shutdown waits for native cleanup and prevents duplicate shutdown');
