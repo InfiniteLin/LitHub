@@ -25,13 +25,29 @@ class NoteImportTests(unittest.TestCase):
     def test_images_zip_and_missing_asset_warning(self):
         result=prepare_import('note.zip',archive([('folder/Paper.md','![x](images/a.png)\n<img src="images/a.png" width="200">\n![remote](https://example.com/x.png)'),('folder/images/a.png',b'image')]))
         self.assertEqual(result['title'],'Paper')
-        self.assertEqual(len(result['images']),2)
+        self.assertEqual(len(result['images']),1)
         self.assertIn('/api/notes/image/',result['content'])
         self.assertIn('https://example.com/x.png',result['content'])
         self.assertFalse(result['warnings'])
         plain=prepare_import('note.md',b'![x](images/a.png)')
         self.assertTrue(plain['warnings'])
         self.assertIn('images/a.png',plain['content'])
+
+    def test_image_names_with_spaces_parentheses_and_html_entities(self):
+        result=prepare_import('notes.zip',archive([
+            ('note.md','![截图](<images/截图 1.png>)\n![plot](images/plot(1).png)\n<img src="images/a&amp;b.png" width="64">'),
+            ('images/截图 1.png',b'screenshot'),('images/plot(1).png',b'plot'),('images/a&b.png',b'html')]))
+        self.assertFalse(result['warnings'])
+        self.assertEqual(set(result['images'].values()),{b'screenshot',b'plot',b'html'})
+        self.assertEqual(result['content'].count('/api/notes/image/'),3)
+        self.assertIn('width="64"',result['content'])
+
+    def test_code_examples_are_not_rewritten_as_attachments(self):
+        example='![example](images/diagram.png)'
+        result=prepare_import('notes.zip',archive([('note.md',f'```md\n{example}\n```\n\n`{example}`\n\n![actual](images/diagram.png)'),('images/diagram.png',b'png')]))
+        self.assertEqual(result['content'].count(example),2)
+        self.assertEqual(result['content'].count('/api/notes/image/'),1)
+        self.assertEqual(len(result['images']),1)
 
     def test_bad_zip_paths_and_ambiguous_notes(self):
         for files in [[('../x.md','bad')],[('/x.md','bad')],[('a.md','a'),('b.md','b')],[('images/x.png',b'png')]]:

@@ -20,6 +20,7 @@ import secret
 from api_profiles import migrate_profiles, update_profiles
 from paths import DATA_DIR
 from pdf_storage import PdfStorage
+from note_storage import NoteStorage
 
 STORE_PATH = DATA_DIR / "library.json"
 
@@ -151,6 +152,12 @@ class Store:
 
     def __init__(self):
         self._db = _load()
+        program = Path(os.environ.get("LITHUB_PROGRAM_DIR") or (DATA_DIR if os.environ.get("LITHUB_DATA_DIR") else Path(__file__).resolve().parent.parent))
+        self._db.setdefault('library_id', uuid.uuid4().hex)
+        self._note_storage = NoteStorage(DATA_DIR, program, self._db['library_id'], self._db['settings'].get('note_storage_dir'))
+        self._db['notes'] = self._note_storage.load(self._db['notes'])
+        self._db['settings']['note_storage_dir'] = str(self._note_storage.root.resolve())
+        self._flush()
         if migrate_profiles(self._db["settings"]):
             self._flush()
         self._annotation_trash = {}
@@ -179,7 +186,12 @@ class Store:
             return self._pdf_storage.change(self._db, directory or self._pdf_storage.default, self._flush)
 
     def _flush(self):
-        _save(self._db)
+        self._note_storage.save(self._db['notes'])
+        _save({k: v for k, v in self._db.items() if k != 'notes'})
+
+    @property
+    def note_images_dir(self):
+        return self._note_storage.images
 
     # ---------- papers ----------
     def list_papers(self):

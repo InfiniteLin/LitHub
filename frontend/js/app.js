@@ -1420,8 +1420,7 @@ document.body.insertAdjacentHTML("beforeend", `
   </div>`);
 
 /* ---------------- Markdown 笔记面板 ----------------
-   渲染：marked（GFM）+ KaTeX（$…$ / $$…$$ / \( \) / \[ \] 行内与块级公式）
-   编辑：左侧源码 / 右侧实时预览，或纯编辑、纯阅读三态
+   Muya（MarkText）：即时编辑与只读阅读，Markdown 持久化。
    图片：支持粘贴、拖入、点按钮选择，上传到 sidecar 后插入 ![](url)
    保存：输入停 800ms 自动保存，Ctrl+S 立即保存
 ------------------------------------------------- */
@@ -1447,6 +1446,7 @@ const activeNoteDraft = () => noteDrafts.get(noteState.paperId, noteState.curren
 window.prepareForUpdate = async () => {
   try {
     if (typeof pdfStorageState !== "undefined" && pdfStorageState.busy) return false;
+    if (noteUploads.size) return false;
     await flushNoteEditor();
     return await noteDrafts.flushAll();
   } catch { return false; }
@@ -1489,9 +1489,7 @@ document.addEventListener('keydown', e=>{
   if (e.key==='Escape') $$('.note-browser[open],.note-outline[open]').forEach(menu=>{menu.open=false});
 });
 
-/* 编辑器与 Markdown 渲染全部交给 Vditor（见 frontend/js/note-editor.js）。
-   Vditor 自带 Lute 解析器 + KaTeX + highlight.js，所以这里不再需要
-   marked / katex 的加载与公式占位符预处理。 */
+/* 编辑与只读渲染共用 Muya，宿主负责草稿、持久化与附件。 */
 
 /* ---------- 面板 / 整页两种容器 ---------- */
 
@@ -1959,6 +1957,7 @@ async function toggleNotePin(id) {
   if (!note) return;
   if (id===noteState.currentId) captureNoteDraft();
   const entry = noteDrafts.open(noteState.paperId, note);
+  if(entry.deleting)return;
   noteDrafts.change(entry, { ...entry.data, pinned:!entry.data.pinned });
   renderNoteList();
   const result = await noteDrafts.save(entry);
@@ -2168,6 +2167,8 @@ async function importNoteFiles(files) {
   for(const file of files)try{
     const result=await LithubAPI.importNote(paperId,file);count++;
     if(generation===noteState.generation&&paperId===noteState.paperId&&NoteEditor.isMounted()){
+      // The user may have kept typing while the file was being imported.
+      flushNoteEditor();
       noteState.notes.unshift(result.note);selectNote(result.note.id);syncNoteCount(paperId);
     }
     if(result.warnings?.length)toast(`${file.name}：${result.warnings.length} 张本地图片未导入，请将 MD 与图片一起打包为 ZIP。`,'warn');
@@ -2196,7 +2197,8 @@ async function deleteCurrentNote() {
         if (noteState.notes.length) selectNote(noteState.notes[0].id);
         else {
           noteState.currentId = null; noteState.ready = false; noteState.dirty = false;
-          $('#note-title').value = ''; NoteEditor.setValue(''); setNoteSaveState('点击 + 新建笔记');
+          $('#note-title').value = ''; $('#note-title').readOnly=true;
+          NoteEditor.setValue(''); NoteEditor.setEditable(false); setNoteSaveState('点击 + 新建笔记');
         }
       }
       renderNoteSelect(); syncNoteCount(paperId);
@@ -2246,10 +2248,10 @@ async function exportCurrentNote() {
 /* ---------- 图片插入 ---------- */
 
 /* 上传单张图片并返回 Markdown 片段 */
-async function uploadNoteImage(blob, filename = "image.png") {
+async function uploadNoteImage(blob, filename = "image.png", signal) {
   if (!LithubAPI.live) throw new Error("演示模式无法上传图片");
-  const r = await LithubAPI.uploadNoteImage(blob, filename);
-  return `![${filename.replace(/\.[^.]+$/, "").replace(/[\[\]\\\r\n]/g,' ')}](${API_BASE}${r.url})`;
+  const r = await LithubAPI.uploadNoteImage(blob, filename, signal);
+  return `![${filename.replace(/\.[^.]+$/, "").replace(/[\[\]\\\r\n]/g,' ')}](${r.url})`;
 }
 
 /* 在光标处插入文本（保持滚动位置与选区） */
@@ -2270,7 +2272,9 @@ async function handleNoteImageFiles(files) {
     const id=crypto.randomUUID(), token=`【图片上传中·${id}】`;
     const job={id,entry,file,token,status:'上传中'};
     noteUploads.set(id,job);
-    await insertAtCursor(`\n\n${token}\n\n`);
+    // Every file in this batch belongs to the note that received the paste,
+    // even if the user switches notes while an earlier insertion is pending.
+    if(noteMatches(entry)) await insertAtCursor(`\n\n${token}\n\n`);
     // Native image/HTML selections can have no text insertion point. Keep the
     // upload bound to its original note and append a paragraph in that case.
     if (!entry.data.content.includes(token)) {
@@ -2295,29 +2299,32 @@ function replaceNoteUpload(job, replacement) {
   const entry=job.entry;
   if (entry.deleted) return;
   if (noteMatches(entry)) captureNoteDraft();
-  if (!entry.data.content.includes(job.token)) return;
-  noteDrafts.change(entry,{...entry.data,content:entry.data.content.replace(job.token,replacement)});
   if (noteMatches(entry)) {
-    const bookmark=NoteEditor.bookmark();
-    NoteEditor.setValue(entry.data.content); NoteEditor.restoreBookmark(bookmark);
+    if(!NoteEditor.resolveText(job.token,replacement))return;
+    captureNoteDraft();
     noteState.dirty=entry.dirty;
+  }else{
+    if(!entry.data.content.includes(job.token))return;
+    noteDrafts.change(entry,{...entry.data,content:entry.data.content.replace(job.token,replacement)});
   }
   noteDrafts.save(entry).then(()=>showNoteSaveResult(entry));
 }
 async function runNoteUpload(job) {
   if (job.running) return;
-  job.running=true; job.failed=false; job.status='上传中'; renderNoteUploads();
+  job.running=true; job.failed=false; job.error=null; job.status='上传中'; renderNoteUploads();
+  job.controller=new AbortController();
   try {
-    const markdown=await uploadNoteImage(job.file,job.file.name || 'image.png');
+    const markdown=await uploadNoteImage(job.file,job.file.name || 'image.png',job.controller.signal);
     if (noteUploads.get(job.id)!==job) return;
     replaceNoteUpload(job,markdown);
     noteUploads.delete(job.id);
   } catch (error) {
-    job.failed=true; job.status='上传失败：'+error.message;
+    if(noteUploads.get(job.id)===job){job.failed=true; job.error=error; job.status='上传失败：'+error.message;}
   } finally { job.running=false; renderNoteUploads(); }
 }
 function cancelNoteUpload(id) {
   const job=noteUploads.get(id); if (!job) return;
+  job.controller?.abort();
   replaceNoteUpload(job,''); noteUploads.delete(id); renderNoteUploads();
 }
 
@@ -3084,7 +3091,7 @@ function storageSettingsHTML() {
       ${window.lithub?.pdfStorage ? '<button class="btn" data-action="pdf-storage-open">打开当前目录</button>' : ""}
     </div>
     <p class="set-desc">原文位置：<code>${esc(info.originals_directory)}</code><br>译文与对照版：<code>${esc(info.translated_directory)}</code></p>
-    <p class="set-desc">切换时会复制并校验已有 PDF，成功后立即生效；原目录保留副本。请先等待翻译任务完成。笔记、批注与设置仍保存在 <code>${esc(info.metadata_directory)}</code>。</p>
+    <p class="set-desc">切换时会复制并校验已有 PDF，成功后立即生效；原目录保留副本。请先等待翻译任务完成。笔记与图片保存在程序目录的 notes 文件夹；批注与设置保存在 <code>${esc(info.metadata_directory)}</code>。</p>
     <div class="set-foot"><button class="btn btn-primary" data-action="pdf-storage-apply">迁移并应用</button></div>
   </section>`;
 }
@@ -4532,7 +4539,7 @@ document.addEventListener("change", (e) => {
 
 /* Muya 负责正文编辑，宿主负责将图片和 Markdown 文件保存到当前文献。 */
 document.addEventListener("dragover", (e) => {
-  if (!e.target.closest?.("#note-editor-wrap")) return;
+  if (!e.target.closest?.("#note-editor-wrap") || !e.dataTransfer?.types.includes('Files')) return;
   e.preventDefault();
   $("#note-drop-hint")?.classList.add("show");
 });
@@ -4544,6 +4551,7 @@ document.addEventListener("drop", (e) => {
   if (!e.target.closest?.("#note-editor-wrap")) return;
   // 文件交给笔记导入或图片上传；正文编辑交给 Muya。
   const files=[...(e.dataTransfer?.files||[])];
+  if(!files.length)return;
   if(files.some(file=>/\.(md|markdown|zip)$/i.test(file.name))){e.preventDefault();void importNoteFiles(files);}
   else if(files.some(file=>file.type.startsWith('image/'))){e.preventDefault();void handleNoteImageFiles(files);}
   $("#note-drop-hint")?.classList.remove("show");
@@ -5598,7 +5606,7 @@ document.addEventListener("keydown", (e) => {
     addTagsFromInput(paperById(state.route.id));
   }
   // 笔记标题：回车确认（失焦），避免在单行输入框里敲回车没反应
-  if (e.key === "Enter" && e.target.id === "note-title") {
+  if (e.key === "Enter" && e.target.id === "note-title" && !e.isComposing && e.keyCode!==229) {
     e.preventDefault();
     e.target.blur();
   }
@@ -5606,7 +5614,7 @@ document.addEventListener("keydown", (e) => {
     e.preventDefault(); $("#search-input")?.focus();
   }
   // 阅读器缩放快捷键：Ctrl/Cmd + = / - / 0（0 = 适合宽度）
-  if (state.route.view === "reader" && (e.ctrlKey || e.metaKey)) {
+  if (state.route.view === "reader" && (e.ctrlKey || e.metaKey) && !e.target.closest('input,textarea,select,[contenteditable],#note-panel,.muya-ui')) {
     if (e.key === "=" || e.key === "+") { e.preventDefault(); zoomStep(1); }
     else if (e.key === "-" || e.key === "_") { e.preventDefault(); zoomStep(-1); }
     else if (e.key === "0") { e.preventDefault(); applyReaderZoom(null, "width"); }

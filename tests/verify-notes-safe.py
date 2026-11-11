@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'backend'))
 with tempfile.TemporaryDirectory(prefix='lithub-notes-') as temporary, contextlib.ExitStack() as cleanup:
     base=Path(temporary)
     (base/'library.json').write_text(json.dumps({'papers':{'p1':{'id':'p1','title':'test'}},'settings':{},'tasks':{}}),encoding='utf8')
-    os.environ.update(LITHUB_DATA_DIR=str(base),LITHUB_PROGRAM_DIR=str(base),LITHUB_PDF_DEFAULT_DIR=str(base/'pdfs'))
+    os.environ.update(LITHUB_DATA_DIR=str(base),LITHUB_PROGRAM_DIR=str(base/'software'),LITHUB_PDF_DEFAULT_DIR=str(base/'pdfs'))
     from fastapi.testclient import TestClient
     from main import app, store, NOTE_IMAGE_DIR
     import search_index
@@ -28,6 +28,12 @@ with tempfile.TemporaryDirectory(prefix='lithub-notes-') as temporary, contextli
     assert client.get(route).json()[0]['id']==nid
     print('PASS note content, pin ordering and partial updates')
     image=client.post('/api/notes/image',files={'file':('test.png',b'fake image','image/png')}).json()
+    clipboard=client.post('/api/notes/image',files={'file':('clipboard',b'clipboard image','image/png')})
+    assert clipboard.status_code==200 and clipboard.json()['name'].endswith('.png')
+    assert client.post('/api/notes/image',files={'file':('bad.txt',b'bad','text/plain')}).status_code==400
+    assert client.post('/api/notes/image',files={'file':('large.png',b'x'*(8*1024*1024+1),'image/png')}).status_code==400
+    assert NOTE_IMAGE_DIR.is_relative_to(base/'software')
+    assert 'notes' not in json.loads((base/'library.json').read_text(encoding='utf8'))
     content=f'![one](http://127.0.0.1:8130{image["url"]})\n<img src="{image["url"]}" style="width:80px">\n![external](https://example.com{image["url"]})'
     client.put(endpoint,json={'content':content})
     response=client.get(endpoint+'/export')

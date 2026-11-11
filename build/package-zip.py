@@ -13,13 +13,13 @@ def package_zip(unpacked, output, version):
     archive=output/f'LitHub-{version}-win-x64.zip'
     if archive.is_relative_to(unpacked):raise ValueError('ZIP output must be outside the packaged app')
     prefix=f'LitHub-{version}-win-x64'
-    instructions='完整解压后双击 LitHub.exe；请保留所有文件。文献库和设置仍位于 Windows 用户数据目录，PDF 默认在程序目录的 pdfs/。更新器会自动选择 ZIP 包，保留免安装使用方式。请从官方 Release 下载并校验 SHA-256。'
+    instructions='完整解压后双击 LitHub.exe；请保留所有文件。文献库与设置位于 Windows 用户数据目录，PDF 默认在程序目录的 pdfs/，笔记与图片位于程序目录的 notes/。更新器会自动选择 ZIP 包，保留免安装使用方式。请从官方 Release 下载并校验 SHA-256。'
     with zipfile.ZipFile(archive,'w',zipfile.ZIP_DEFLATED,compresslevel=6) as z:
         for file in sorted(unpacked.rglob('*')):
             relative=file.relative_to(unpacked)
             if file.is_symlink() or file.is_junction():raise ValueError('Packaged app contains links')
             if not file.is_file():continue
-            if relative.parts[0] in ('pdfs','updates','data') or relative.parts[:3]==('resources','backend','data') or relative.parts[0].startswith('.lithub-update'):
+            if relative.parts[0] in ('pdfs','notes','updates','data') or relative.parts[:3]==('resources','backend','data') or relative.parts[0].startswith('.lithub-update'):
                 raise ValueError('Packaged app contains local user data')
             if relative.as_posix() in ('lithub-portable.json','使用说明.txt'):continue
             z.write(file,prefix+'/'+relative.as_posix())

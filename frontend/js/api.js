@@ -328,10 +328,10 @@ window.LithubAPI = {
     return r.blob();
   },
 
-  async uploadNoteImage(blob, filename = "image.png") {
+  async uploadNoteImage(blob, filename = "image.png", signal) {
     const fd = new FormData();
     fd.append("file", blob, filename);
-    const r = await fetch(`${API_BASE}/api/notes/image`, { method: "POST", body: fd });
+    const r = await fetch(`${API_BASE}/api/notes/image`, { method: "POST", body: fd, signal });
     if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || "图片上传失败");
     return r.json();
   },

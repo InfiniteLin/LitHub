@@ -38,7 +38,7 @@ try:
 except Exception:  # 非 Windows / 缺依赖时不影响其它接口
     browser_embed = None
 
-SERVICE_VERSION = "0.2.6"
+SERVICE_VERSION = "0.2.7"
 
 
 @contextlib.asynccontextmanager
@@ -911,7 +911,7 @@ def get_summary(paper_id: str, prompt_id: str, mode: str = "text"):
 
 # ---------- 笔记（Markdown） ----------
 
-NOTE_IMAGE_DIR = DATA_DIR / "notes"
+NOTE_IMAGE_DIR = store.note_images_dir
 NOTE_IMAGE_MAX_MB = 8
 
 
@@ -1003,8 +1003,10 @@ def download_note(pid: str, nid: str):
 async def upload_note_image(file: UploadFile = File(...)):
     ext = Path(file.filename or "").suffix.lower()
     if ext not in (".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg"):
+        ext = {"image/png":".png", "image/jpeg":".jpg", "image/gif":".gif", "image/webp":".webp", "image/svg+xml":".svg"}.get(file.content_type, "")
+    if ext not in (".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg"):
         raise HTTPException(400, "仅支持 png/jpg/gif/webp/svg 图片")
-    data = await file.read()
+    data = await file.read(NOTE_IMAGE_MAX_MB * 1024 * 1024 + 1)
     if not data:
         raise HTTPException(400, "空文件")
     if len(data) > NOTE_IMAGE_MAX_MB * 1024 * 1024:

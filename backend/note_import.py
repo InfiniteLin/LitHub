@@ -1,5 +1,6 @@
 """Import Markdown bytes and optional companion images from a ZIP, without extracting paths."""
 import io
+import html
 import posixpath
 import re
 import uuid
@@ -64,8 +65,10 @@ def prepare_import(filename, data):
     else:
         raise ValueError('请选择 .md、.markdown 或包含笔记及图片的 ZIP 文件')
 
+    imported_paths = {}
     def replace_image(match):
-        source = match.group('url')
+        raw = match.groupdict().get('angle') or match.group('url')
+        source = html.unescape(raw) if match.group(0).lower().startswith('<img') else raw
         parsed = urlsplit(source)
         if parsed.scheme in {'http', 'https', 'data'} or source.startswith('/api/notes/image/'):
             return match.group(0)
@@ -75,12 +78,21 @@ def prepare_import(filename, data):
         if blob is None or ext not in IMAGE_EXTENSIONS or len(blob) > 8 * 1024 * 1024:
             warnings.append('本地图片未导入：' + source)
             return match.group(0)
-        image_name = uuid.uuid4().hex + ext
-        images[image_name] = blob
-        return match.group(0).replace(source, '/api/notes/image/' + image_name, 1)
+        if local not in imported_paths:
+            image_name = uuid.uuid4().hex + ext
+            imported_paths[local] = image_name
+            images[image_name] = blob
+        return match.group(0).replace(raw, '/api/notes/image/' + imported_paths[local], 1)
 
-    # Inline Markdown and HTML images, including files exported by LitHub.
-    content = re.sub(r'!\[[^\]\n]*\]\(\s*<?(?P<url>[^\s)>]+)>?(?:\s+["\x27][^\n]*?["\x27])?\s*\)', replace_image, content)
-    content = re.sub(r'<img\b[^>]*?\bsrc=["\x27](?P<url>[^"\x27]+)["\x27][^>]*>', replace_image, content, flags=re.I)
+    # Rewrite actual images while leaving Markdown examples inside code intact.
+    def rewrite(text):
+        text = re.sub(r'!\[[^\]\n]*\]\(\s*(?:<(?P<angle>[^>\n]+)>|(?P<url>(?:[^\s()]+|\([^()]*\))+))(?:\s+["\x27][^\n]*?["\x27])?\s*\)', replace_image, text)
+        return re.sub(r'<img\b[^>]*?\bsrc=["\x27](?P<url>[^"\x27]+)["\x27][^>]*>', replace_image, text, flags=re.I)
+    code = re.compile(r'(?m)^ {0,3}(?P<fence>`{3,}|~{3,})[^\n]*\n[\s\S]*?(?:^ {0,3}(?P=fence)[ \t]*(?=\n|$)|\Z)|(?P<ticks>`+)[^\n]*?(?P=ticks)')
+    parts, end = [], 0
+    for match in code.finditer(content):
+        parts.extend((rewrite(content[end:match.start()]),match.group(0)))
+        end=match.end()
+    content=''.join(parts)+rewrite(content[end:])
     title = PurePosixPath(name).stem[:120]
     return {'title': title, 'content': content, 'images': images, 'warnings': list(dict.fromkeys(warnings))}

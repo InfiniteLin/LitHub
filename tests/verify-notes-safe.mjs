@@ -201,8 +201,19 @@ try {
   await check('citation does not create a permanent annotation', `PdfAnnot.all(activePdfPane()).length===0 && document.querySelector('.note-reference-flash').style.left==='25%'`);
   // Selecting PDF text exposes a separate excerpt action, distinct from annotation.
   await until('comparison selectable text ready', `document.querySelector('#pane-dual2 .textLayer span')`);
+  await evaluate(`mountNotePanel(testPaper)`);
+  await until('notes sidebar mounted next to PDF', `NoteEditor._ready() && !!document.querySelector('#note-panel') && !!document.querySelector('#pane-dual2 .textLayer span')`);
+  await check('PDF selection stays transparent after Muya stylesheet loads', `(()=>{const span=document.querySelector('#pane-dual2 .textLayer span');return getComputedStyle(span,'::selection').color==='rgba(0, 0, 0, 0)'})()`);
+  // Sidebar width changes rebuild the text layer asynchronously.
+  await sleep(500);
   await evaluate(`(()=>{const span=document.querySelector('#pane-dual2 .textLayer span');const r=document.createRange();r.selectNodeContents(span);getSelection().removeAllRanges();getSelection().addRange(r);span.dispatchEvent(new MouseEvent('mouseup',{bubbles:true}));})()`);
   await until('PDF selection has an excerpt action', `!!document.querySelector('[data-selact="excerpt"]')`);
+  await check('transparent PDF text still selects and copies real content', `getSelection().toString().includes('Synthetic paper')`);
+  for(const theme of ['dark','light']) {
+    await evaluate(`document.documentElement.dataset.theme='${theme}'`);
+    await check(`${theme} PDF selection has no glyphs or text shadow`, `(()=>{const s=getComputedStyle(document.querySelector('#pane-dual2 .textLayer span'),'::selection');return s.color==='rgba(0, 0, 0, 0)' && s.textShadow==='none' && s.backgroundColor!=='rgba(0, 0, 0, 0)'})()`);
+  }
+  await check('note editor selection keeps visible text', `(()=>{const p=document.querySelector('.note-muya-host p');return !!p && getComputedStyle(p,'::selection').color!=='rgba(0, 0, 0, 0)'})()`);
   await evaluate(`document.querySelector('[data-selact="excerpt"]').click()`);
   await until('excerpt inserts quoted text and source in this paper note', `NoteEditor._ready() && noteState.paperId===testPaper.id && NoteEditor.getValue().includes('lithub-ref') && NoteEditor.getValue().includes('Synthetic paper')`);
   await evaluate(`window.noteExports=[];LithubAPI.exportNote=async(p,n)=>{noteExports.push({p,n});return new Blob(['fixture ZIP'],{type:'application/zip'})};
