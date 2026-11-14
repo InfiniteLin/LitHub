@@ -262,6 +262,10 @@ class Store:
                 (self.files_dir / f"{pid}.pdf").unlink(missing_ok=True)
             except Exception:
                 pass
+            try:
+                (DATA_DIR / "covers" / f"{pid}.jpg").unlink(missing_ok=True)
+            except Exception:
+                pass
             if translated_file:
                 try:
                     Path(translated_file).unlink(missing_ok=True)

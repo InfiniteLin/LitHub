@@ -56,6 +56,16 @@ const NoteEditor=(()=>{
     }
   }
   function notify(){if(ready)callbacks.onChange?.();}
+  function changeHistory(event,action){
+    if(!ready||!editable||mode!=='live'||event.isComposing)return;
+    // Inputs inside editor tools retain their own text-field undo behavior.
+    if(event.target.closest?.('input,textarea,select'))return;
+    event.preventDefault();event.stopPropagation();
+    // Commit the latest native input before looking at the history stack.
+    instance._lithubBoundary.flush();
+    instance.ui.hideAllFloatTools();
+    instance[action]();
+  }
   function getValue(){
     if(mode==='live'&&instance&&ready){
       // 0.2.0 batches OT commits until the next frame. Flush its native transaction
@@ -186,8 +196,23 @@ const NoteEditor=(()=>{
     liveHost.addEventListener('input',e=>{
       if(pairedInputs.has(e)){instance.options.autoPairMarkdownSyntax=pairedInputs.get(e);pairedInputs.delete(e);}
     },{signal});
-    target.addEventListener('keydown',e=>{if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='s'){e.preventDefault();e.stopPropagation();callbacks.onSave?.();}},{capture:true,signal});
-    target.addEventListener('beforeinput',e=>{if(!editable)e.preventDefault();},{capture:true,signal});
+    // Native image handles/popups live under body and may clear DOM focus.
+    // Retain shortcut ownership only until the user interacts elsewhere.
+    let ownsHistory=false;
+    const ownsTarget=node=>target.contains(node)||Object.values(instance._uiPlugins).some(plugin=>
+      plugin._container?.contains(node)||plugin._floatBox?.contains(node));
+    for(const type of ['pointerdown','focusin'])document.addEventListener(type,e=>{ownsHistory=ownsTarget(e.target);},{capture:true,signal});
+    document.addEventListener('keydown',e=>{
+      if(!ownsTarget(e.target)&&!(ownsHistory&&e.target===document.body))return;
+      if(!(e.ctrlKey||e.metaKey)||e.altKey||e.isComposing||e.keyCode===229)return;
+      const key=e.key.toLowerCase();
+      if(key==='z'||(key==='y'&&!e.shiftKey))changeHistory(e,key==='y'||e.shiftKey?'redo':'undo');
+      else if(key==='s'){e.preventDefault();e.stopPropagation();callbacks.onSave?.();}
+    },{capture:true,signal});
+    target.addEventListener('beforeinput',e=>{
+      if(!editable){e.preventDefault();return;}
+      if(e.inputType==='historyUndo'||e.inputType==='historyRedo')changeHistory(e,e.inputType==='historyUndo'?'undo':'redo');
+    },{capture:true,signal});
     target.addEventListener('paste',e=>{const files=[...(e.clipboardData?.files||[])].filter(f=>f.type.startsWith('image/'));if(files.length){e.preventDefault();e.stopPropagation();window.handleNoteImageFiles?.(files);}},{capture:true,signal});
     setEditable(editable);if(options.mode&&options.mode!=='live')setMode(options.mode);callbacks.onReady?.();return true;
   }

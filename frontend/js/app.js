@@ -217,7 +217,6 @@ const rowHTML = (p, ftOnly = new Set()) => {
               title="${open ? "收起附件" : "展开附件"}" aria-expanded="${open}">
         ${I(open ? "chevD" : "chevR", 14)}
       </button>
-      ${cover(p, true)}
       <div class="row-main">
         <h3 data-paper-title="${p.id}">${esc(p.title)}</h3>
         <p>${esc(p.authors)} · <i>${esc(p.venue)}</i> ${p.year} · ${esc(p.type)}</p>
@@ -273,8 +272,13 @@ const paperListHTML = (list, ftOnly = new Set()) => list.length
   ? list.map((p) => (state.libView === "grid" ? gcardHTML(p, ftOnly) : rowHTML(p, ftOnly))).join("")
   : `<div class="empty"><div class="empty-ico">${I("search", 28)}</div><h3>没有找到匹配的文献</h3><p>换个关键词，或清除筛选条件试试</p><button class="btn" data-action="reset-filter">清除筛选</button></div>`;
 
-const cover = (p, mini = false) =>
-  `<span class="cover cov-${p.cover % 6}${mini ? " mini" : ""}"><b>${esc(p.title[0])}</b>${mini ? "" : `<em>${esc(p.venue)} · ${p.year}</em>`}</span>`;
+const cover = (p, mini = false) => {
+  const url = p.coverUrl || (LithubAPI.live && p.live ? `${API_BASE}/api/papers/${p.id}/cover` : null);
+  const imgHtml = (!mini && url)
+    ? `<img class="cover-img" src="${url}" alt="" loading="lazy" onload="this.classList.add('loaded')" onerror="this.remove()">`
+    : "";
+  return `<span class="cover cov-${p.cover % 6}${mini ? " mini" : ""}">${imgHtml}<b>${esc(p.title[0])}</b>${mini ? "" : `<em>${esc(p.venue)} · ${p.year}</em>`}</span>`;
+};
 
 function toast(msg, type = "ok") {
   const root = $("#toast-root");
@@ -5754,6 +5758,7 @@ function mapLivePaper(p) {
     noteCount: p.note_count || 0,
     live: true,
     fileUrl: `${API_BASE}/api/papers/${p.id}/file`,
+    coverUrl: `${API_BASE}/api/papers/${p.id}/cover`,
     zhUrl: p.translated ? `${API_BASE}/api/papers/${p.id}/file?kind=translated` : null,
     // 左右并排对照版（后端按需合成，缓存于 out/<id>/<id>-compare.pdf）
     compareUrl: p.translated ? `${API_BASE}/api/papers/${p.id}/file?kind=compare` : null,

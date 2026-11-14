@@ -38,7 +38,7 @@ try:
 except Exception:  # 非 Windows / 缺依赖时不影响其它接口
     browser_embed = None
 
-SERVICE_VERSION = "0.2.7"
+SERVICE_VERSION = "0.2.8"
 
 
 @contextlib.asynccontextmanager
@@ -246,6 +246,52 @@ def paper_file(pid: str, kind: str = "original"):
         raise HTTPException(404, "文件缺失")
     suffix = {"translated": "-译文", "compare": "-双语对照"}.get(kind, "")
     return FileResponse(path, media_type="application/pdf", filename=_safe_file_stem(paper.get("title")) + suffix + ".pdf")
+
+
+@app.get("/api/papers/{pid}/cover")
+def paper_cover(pid: str):
+    paper = store.get_paper(pid)
+    if not paper:
+        raise HTTPException(404, "文献不存在")
+    pdf_path = store.paper_file(pid)
+    if not pdf_path or not pdf_path.exists():
+        raise HTTPException(404, "文献原文不存在")
+
+    covers_dir = DATA_DIR / "covers"
+    covers_dir.mkdir(parents=True, exist_ok=True)
+    cover_file = covers_dir / f"{pid}.jpg"
+
+    try:
+        if cover_file.exists() and cover_file.stat().st_size > 0:
+            if cover_file.stat().st_mtime >= pdf_path.stat().st_mtime:
+                return FileResponse(
+                    cover_file,
+                    media_type="image/jpeg",
+                    headers={"Cache-Control": "public, max-age=86400"},
+                )
+    except Exception:
+        pass
+
+    try:
+        import fitz
+        with fitz.open(str(pdf_path)) as doc:
+            if len(doc) == 0:
+                raise HTTPException(404, "PDF 内容为空")
+            page = doc[0]
+            rect = page.rect
+            scale = 480.0 / max(rect.width, 1.0)
+            mat = fitz.Matrix(scale, scale)
+            pix = page.get_pixmap(matrix=mat, alpha=False)
+            pix.save(str(cover_file))
+        return FileResponse(
+            cover_file,
+            media_type="image/jpeg",
+            headers={"Cache-Control": "public, max-age=86400"},
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(500, f"封面生成失败：{exc}")
 
 
 class PaperUpdateBody(BaseModel):
