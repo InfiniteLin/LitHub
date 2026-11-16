@@ -5,6 +5,12 @@ const NoteEditor=(()=>{
   let kit,loading,instance=null,container=null,mode='live',editable=true,callbacks={},value='',ready=false,serial=0,binding=null;
   let contentRevision=0;
   const resolvedText=new Map();let resolutionQueued=false;
+  function clipboardMath(text){
+    // Leave literal examples alone; normalize ChatGPT/LaTeX delimiters only.
+    return text.split(/(```[^]*?```|~~~[^]*?~~~|`+[^\n]*?`+)/g).map((part,i)=>i%2?part:part
+      .replace(/\\{1,2}\[([^]*?)\\{1,2}\]/g,(_,body)=>'\n\n$$\n'+body.trim()+'\n$$\n\n')
+      .replace(/\\{1,2}\(([^\n]*?)\\{1,2}\)/g,(_,body)=>'$'+body.trim()+'$')).join('');
+  }
   let liveHost,preview,scroll,lastSelection=null,insertion=Promise.resolve();
   async function load(){
     if(kit)return kit;
@@ -74,7 +80,25 @@ const NoteEditor=(()=>{
     }
     return value;
   }
-  function renderPreview(){if(preview)preview.innerHTML=kit.renderToStaticHTML(editorImages(value),{sanitize:true});}
+  function renderPreview(){
+    if(!preview)return;
+    preview.innerHTML=kit.renderToStaticHTML(editorImages(value),{sanitize:true});
+    // Muya's static parser misses inline math adjacent to Chinese punctuation
+    // in tight lists. Render those remaining text tokens with the same parser.
+    const walker=document.createTreeWalker(preview,NodeFilter.SHOW_TEXT),nodes=[];
+    while(walker.nextNode())if(!walker.currentNode.parentElement.closest('pre,code,.katex'))nodes.push(walker.currentNode);
+    for(const node of nodes){
+      const pattern=/(?<![\\$])\$(?!\$)([^$\n]+?)\$(?!\$)/g;let match,start=0,changed=false;
+      const fragment=document.createDocumentFragment();
+      while(match=pattern.exec(node.data)){
+        const rendered=document.createElement('span');
+        rendered.innerHTML=kit.renderToStaticHTML(' '+match[0]+' ',{sanitize:true});
+        const formula=rendered.querySelector('.katex');if(!formula)continue;
+        fragment.append(node.data.slice(start,match.index),formula);start=pattern.lastIndex;changed=true;
+      }
+      if(changed){fragment.append(node.data.slice(start));node.replaceWith(fragment);}
+    }
+  }
   function setValue(text){
     contentRevision++;
     const incoming=localImages(text);
@@ -201,7 +225,12 @@ const NoteEditor=(()=>{
     let ownsHistory=false;
     const ownsTarget=node=>target.contains(node)||Object.values(instance._uiPlugins).some(plugin=>
       plugin._container?.contains(node)||plugin._floatBox?.contains(node));
-    for(const type of ['pointerdown','focusin'])document.addEventListener(type,e=>{ownsHistory=ownsTarget(e.target);},{capture:true,signal});
+    for(const type of ['pointerdown','focusin'])document.addEventListener(type,e=>{
+      // Replacing a native paragraph during paste/formatting briefly focuses
+      // body. That is not a user leaving the editor.
+      if(type==='focusin'&&e.target===document.body)return;
+      ownsHistory=ownsTarget(e.target);
+    },{capture:true,signal});
     document.addEventListener('keydown',e=>{
       if(!ownsTarget(e.target)&&!(ownsHistory&&e.target===document.body))return;
       if(!(e.ctrlKey||e.metaKey)||e.altKey||e.isComposing||e.keyCode===229)return;
@@ -213,7 +242,30 @@ const NoteEditor=(()=>{
       if(!editable){e.preventDefault();return;}
       if(e.inputType==='historyUndo'||e.inputType==='historyRedo')changeHistory(e,e.inputType==='historyUndo'?'undo':'redo');
     },{capture:true,signal});
-    target.addEventListener('paste',e=>{const files=[...(e.clipboardData?.files||[])].filter(f=>f.type.startsWith('image/'));if(files.length){e.preventDefault();e.stopPropagation();window.handleNoteImageFiles?.(files);}},{capture:true,signal});
+    target.addEventListener('paste',e=>{
+      const files=[...(e.clipboardData?.files||[])].filter(f=>f.type.startsWith('image/'));
+      if(files.length){e.preventDefault();e.stopPropagation();window.handleNoteImageFiles?.(files);return;}
+      if(!editable||mode!=='live'||e.target.closest?.('input,textarea'))return;
+      ownsHistory=true;
+      const block=instance.editor.selection.getSelection()?.anchorBlock;
+      if(block?.blockName==='codeblock.content')return;
+      const plain=e.clipboardData?.getData('text/plain')||'',normalized=clipboardMath(plain);
+      const html=e.clipboardData?.getData('text/html')||'';
+      const doc=new DOMParser().parseFromString(html,'text/html');let changed=false;
+      for(const formula of [...doc.querySelectorAll('.katex-display,.katex')]){
+        if(!formula.isConnected)continue;
+        const tex=formula.querySelector('annotation[encoding="application/x-tex"]')?.textContent;
+        if(!tex||formula.closest('pre,code'))continue;
+        formula.replaceWith(doc.createTextNode(formula.classList.contains('katex-display')?'\n\n$$\n'+tex+'\n$$\n\n':'$'+tex+'$'));changed=true;
+      }
+      if(normalized===plain&&!changed)return;
+      e.preventDefault();e.stopPropagation();
+      const data=new DataTransfer();data.setData('text/plain',normalized);
+      // Prefer the original Markdown when it contains LaTeX delimiters. Rich
+      // KaTeX otherwise supplies its source annotation instead of duplicated glyphs.
+      if(normalized===plain&&changed)data.setData('text/html',doc.body.innerHTML);
+      void instance.editor.clipboard.pasteHandler(new ClipboardEvent('paste',{clipboardData:data}));
+    },{capture:true,signal});
     setEditable(editable);if(options.mode&&options.mode!=='live')setMode(options.mode);callbacks.onReady?.();return true;
   }
   function insertValue(text){
@@ -228,7 +280,7 @@ const NoteEditor=(()=>{
       if(selection?.isCollapsed){const block=selection.anchorBlock,prefix=/^#{1,6}\s+/.exec(block.text)?.[0].length||0;if(selection.anchor.offset<prefix)block.setCursor(prefix,prefix,true);}
       await new Promise(requestAnimationFrame);
       if(ticket!==serial||revision!==contentRevision)return;
-      const data=new DataTransfer();data.setData('text/plain',editorImages(text));
+      const data=new DataTransfer();data.setData('text/plain',editorImages(clipboardMath(text)));
       await instance.editor.clipboard.pasteHandler(new ClipboardEvent('paste',{clipboardData:data}));
       if(ticket===serial&&revision===contentRevision){value=getValue();notify();}
     });return insertion;

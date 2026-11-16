@@ -242,15 +242,16 @@ window.PdfAnnot = (() => {
             if (storeFor(pane).selected === ann.id) line.classList.add("is-selected");
             layer.appendChild(line);
           }
+          const rects = ann.rects || [];
+          const lastRect = rects.reduce((a, b) => (b.y > a.y || (b.y === a.y && b.x > a.x) ? b : a), rects[0] || { x: 0.96, y: 0.08, w: 0, h: 0 });
           const mark = document.createElement("button");
           mark.className = "annot-mark";
           mark.dataset.annotId = ann.id;
           mark.title = ann.comment || "批注";
-          const spot = ann.rects?.[0] || { x: 0.96, y: 0.08, w: 0, h: 0 };
-          const gap = 16 / Math.max(1, side.div.clientWidth || 600);
-          mark.style.left = `${Math.min(.985, spot.x + spot.w + gap) * 100}%`;
-          mark.style.top = `${(spot.y + spot.h / 2) * 100}%`;
-          mark.textContent = "✎";
+          const gap = 1 / Math.max(1, side.div.clientWidth || 600);
+          mark.style.left = `${Math.min(0.985, lastRect.x + lastRect.w + gap) * 100}%`;
+          mark.style.top = `${lastRect.y * 100}%`;
+          mark.innerHTML = `<svg viewBox="0 0 24 24" width="7.5" height="7.5" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.8 2.8 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5z"/></svg>`;
           layer.appendChild(mark);
           continue;
         }

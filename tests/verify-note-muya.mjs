@@ -44,6 +44,28 @@ try {
   assert.equal(await evaluate(`NoteEditor.mount(ed,{value:'# Imported title\\n\\nHello **world**.\\n\\n- [ ] Task\\n\\n| A | B |\\n| --- | --- |\\n| 1 | 2 |',onChange:()=>changes++})`),true);
   await until('Muya mounts with real Markdown blocks',`NoteEditor._ready() && !!ed.querySelector('h1') && !!ed.querySelector('table')`);
   assert.ok((await evaluate(`NoteEditor.getValue()`)).includes('**world**'));
+  const pastedMath=String.raw`FLARE 首先建立初始种子集合。
+
+\\[ R_i=(I_i,C_i,S_i) \\]
+
+- \\(I_i\\)：系统输入
+- \\(C_i\\)：模型配置
+- \\(S_i\\)：初始顺序`;
+  await evaluate(`NoteEditor.setValue('');NoteEditor.focus();window.mathPaste=new DataTransfer();mathPaste.setData('text/plain',${JSON.stringify(pastedMath)});ed.querySelector('.note-muya-host').dispatchEvent(new ClipboardEvent('paste',{clipboardData:mathPaste,bubbles:true,cancelable:true}))`);
+  await until('ChatGPT escaped display and inline formulas render',`ed.querySelectorAll('.katex-display').length===1 && ed.querySelectorAll('.note-muya-host .katex').length===4`);
+  await historyKey('z');
+  await until('ChatGPT paste can be undone',`!NoteEditor.getValue().includes('FLARE')`);
+  await historyKey('y');
+  await until('ChatGPT paste can be redone',`ed.querySelectorAll('.note-muya-host .katex').length===4`);
+  await evaluate(`NoteEditor.setMode('read')`);
+  assert.equal(await evaluate(`ed.querySelectorAll('.note-md-preview .katex').length`),4,'ChatGPT formulas render in reading mode');
+  const normalizedMath=await evaluate(`NoteEditor.getValue()`);
+  await evaluate(`NoteEditor.setMode('live');NoteEditor.setValue(${JSON.stringify(normalizedMath)})`);
+  assert.equal(await evaluate(`ed.querySelectorAll('.note-muya-host .katex').length`),4,'normalized Markdown renders after reload');
+  await evaluate(`NoteEditor.setValue('');NoteEditor.focus();mathPaste=new DataTransfer();mathPaste.setData('text/plain',${JSON.stringify(pastedMath.replaceAll('\\\\','\\'))});ed.querySelector('.note-muya-host').dispatchEvent(new ClipboardEvent('paste',{clipboardData:mathPaste,bubbles:true,cancelable:true}))`);
+  await until('single-backslash LaTeX delimiters also render',`ed.querySelectorAll('.note-muya-host .katex').length===4`);
+  await evaluate(`NoteEditor.setValue('');NoteEditor.focus();window.richPaste=new DataTransfer();richPaste.setData('text/plain','E=mc2');richPaste.setData('text/html','<p>公式</p><div class="katex-display"><span class="katex"><math><semantics><annotation encoding="application/x-tex">E=mc^2</annotation></semantics></math><span>E=mc2</span></span></div>');ed.querySelector('.note-muya-host').dispatchEvent(new ClipboardEvent('paste',{clipboardData:richPaste,bubbles:true,cancelable:true}))`);
+  await until('rich KaTeX paste uses original formula once',`ed.querySelectorAll('.note-muya-host .katex-display').length===1 && ed.querySelectorAll('.note-muya-host .katex').length===1`);
   await evaluate(`NoteEditor.setValue('Shortcut baseline');NoteEditor.focusEnd()`);
   await send('Input.insertText',{text:' typed'});
   await historyKey('z');
@@ -293,4 +315,3 @@ finally {
   const {rm}=await import('node:fs/promises');
   await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:150});
 }
-

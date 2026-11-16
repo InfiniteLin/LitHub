@@ -4585,7 +4585,8 @@ function readAnnotationDraft(paperId, annId) {
 function rememberAnnotationDraft(pop) {
   const input = pop?.querySelector("#annot-comment");
   if (!input) return null;
-  const fields = { comment: input.value, kind: "note", color: pop.querySelector('[data-annot-color]').value };
+  const colorVal = pop.querySelector('[data-annot-color]')?.value || "yellow";
+  const fields = { comment: input.value, kind: "note", color: colorVal };
   const key = annotationKey(pop.dataset.paperId, pop.dataset.annotId);
   annotationDrafts.set(key, fields);
   try { localStorage.setItem(key, JSON.stringify(fields)); } catch {}
@@ -5023,7 +5024,7 @@ async function createAnnotation(kind, color) {
     if (stillCurrent) window.getSelection()?.removeAllRanges();
     if (kind === "note" && stillCurrent) {
       // 批注：立刻弹出输入框写备注
-      openAnnotationEditor(pane, ann);
+      openAnnotationEditor(pane, ann, "edit");
     } else {
       toast(kind === "underline" ? "已添加划线" : "已高亮选中内容");
     }
@@ -5087,53 +5088,97 @@ function openMarkControls(pane, ann, paperId) {
   }));
 }
 
-function openAnnotationEditor(pane, ann) {
+function openAnnotationEditor(pane, ann, mode = "view") {
   const cur = PdfAnnot.get(pane, ann.id) || ann;
   closeAnnotationEditor();
   const paperId = state.route.id;
   if (cur.kind !== "note") {
-    openMarkControls(pane,cur,paperId);
+    openMarkControls(pane, cur, paperId);
     return;
   }
   const draft = readAnnotationDraft(paperId, cur.id);
   const fields = draft || cur;
+
+  // 若尚无内容，自动打开编辑模式方便输入
+  if (mode === "view" && !fields.comment?.trim()) {
+    mode = "edit";
+  }
+
   const pop = document.createElement("div");
-  pop.className = "annot-pop";
   pop.id = "annot-pop";
+  pop.dataset.annotId = cur.id;
+  pop.dataset.paperId = paperId;
+  pop._pane = pane;
+  pop._mode = mode;
+
+  if (mode === "view") {
+    pop.className = "annot-pop annot-view-pop";
+    pop.innerHTML = `
+      <div class="annot-view-head">
+        <span class="annot-view-title">${I("pencil", 12)}批注</span>
+        <div class="annot-view-acts">
+          <button class="btn sm" data-annot-edit-mode title="编辑批注内容">${I("pencil", 12)}编辑</button>
+          <button class="icon-btn sm danger" data-annot-del title="删除批注">${I("trash", 12)}</button>
+          <button class="icon-btn sm" data-annot-close title="关闭">${I("x", 12)}</button>
+        </div>
+      </div>
+      <div class="annot-view-body">${esc(fields.comment || "")}</div>`;
+    $("#overlay-root").appendChild(pop);
+    PdfAnnot.select(pane, cur.id);
+    $$(".annot-item").forEach(el => el.classList.toggle("is-active", el.dataset.id === cur.id));
+    document.querySelector(`.annot-item[data-id="${CSS.escape(cur.id)}"]`)?.scrollIntoView({ block: "nearest" });
+    positionAnnotPopNearSelection(pop, pane, cur);
+    return;
+  }
+
+  pop.className = "annot-pop annot-edit-pop";
   pop.innerHTML = `
     <div class="annot-pop-head">
       <span class="annot-pop-grip" title="拖动可移动此框">⋮⋮</span>
-      <span>批注</span>
+      <span>编辑批注</span>
       <span class="annot-save-state" role="status">${draft ? "已恢复草稿" : "已保存"}</span>
       <button class="icon-btn sm" data-annot-reset-pos title="回到批注文字旁">${I("refresh", 13)}</button>
       <button class="icon-btn sm" data-annot-close title="关闭">${I("x", 13)}</button>
     </div>
-    ${cur.text ? `<blockquote class="annot-quote">${esc(cur.text.slice(0, 240))}${cur.text.length > 240 ? "…" : ""}</blockquote>` : ""}
     <div class="annot-edit-tools">
-      <label>颜色<select data-annot-color>${ANNOT_COLOR_LIST.map((key,i)=>`<option value="${key}" ${fields.color===key ? "selected" : ""}>${["黄色","绿色","蓝色","粉色","紫色"][i]}</option>`).join("")}</select></label>
+      <div class="annot-color-picker">
+        <input type="hidden" data-annot-color value="${fields.color}">
+        ${ANNOT_COLOR_LIST.map((key, i) => `
+          <button type="button" class="sel-dot ${fields.color === key ? 'active' : ''}" data-pick-color="${key}"
+                  title="${['黄色','绿色','蓝色','粉色','紫色'][i]}"
+                  style="background:${PdfAnnot.COLORS[key].fill}"></button>
+        `).join("")}
+      </div>
     </div>
     <textarea id="annot-comment" maxlength="4000" placeholder="写下你的想法…（自动保存，Ctrl+Enter 立即保存）">${esc(fields.comment || "")}</textarea>
     <div class="annot-pop-foot">
       <button class="btn sm danger" data-annot-del>${I("trash", 13)}删除</button>
-      <button class="btn sm btn-primary" data-annot-save>${I("check", 13)}保存</button>
+      <button class="btn sm btn-primary" data-annot-save>${I("check", 13)}完成</button>
     </div>`;
-  pop.dataset.annotId = cur.id;
-  pop.dataset.paperId = paperId;
-  pop._pane = pane;
   pop._dirty = !!draft && JSON.stringify(draft) !== JSON.stringify({comment:cur.comment || "",kind:cur.kind,color:cur.color});
   $("#overlay-root").appendChild(pop);
   PdfAnnot.select(pane, cur.id);
   $$(".annot-item").forEach(el=>el.classList.toggle("is-active",el.dataset.id===cur.id));
   document.querySelector(`.annot-item[data-id="${CSS.escape(cur.id)}"]`)?.scrollIntoView({block:"nearest"});
+
+  pop.querySelectorAll("[data-pick-color]").forEach(dot => {
+    dot.addEventListener("click", () => {
+      pop.querySelectorAll("[data-pick-color]").forEach(d => d.classList.toggle("active", d === dot));
+      const colorInput = pop.querySelector("[data-annot-color]");
+      if (colorInput) colorInput.value = dot.dataset.pickColor;
+      changed();
+    });
+  });
+
   const changed = () => {
     rememberAnnotationDraft(pop);
     pop._dirty = true;
-    pop.querySelector('.annot-save-state').textContent = "草稿已暂存";
+    const saveState = pop.querySelector('.annot-save-state');
+    if (saveState) saveState.textContent = "草稿已暂存";
     clearTimeout(pop._saveTimer);
     pop._saveTimer = setTimeout(()=>saveAnnotationComment(pane,cur.id,{silent:true,close:false,pop}),800);
   };
   pop.querySelector('textarea').addEventListener('input',changed);
-  pop.querySelectorAll('select').forEach(el=>el.addEventListener('change',changed));
   if (pop._dirty) pop._saveTimer = setTimeout(()=>saveAnnotationComment(pane,cur.id,{silent:true,close:false,pop}),800);
   // 定位到批注文字附近（下方优先，空间不足翻到上方）
   positionAnnotPopNearSelection(pop, pane, cur);
@@ -5550,12 +5595,21 @@ document.addEventListener("click", (e) => {
     return;
   }
 
-  // 点击已有批注的标记/矩形 → 打开编辑气泡
+  // 点击已有批注的标记/矩形 → 打开气泡（默认查看态）
   const mark = e.target.closest(".annot-mark, .annot-rect");
   if (mark) {
     const pane = activePdfPane();
     const ann = pane && PdfAnnot.get(pane, mark.dataset.annotId);
-    if (ann && pane) openAnnotationEditor(pane, ann);
+    if (ann && pane) openAnnotationEditor(pane, ann, "view");
+    return;
+  }
+  if (e.target.closest("[data-annot-edit-mode]")) {
+    const pop = $("#annot-pop");
+    const pane = activePdfPane();
+    if (pop && pane) {
+      const ann = PdfAnnot.get(pane, pop.dataset.annotId);
+      if (ann) openAnnotationEditor(pane, ann, "edit");
+    }
     return;
   }
   if (e.target.closest("[data-annot-close]")) { closeAnnotationEditor(); return; }
@@ -5567,7 +5621,14 @@ document.addEventListener("click", (e) => {
   if (e.target.closest("[data-annot-save]")) {
     const pop = $("#annot-pop");
     const pane = activePdfPane();
-    if (pop && pane) saveAnnotationComment(pane, pop.dataset.annotId);
+    if (pop && pane) {
+      const annId = pop.dataset.annotId;
+      saveAnnotationComment(pane, annId, { silent: false, close: false, pop }).then(() => {
+        const updated = PdfAnnot.get(pane, annId);
+        if (updated && updated.comment?.trim()) openAnnotationEditor(pane, updated, "view");
+        else closeAnnotationEditor();
+      });
+    }
     return;
   }
   if (e.target.closest("[data-annot-del]")) {
@@ -5581,17 +5642,24 @@ document.addEventListener("click", (e) => {
   if (page && !getSelection()?.toString().trim()) {
     const pane = activePdfPane();
     const ann = pane && PdfAnnot.hitTest(pane,page,e.clientX,e.clientY);
-    if (ann) openAnnotationEditor(pane,ann);
+    if (ann) openAnnotationEditor(pane,ann, "view");
   }
 });
 
-/* 批注备注：Ctrl/Cmd + Enter 保存 */
+/* 批注备注：Ctrl/Cmd + Enter 保存后切回查看态 */
 document.addEventListener("keydown", (e) => {
   if (e.target.id === "annot-comment" && (e.ctrlKey || e.metaKey) && e.key === "Enter") {
     e.preventDefault();
     const pop = $("#annot-pop");
     const pane = activePdfPane();
-    if (pop && pane) saveAnnotationComment(pane, pop.dataset.annotId);
+    if (pop && pane) {
+      const annId = pop.dataset.annotId;
+      saveAnnotationComment(pane, annId, { silent: false, close: false, pop }).then(() => {
+        const updated = PdfAnnot.get(pane, annId);
+        if (updated && updated.comment?.trim()) openAnnotationEditor(pane, updated, "view");
+        else closeAnnotationEditor();
+      });
+    }
   }
 });
 

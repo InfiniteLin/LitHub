@@ -971,18 +971,22 @@ body.webai-resizing * { cursor: col-resize !important; }
 .pdf-reference-link:hover,.pdf-reference-link:focus-visible { background:#4984cb18; outline:1px solid #4984cb80; }
 .pdf-reference-nav { position:fixed; z-index:20; display:flex; align-items:center; gap:8px; max-width:min(450px,70vw); padding:4px; border:1px solid var(--line); border-radius:9px; background:var(--surface); box-shadow:var(--shadow-page); font-size:12px; }
 .pdf-reference-nav[hidden],.pdf-reference-nav [hidden] { display:none; }
-/* 批注标记：页边的小铅笔按钮 */
+/* 批注标记：文字右上角精致微型角标，上标化排版不遮挡正文 */
 .annot-mark {
-  position: absolute; transform: translate(-50%, -50%);
-  width: 20px; height: 20px; border-radius: 5px;
-  display: grid; place-items: center;
-  font-size: 10px; line-height: 1;
+  position: absolute; transform: translate(1px, -35%);
+  width: 13px; height: 13px; border-radius: 3.5px;
+  display: flex; align-items: center; justify-content: center;
+  padding: 0;
   background: var(--accent); color: #fff8f0;
   border: none; cursor: pointer; pointer-events: auto;
-  box-shadow: 0 1px 4px rgba(33, 29, 21, 0.28);
-  transition: transform 0.12s var(--ease);
+  box-shadow: 0 1px 3px rgba(33, 29, 21, 0.22);
+  transition: transform 0.12s var(--ease), box-shadow 0.12s var(--ease);
+  z-index: 4;
 }
-.annot-mark:hover { transform: translate(-50%, -50%) scale(1.18); }
+.annot-mark:hover {
+  transform: translate(1px, -35%) scale(1.22);
+  box-shadow: 0 2px 6px rgba(33, 29, 21, 0.32);
+}
 .annot-mark.is-selected { box-shadow: 0 0 0 2px var(--accent-soft), 0 1px 4px rgba(33, 29, 21, 0.3); }
 
 /* 划词浮条：更多按钮 + 颜色选择 */
@@ -1087,6 +1091,51 @@ body.webai-resizing * { cursor: col-resize !important; }
 }
 #annot-comment:focus { border-color: var(--accent); }
 .annot-pop-foot { display: flex; justify-content: space-between; gap: 8px; margin-top: 10px; }
+
+/* 批注极简查看卡片（只显示批注内容 + 编辑按钮） */
+.annot-view-pop {
+  width: 270px; max-width: 90vw;
+  padding: 10px 12px;
+}
+.annot-view-head {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 8px; padding-bottom: 6px;
+  border-bottom: 1px solid var(--line);
+}
+.annot-view-title {
+  display: flex; align-items: center; gap: 5px;
+  font-size: 11.5px; font-weight: 600; color: var(--ink-2);
+  letter-spacing: 0.04em;
+}
+.annot-view-title svg { color: var(--accent); }
+.annot-view-acts {
+  display: flex; align-items: center; gap: 4px;
+}
+.annot-view-body {
+  font-size: 13px; line-height: 1.65;
+  color: var(--ink);
+  white-space: pre-wrap; word-break: break-word;
+  max-height: 260px; overflow-y: auto;
+  user-select: text;
+}
+.annot-empty-tip {
+  color: var(--ink-3); font-style: italic; font-size: 12px;
+}
+
+/* 批注编辑弹窗中的彩色色块选择 */
+.annot-color-picker {
+  display: flex; gap: 6px; align-items: center; margin-bottom: 8px;
+}
+.annot-color-picker .sel-dot {
+  width: 15px; height: 15px; border-radius: 3.5px;
+  border: 1.5px solid rgba(0, 0, 0, 0.15);
+  cursor: pointer; padding: 0;
+  transition: transform 0.12s var(--ease), box-shadow 0.12s var(--ease);
+}
+.annot-color-picker .sel-dot:hover { transform: scale(1.18); }
+.annot-color-picker .sel-dot.active {
+  box-shadow: 0 0 0 2px var(--surface), 0 0 0 3.5px var(--ink);
+}
 
 /* ---------- 批注列表侧栏 ---------- */
 .annot-panel {

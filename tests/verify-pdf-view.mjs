@@ -275,14 +275,14 @@ try {
     LithubAPI.live=true;
     window.pendingAnnotationWrites=[];
     LithubAPI.updateAnnotation=(id,aid,fields)=>new Promise(resolve=>pendingAnnotationWrites.push({fields,resolve}));
-    openAnnotationEditor(pane(),sidebarAnnotation);
+    openAnnotationEditor(pane(),sidebarAnnotation,"edit");
     document.querySelector('#annot-comment').value='First draft';
     document.querySelector('#annot-comment').dispatchEvent(new Event('input'));
   `);
   await until('idle annotation typing automatically saves', `pendingAnnotationWrites.length===1`);
   await evaluate(`
     document.querySelector('#annot-comment').value='Newer draft'; document.querySelector('#annot-comment').dispatchEvent(new Event('input'));
-    document.querySelector('[data-annot-color]').value='purple'; document.querySelector('[data-annot-color]').dispatchEvent(new Event('change'));
+    document.querySelector('[data-pick-color=purple]').click();
     void saveAnnotationComment(pane(),'sidebar-note',{close:false,silent:true});
   `);
   await check('annotation writes serialize per ID', `pendingAnnotationWrites.length===1`);
@@ -298,7 +298,7 @@ try {
     closeAnnotationEditor();
   `);
   await until('failed close save retains local draft', `!annotationSaves.size && !!readAnnotationDraft(testPaper.id,'sidebar-note')`);
-  await evaluate(`annotationDrafts.clear(); openAnnotationEditor(pane(),sidebarAnnotation);`);
+  await evaluate(`annotationDrafts.clear(); openAnnotationEditor(pane(),sidebarAnnotation,"edit");`);
   await check('annotation draft survives reopening from local storage', `document.querySelector('#annot-comment').value==='Recover after failed save'`);
   await evaluate(`LithubAPI.updateAnnotation=async(id,aid,fields)=>({...sidebarAnnotation,...fields});
     saveAnnotationComment(pane(),'sidebar-note');`);
@@ -349,7 +349,7 @@ try {
   await until('underline recoloring preserves kind and sends no comment', `PdfAnnot.get(pane(),'underline-only').color==='green'
     && PdfAnnot.get(pane(),'underline-only').kind==='underline' && Object.keys(lastKindPayload).join(',')==='color'`);
   await check('underline controls contain no writing or type conversion', `!document.querySelector('#annot-pop textarea') && !document.querySelector('#annot-pop select')`);
-  await evaluate(`closeAnnotationEditor();openAnnotationEditor(pane(),undoAnnotation);`);
+  await evaluate(`closeAnnotationEditor();openAnnotationEditor(pane(),undoAnnotation,"edit");`);
   await check('only notes offer description editing and drafts', `!!document.querySelector('#annot-pop #annot-comment')
     && !!document.querySelector('#annot-pop .annot-save-state') && !document.querySelector('#annot-pop [data-annot-kind]')`);
   await evaluate(`closeAnnotationEditor();LithubAPI.live=separateKindsAPI.live;LithubAPI.updateAnnotation=separateKindsAPI.update;`);
