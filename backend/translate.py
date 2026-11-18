@@ -1,15 +1,12 @@
-"""翻译任务运行器：单 worker 队列，逐行解析 pdf2zh 输出更新进度（节流落盘）。"""
+"""翻译任务运行器：单 worker 队列，逐行解析翻译引擎输出。"""
 
 import os
 import queue
 import re
-import shutil
 import signal
 import subprocess
-import sys
 import threading
 import time
-from pathlib import Path
 
 from store import store
 from translation_plugin import manager as plugin_manager
@@ -80,46 +77,6 @@ def cancel(paper_id: str) -> bool:
         return bool(tasks)
 
 
-def _pdf2zh_cmd():
-    """找到调用 pdf2zh 的命令前缀（后面再拼参数）。
-
-    三种情况，按顺序试：
-      1. 打包版：内置运行时里跑 backend/pdf2zh_cli.py。
-         `pip install --target` 不生成 console_scripts，而 pdf2zh 1.x 没有
-         `__main__.py`，所以只能用一个我们自己的薄入口脚本。
-      2. 开发机：PATH 里的 pdf2zh（普通 pip install 会在 Scripts/ 下生成）。
-      3. 当前解释器旁边的 pdf2zh.exe。
-    """
-    independent = plugin_manager.command()
-    if independent:
-        return independent
-    here = Path(__file__).resolve().parent
-    cli = here / "pdf2zh_cli.py"
-    if cli.exists() and _module_available("pdf2zh.pdf2zh"):
-        # 用当前这个解释器（打包版就是内置运行时）跑入口脚本
-        return [sys.executable, "-B", str(cli)]
-
-    exe = shutil.which("pdf2zh")
-    if exe:
-        return [exe]
-    cand = Path(sys.executable).parent / ("pdf2zh.exe" if os.name == "nt" else "pdf2zh")
-    if cand.exists():
-        return [str(cand)]
-    raise FileNotFoundError(
-        "未找到 pdf2zh。请先安装：pip install pdf2zh（打包版应已内置）"
-    )
-
-
-def _module_available(name: str) -> bool:
-    """某个模块能不能导入（不真的执行它的重型导入副作用就判断不了，但够用）。"""
-    import importlib.util
-
-    try:
-        return importlib.util.find_spec(name) is not None
-    except Exception:
-        return False
-
-
 def _run_one(task_id: str):
     with _procs_lock:
         task = store.get_task(task_id)
@@ -142,34 +99,20 @@ def _run_one(task_id: str):
     cfg = store.get_settings()
     service = cfg.get("service") or "bing"
     target_lang = cfg.get("target_lang", "zh")
-    runtime = plugin_manager.runtime()
-    isolated_home = runtime[1] if runtime else None
-    if isolated_home is not None:
-        cmd = [*runtime[0], str(src), "--" + service, "--lang-out", target_lang,
-               "--output", str(out_dir), "--use-alternating-pages-dual",
-               "--no-auto-extract-glossary", "--disable-config-auto-save"]
-    else:
-        cmd = [*_pdf2zh_cmd(), str(src), "-s", service, "-lo", target_lang, "-o", str(out_dir)]
+    command, isolated_home = plugin_manager.runtime()
+    cmd = [*command, str(src), "--" + service, "--lang-out", target_lang,
+           "--output", str(out_dir), "--use-alternating-pages-dual",
+           "--no-auto-extract-glossary", "--disable-config-auto-save"]
     if task.get("retranslate"):
         cmd.append("--ignore-cache")
-    # 复用 pdf2zh 内置翻译器：1.9.x 经环境变量配置（set_envs 读取 os.environ），
-    # 键名与各翻译器类声明的 envs 一致
-    env_extra: dict[str, str] = {}
+    isolated_home.mkdir(parents=True, exist_ok=True)
+    env = {key: value for key, value in os.environ.items() if not key.upper().startswith("PDF2ZH_")}
+    env.update(PYTHONIOENCODING="utf-8", USERPROFILE=str(isolated_home), HOME=str(isolated_home))
     if service == "openai":
         if not all(cfg.get(k) for k in ("api_key", "base_url", "model")):
             raise ValueError("请先在「设置 → AI 服务」添加并配置 API，或改用必应翻译")
-        env_extra = {
-            "OPENAI_BASE_URL": cfg["base_url"],
-            "OPENAI_API_KEY": cfg["api_key"],
-            "OPENAI_MODEL": cfg["model"],
-        }
-
-    env = {**os.environ, "PYTHONIOENCODING": "utf-8", **env_extra}
-    if isolated_home is not None:
-        isolated_home.mkdir(exist_ok=True)
-        env = {key: value for key, value in env.items() if not key.upper().startswith("PDF2ZH_")}
-        env.update({f"PDF2ZH_{key}": value for key, value in env_extra.items()})
-        env.update(USERPROFILE=str(isolated_home), HOME=str(isolated_home))
+        env.update(PDF2ZH_OPENAI_BASE_URL=cfg["base_url"], PDF2ZH_OPENAI_API_KEY=cfg["api_key"],
+                   PDF2ZH_OPENAI_MODEL=cfg["model"])
     err_tail = []
     with _procs_lock:
         if not _is_active(task_id):
@@ -207,8 +150,8 @@ def _run_one(task_id: str):
                             store.update_task(task_id, progress=pct, note=f"正在翻译… {pct}%")
             low = line.lower()
             if "error" in low or "traceback" in low:
-                if env_extra.get("OPENAI_API_KEY"):
-                    line = line.replace(env_extra["OPENAI_API_KEY"], "***")
+                if env.get("PDF2ZH_OPENAI_API_KEY"):
+                    line = line.replace(env["PDF2ZH_OPENAI_API_KEY"], "***")
                 err_tail.append(line)
                 if len(err_tail) > 6:
                     err_tail.pop(0)

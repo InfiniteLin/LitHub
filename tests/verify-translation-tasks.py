@@ -64,8 +64,8 @@ with tempfile.TemporaryDirectory(prefix='lithub-translation-') as temporary, con
     def slow_command():
         entered.set()
         assert release.wait(5)
-        return [sys.executable, '-c', 'pass']
-    with patch.object(translate, '_pdf2zh_cmd', slow_command), patch.object(translate.subprocess, 'Popen') as popen:
+        return [sys.executable, '-c', 'pass'], base / 'engine-home'
+    with patch.object(translate.plugin_manager, 'runtime', slow_command), patch.object(translate.subprocess, 'Popen') as popen:
         with ThreadPoolExecutor(max_workers=1) as pool:
             future = pool.submit(translate._run_one, retry['id'])
             try:
@@ -79,8 +79,9 @@ with tempfile.TemporaryDirectory(prefix='lithub-translation-') as temporary, con
 
     with patch.object(translate, 'enqueue'):
         running = start()
-    with patch.object(translate, '_pdf2zh_cmd', return_value=[sys.executable, '-u', '-c',
-              "import time; print('10%|', flush=True); time.sleep(30)"]):
+    with patch.object(translate.plugin_manager, 'runtime', return_value=(
+              [sys.executable, '-u', '-c', "import time; print('10%|', flush=True); time.sleep(30)"],
+              base / 'engine-home')):
         with ThreadPoolExecutor(max_workers=1) as pool:
             future = pool.submit(translate._run_one, running['id'])
             proc = None
@@ -107,7 +108,7 @@ with tempfile.TemporaryDirectory(prefix='lithub-translation-') as temporary, con
     with patch.object(translate, 'enqueue'):
         completed = start()
     command = [sys.executable, '-c', "from pathlib import Path; Path('test-mono.pdf').write_bytes(b'test')"]
-    with patch.object(translate, '_pdf2zh_cmd', return_value=command), patch.object(translate, '_page_count', return_value=1):
+    with patch.object(translate.plugin_manager, 'runtime', return_value=(command, base / 'engine-home')), patch.object(translate, '_page_count', return_value=1):
         translate._run_one(completed['id'])
     assert store.get_task(completed['id'])['status'] == 'done'
     assert store.get_paper('p1')['translated']
@@ -128,7 +129,8 @@ with tempfile.TemporaryDirectory(prefix='lithub-translation-') as temporary, con
         rerun = reruns[0]
         assert len({t['id'] for t in reruns}) == 1 and rerun['retranslate']
         assert start()['id'] == rerun['id']
-    with patch.object(translate, '_pdf2zh_cmd', return_value=[sys.executable,'-c','raise SystemExit(1)']):
+    with patch.object(translate.plugin_manager, 'runtime', return_value=(
+              [sys.executable, '-c', 'raise SystemExit(1)'], base / 'engine-home')):
         translate._run_one(rerun['id'])
     assert store.get_task(rerun['id'])['status'] == 'failed'
     assert store.get_paper('p1')['translated_file'] == old and Path(old).exists()
@@ -139,7 +141,7 @@ with tempfile.TemporaryDirectory(prefix='lithub-translation-') as temporary, con
     with patch.object(translate, 'enqueue'):
         renewed = restart()
     command = [sys.executable,'-c',"import sys; from pathlib import Path; assert '--ignore-cache' in sys.argv; Path('new-mono.pdf').write_bytes(b'new')"]
-    with patch.object(translate, '_pdf2zh_cmd', return_value=command), patch.object(translate, '_page_count', return_value=1):
+    with patch.object(translate.plugin_manager, 'runtime', return_value=(command, base / 'engine-home')), patch.object(translate, '_page_count', return_value=1):
         translate._run_one(renewed['id'])
     current = store.get_paper('p1')
     assert current['translation_task_id'] == renewed['id']

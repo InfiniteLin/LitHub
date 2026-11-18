@@ -79,12 +79,12 @@ with tempfile.TemporaryDirectory(prefix='lithub-api-profiles-') as temporary, co
         assert ai.return_value.chat.completions.create.call_args.kwargs['temperature'] == 0.8
     store.set_settings({'service':'openai'})
     task = store.add_task('p1')
-    with patch.object(translate,'_pdf2zh_cmd',return_value=['fake-pdf2zh']), patch.object(translate.subprocess,'Popen') as process:
+    with patch.object(translate.plugin_manager, 'runtime', return_value=(['fake-pdf2zh-next'], base / 'engine-home')), patch.object(translate.subprocess,'Popen') as process:
         process.return_value.stdout = []
         process.return_value.wait.return_value = 1
         translate._run_one(task['id'])
         env = process.call_args.kwargs['env']
-        assert env['OPENAI_BASE_URL'] == profiles[1]['base_url'] and env['OPENAI_API_KEY'] == keys['beta']
+        assert env['PDF2ZH_OPENAI_BASE_URL'] == profiles[1]['base_url'] and env['PDF2ZH_OPENAI_API_KEY'] == keys['beta']
     print('PASS rename preserves keys, masked saves, connection test and selected summary/translation configuration')
 
     before = library.read_text(encoding='utf8')

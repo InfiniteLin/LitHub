@@ -1,6 +1,7 @@
 """Stage a smaller runtime for shipping; never change the dependency source tree."""
 import argparse
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -85,7 +86,11 @@ def prepare(source: Path, destination: Path, verify: bool = True) -> dict:
 def verify_runtime(runtime: Path):
     python = runtime / 'python.exe'
     existing_bytecode = set(runtime.rglob('*.pyc'))
+    requirements = Path(__file__).resolve().parents[1] / 'backend' / 'requirements.txt'
+    engine_pin = next(line for line in requirements.read_text(encoding='utf8').splitlines()
+                      if line.startswith('pdf2zh-next=='))
     code = '''
+import sys
 import fastapi, uvicorn, pydantic, multipart, pypdf, pymupdf, openai
 import numpy as np, scipy.linalg, pandas, cv2, onnx, onnxruntime, skimage, networkx
 from importlib.metadata import version
@@ -93,32 +98,22 @@ assert np.allclose(scipy.linalg.solve([[2.,0.],[0.,2.]], [2.,4.]), [1.,2.])
 assert cv2.resize(np.zeros((4,4),dtype=np.uint8),(2,2)).shape == (2,2)
 assert pandas.DataFrame({'a':[1,2]}).a.sum() == 3
 assert onnxruntime.get_available_providers()
-assert version('pdf2zh') == '1.9.11'
+assert version('pdf2zh-next') == sys.argv[1]
 doc=pymupdf.open(); page=doc.new_page(); page.insert_text((72,72),'Runtime verification')
 assert 'Runtime verification' in page.get_text(); doc.close()
 print('PASS staged runtime: backend, scientific/native libraries, PDF rendering and package metadata')
 '''
     flags = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
-    subprocess.run([str(python), '-B', '-c', code], check=True, creationflags=flags, timeout=90)
-    cli = Path(__file__).resolve().parents[1] / 'backend' / 'pdf2zh_cli.py'
-    # pdf2zh/BabelDOC opens a cache database even for --help. Keep this build
-    # probe independent of the developer's existing cache and its permissions.
-    cli_probe = '''
-import runpy, sys
-from pathlib import Path
-cache_home = sys.argv[2]
-Path.home = classmethod(lambda cls: Path(cache_home))
-cli = sys.argv[1]
-sys.argv = [cli, '--help']
-runpy.run_path(cli, run_name='__main__')
-'''
-    # Clean up only after the child exits and SQLite releases its Windows handles.
+    subprocess.run([str(python), '-B', '-c', code, engine_pin.split('==')[1]],
+                   check=True, creationflags=flags, timeout=90)
     with tempfile.TemporaryDirectory(prefix='lithub-runtime-probe-') as cache_home:
-        subprocess.run([str(python), '-B', '-c', cli_probe, str(cli), cache_home], check=True,
+        env = {key: value for key, value in os.environ.items() if not key.upper().startswith('PDF2ZH_')}
+        env.update(USERPROFILE=cache_home, HOME=cache_home)
+        subprocess.run([str(python), '-B', '-m', 'pdf2zh_next.main', '--help'], check=True, env=env,
                        stdout=subprocess.DEVNULL, creationflags=flags, timeout=90)
     if set(runtime.rglob('*.pyc')) - existing_bytecode:
         raise RuntimeError('Runtime verification unexpectedly created bytecode')
-    print('PASS staged runtime: complete pdf2zh command line import chain')
+    print('PASS staged runtime: pdf2zh-next command line')
 
 
 if __name__ == '__main__':

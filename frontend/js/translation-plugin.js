@@ -6,15 +6,16 @@ window.TranslationPlugin = (() => {
   function draw(info) {
     const card = document.getElementById('translation-plugin');
     if (!card) return;
-    const installedNext = info.package === 'pdf2zh-next';
+    const installed = Boolean(info.current);
+    const independent = info.source === 'independent';
     card.innerHTML = `<h3>pdf2zh-next</h3>
-      <p class="set-desc">${installedNext ? `已安装 ${escape(info.current)}` : '未安装'}${info.available && info.latest ? ` · 可安装 ${escape(info.latest)}` : ''}</p>
+      <p class="set-desc">${installed ? `${independent ? '已安装' : '内置'} ${escape(info.current)}` : '未安装'}${info.available && info.latest ? ` · 可更新至 ${escape(info.latest)}` : ''}</p>
       ${info.message ? `<p role="status">${escape(info.message)}</p>` : ''}
       <div class="set-foot" style="gap:10px;flex-wrap:wrap">
       ${info.busy ? '<button class="btn" data-plugin="cancel">取消更新</button>' : `
       ${info.can_restore ? '<button class="btn" data-plugin="restore">恢复内置版</button>' : ''}
       <button class="btn" data-plugin="check">检查更新</button>
-      <button class="btn btn-primary" data-plugin="install">${!installedNext ? '安装 pdf2zh-next' : info.available ? '更新引擎' : '修复安装'}</button>`}</div>`;
+      ${!installed || info.available || independent ? `<button class="btn btn-primary" data-plugin="install">${!installed ? '安装 pdf2zh-next' : info.available ? '更新引擎' : '修复安装'}</button>` : ''}`}</div>`;
   }
   async function request(operation) {
     const response = await fetch(`${API_BASE}/api/settings/translation-plugin${operation ? '/' + operation : ''}`, {

@@ -15,7 +15,7 @@ class RuntimeStagingTests(unittest.TestCase):
                      'Lib/site-packages/foo/__pycache__/a.pyc'):
             self.assertIsNotNone(stage.excluded(Path(path)), path)
         for path in ('Lib/site-packages/numpy/testing/__init__.py', 'Lib/site-packages/scipy/_lib/_testutils.py',
-                     'Lib/site-packages/numpy.libs/blas.dll', 'Lib/site-packages/pdf2zh-1.9.11.dist-info/METADATA',
+                     'Lib/site-packages/numpy.libs/blas.dll', 'Lib/site-packages/pdf2zh_next-2.10.2.dist-info/METADATA',
                      'Lib/site-packages/custom_package/tests/__init__.py', 'Lib/site-packages/pipelinelib/__init__.py'):
             self.assertIsNone(stage.excluded(Path(path)), path)
 

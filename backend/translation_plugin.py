@@ -1,4 +1,4 @@
-"""Install PDFMathTranslate-next beside the bundled legacy engine."""
+"""Manage the bundled and independently updated PDFMathTranslate-next runtimes."""
 import hashlib
 import importlib.metadata
 import json
@@ -14,6 +14,9 @@ import urllib.request
 import uuid
 
 from packaging.specifiers import InvalidSpecifier, SpecifierSet
+from packaging.version import Version
+
+from paths import DATA_DIR
 
 
 NEXT_PACKAGE = "pdf2zh-next"
@@ -27,24 +30,22 @@ class PluginManager:
         self.lock = threading.RLock()
         self.cancelled = threading.Event()
         self.proc = None
-        self.state = {"status": "idle", "message": "", "latest": "", "available": False}
+        self.state = {"status": "idle", "message": "", "latest": ""}
 
     def _pointer(self):
         try:
             value = json.loads((self.root / "active.json").read_text(encoding="utf8"))
             name = value["directory"]
-            match = re.fullmatch(r"(pdf2zh|pdf2zh-next)-(\d+\.\d+\.\d+)-[a-f0-9]{12}", name)
+            match = re.fullmatch(r"pdf2zh-next-(2\.\d+\.\d+)-[a-f0-9]{12}", name)
             if not match:
                 return None
-            package, version = match.groups()
-            if not version.startswith("2." if package == NEXT_PACKAGE else "1."):
-                return None
+            version = match[1]
             folder = self.root / name
             if folder.is_symlink() or not (folder / "ready.json").is_file():
                 return None
             ready = json.loads((folder / "ready.json").read_text(encoding="utf8"))
             if (ready["version"] != version or value["version"] != version
-                    or ready.get("package", "pdf2zh") != package or value.get("package", "pdf2zh") != package
+                    or ready.get("package") != NEXT_PACKAGE or value.get("package") != NEXT_PACKAGE
                     or not self._python(folder).is_file()):
                 return None
             return value
@@ -57,31 +58,41 @@ class PluginManager:
             return folder / ("python.exe" if (folder / "python.exe").exists() else "Scripts/python.exe")
         return folder / "bin/python"
 
+    @staticmethod
+    def _bundled_version():
+        try:
+            return importlib.metadata.version(NEXT_PACKAGE)
+        except importlib.metadata.PackageNotFoundError:
+            return ""
+
+    def _active(self, bundled):
+        pointer = self._pointer()
+        if pointer and (not bundled or Version(pointer["version"]) >= Version(bundled)):
+            return pointer
+        return None
+
     def runtime(self):
         with self.lock:
-            active = self._pointer()
+            bundled = self._bundled_version()
+            active = self._active(bundled)
             if active:
                 folder = self.root / active["directory"]
-                prefix = [str(self._python(folder)), "-B"]
-                if active.get("package") == NEXT_PACKAGE:
-                    return prefix + ["-m", "pdf2zh_next.main"], folder / "home"
-                return prefix + [str(Path(__file__).with_name("pdf2zh_cli.py"))], None
-            return None
-
-    def command(self):
-        runtime = self.runtime()
-        return runtime[0] if runtime else None
+                executable, home = self._python(folder), folder / "home"
+            elif bundled:
+                executable, home = sys.executable, DATA_DIR / "translation-engine"
+            else:
+                raise FileNotFoundError("未找到 pdf2zh-next，请在「设置 → 翻译」安装")
+            return [str(executable), "-B", "-m", "pdf2zh_next.main"], home
 
     def snapshot(self):
         with self.lock:
-            active = self._pointer()
-            try:
-                bundled = importlib.metadata.version("pdf2zh")
-            except importlib.metadata.PackageNotFoundError:
-                bundled = ""
-            return {**self.state, "current": active["version"] if active else bundled,
-                    "package": active.get("package", "pdf2zh") if active else "pdf2zh",
-                    "source": "independent" if active else "bundled", "can_restore": bool(active),
+            bundled = self._bundled_version()
+            active = self._active(bundled)
+            current = active["version"] if active else bundled
+            latest = self.state["latest"]
+            return {**self.state, "current": current, "package": NEXT_PACKAGE if current else "",
+                    "available": bool(latest and (not current or Version(latest) > Version(current))),
+                    "source": "independent" if active else "bundled", "can_restore": bool(active and bundled),
                     "directory": str(self.root), "busy": self.state["status"] in {"checking", "installing"}}
 
     def _set(self, **fields):
@@ -125,7 +136,7 @@ class PluginManager:
             if operation == "restore":
                 self.guard()
                 (self.root / "active.json").unlink(missing_ok=True)
-                self.state.update(status="idle", message="已恢复内置插件", available=False)
+                self.state.update(status="idle", message="已恢复内置版")
                 return self.snapshot()
             if operation not in {"check", "install"}:
                 raise ValueError("未知插件操作")
@@ -224,13 +235,17 @@ class PluginManager:
             if not latest:
                 latest = self._latest(self._json("https://pypi.org/pypi/pdf2zh-next/json"))
             self._check_cancel()
-            available = snapshot["package"] != NEXT_PACKAGE or tuple(map(int, latest.split("."))) > tuple(map(int, snapshot["current"].split(".")))
-            if snapshot["package"] == NEXT_PACKAGE and not available and operation == "install":
-                latest = snapshot["current"]
-            self._set(latest=latest, available=available)
+            current = snapshot["current"]
+            available = not current or Version(latest) > Version(current)
+            self._set(latest=latest)
             if operation == "check":
                 self._set(status="idle", message="发现兼容新版" if available else "当前已是兼容的最新版本")
                 return
+            if not available:
+                if snapshot["source"] == "bundled":
+                    self._set(status="idle", message="当前已是兼容的最新版本")
+                    return
+                latest = current
             self.root.mkdir(parents=True, exist_ok=True)
             folder = self.root / f"{NEXT_PACKAGE}-{latest}-{uuid.uuid4().hex[:12]}"
             self._set(message="正在创建独立 Python 环境…")
@@ -270,7 +285,7 @@ class PluginManager:
                 pending.write_text(json.dumps(ready), encoding="utf8")
                 os.replace(pending, self.root / "active.json")
                 folder = None  # The verified environment now belongs to the active installation.
-                self.state.update(status="idle", available=False, message="插件已更新，下一次翻译立即生效")
+                self.state.update(status="idle", message="插件已更新")
         except InterruptedError:
             self._set(status="idle", message="已取消更新")
         except Exception as exc:

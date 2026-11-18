@@ -8,11 +8,11 @@ import { spawn } from 'node:child_process';
 import { findBrowser } from './_browser.mjs';
 const require=createRequire(import.meta.url);
 const {selectSidecarPort,waitForOwnedSidecar}=require('../electron/sidecar-connection');
-const root=mkdtempSync(path.join(os.tmpdir(),'lithub-plugin-ui-'));
+const root=mkdtempSync(path.join(process.env.LITHUB_TEST_TMP || os.tmpdir(),'lithub-plugin-ui-'));
 const data=path.join(root,'data');mkdirSync(data);
 writeFileSync(path.join(data,'library.json'),JSON.stringify({papers:{},tasks:{},settings:{}}));
 const port=await selectSidecarPort(),base=`http://127.0.0.1:${port}`,instance='profiles-ui-test';
-const backend=spawn('python',['-B','-m','uvicorn','main:app','--host','127.0.0.1','--port',String(port)],{
+const backend=spawn(process.env.LITHUB_TEST_PYTHON || 'python',['-B','-m','uvicorn','main:app','--host','127.0.0.1','--port',String(port)],{
   cwd:path.resolve('backend'),windowsHide:true,stdio:['ignore','pipe','pipe'],
   env:{...process.env,LITHUB_DATA_DIR:data,LITHUB_PROGRAM_DIR:root,LITHUB_PDF_DEFAULT_DIR:path.join(root,'pdfs'),LITHUB_INSTANCE_ID:instance}
 });
@@ -38,9 +38,11 @@ try {
   await evaluate(`location.hash='#/settings'`);
   await until('settings tabs available',`!!document.querySelector('[data-action="set-tab"][data-id="translate"]')`);
   await evaluate(`document.querySelector('[data-action="set-tab"][data-id="translate"]').click()`);
-  await until('plugin version loaded from backend',`!!document.querySelector('[data-plugin="install"]')`);
+  await until('plugin version loaded from backend',`!!document.querySelector('[data-plugin="check"]')`);
   assert.ok(await evaluate(`document.querySelector('#translation-plugin h3').textContent==='pdf2zh-next'`));
-  assert.ok(await evaluate(`document.querySelector('#translation-plugin').textContent.includes('未安装') && !document.querySelector('#translation-plugin').textContent.includes('1.9.11')`));
+  const bundled = await (await fetch(base+'/api/settings/translation-plugin')).json();
+  assert.equal(await evaluate(`document.querySelector('#translation-plugin .set-desc').textContent`),
+    bundled.current ? `内置 ${bundled.current}` : '未安装');
   // Exercise busy/poll/cancel/error states without downloading third-party code in this UI test.
   await evaluate(`window.pluginInfo={package:'pdf2zh-next',current:'2.10.2',latest:'2.11.0',available:true,source:'independent',directory:'test/plugins',message:'found',busy:false};
     window.realFetch=window.fetch;window.pluginCalls=[];window.fetch=async(url,options)=>{
@@ -53,12 +55,14 @@ try {
       }
       return realFetch(url,options);
     };document.querySelector('#set-target').value='English';
-    document.querySelector('[data-plugin="install"]').click();`);
+    document.querySelector('[data-plugin="check"]').click();`);
+  await until('update available',`!!document.querySelector('[data-plugin="install"]')`);
+  await evaluate(`document.querySelector('[data-plugin="install"]').click()`);
   await until('install shows cancellation',`!!document.querySelector('[data-plugin="cancel"]')`);
   assert.equal(await evaluate(`document.querySelector('#set-target').value`),'English');
   await evaluate(`document.querySelector('[data-plugin="cancel"]').click()`);
   await until('cancel restores install actions',`!!document.querySelector('[data-plugin="install"]') && document.querySelector('#translation-plugin').textContent.includes('cancelled')`);
-  assert.ok(await evaluate(`document.querySelector('#translation-plugin').textContent.includes('已安装 2.10.2 · 可安装 2.11.0')`));
+  assert.ok(await evaluate(`document.querySelector('#translation-plugin').textContent.includes('已安装 2.10.2 · 可更新至 2.11.0')`));
   await evaluate(`pluginInfo.can_restore=true;document.querySelector('[data-plugin="check"]').click()`);
   await until('restore option visible',`!!document.querySelector('[data-plugin="restore"]')`);
   await evaluate(`document.querySelector('[data-plugin="restore"]').click()`);

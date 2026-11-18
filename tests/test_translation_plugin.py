@@ -1,4 +1,3 @@
-import importlib.util
 import json
 from pathlib import Path
 import sys
@@ -18,6 +17,9 @@ class PluginTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.manager = PluginManager(Path(self.temp.name) / 'plugins')
+        bundled = patch.object(self.manager, '_bundled_version', return_value='')
+        self.bundled = bundled.start()
+        self.addCleanup(bundled.stop)
 
     def prepare_environment(self, folder):
         executable = folder / ('python.exe' if sys.platform == 'win32' else 'bin/python')
@@ -60,36 +62,45 @@ class PluginTests(unittest.TestCase):
         self.assertIn('pdf2zh-next==2.10.2', calls[0])
         self.assertIn('--bing', calls[1])
         self.assertIn('--openai', calls[2])
-        self.assertEqual(self.manager.command()[-2:], ['-m', 'pdf2zh_next.main'])
-        self.assertTrue(Path(self.manager.command()[0]).is_file())
+        command, _ = self.manager.runtime()
+        self.assertEqual(command[-2:], ['-m', 'pdf2zh_next.main'])
+        self.assertTrue(Path(command[0]).is_file())
+        self.bundled.return_value = '2.10.2'
         self.manager.start('restore')
-        self.assertIsNone(self.manager.command())
+        self.assertEqual(self.manager.runtime()[0][0], sys.executable)
+        self.assertEqual(self.manager.snapshot()['source'], 'bundled')
 
     def test_failed_reinstall_and_cancel_preserve_active_pointer(self):
         self.install()
-        old = self.manager.command()
+        old = self.manager.runtime()
         self.install(error='network failure')
-        self.assertEqual(self.manager.command(), old)
+        self.assertEqual(self.manager.runtime(), old)
         self.assertEqual(self.manager.snapshot()['status'], 'error')
         self.assertEqual(len(list(self.manager.root.glob('pdf2zh-next-*'))), 1)
         self.install(cancel=True)
-        self.assertEqual(self.manager.command(), old)
+        self.assertEqual(self.manager.runtime(), old)
         self.assertIn('取消', self.manager.snapshot()['message'])
         self.assertEqual(len(list(self.manager.root.glob('pdf2zh-next-*'))), 1)
 
-    def test_existing_legacy_install_can_migrate(self):
+    def test_existing_legacy_pointer_uses_bundled_next(self):
+        self.bundled.return_value = '2.10.2'
         name = 'pdf2zh-1.9.11-123456789abc'
         folder = self.manager.root / name
         self.prepare_environment(folder)
         state = json.dumps({'directory': name, 'version': '1.9.11'})
         (folder / 'ready.json').write_text(state)
         (self.manager.root / 'active.json').write_text(state)
-        self.assertEqual(self.manager.snapshot()['package'], 'pdf2zh')
-        self.assertTrue(self.manager.command()[-1].endswith('pdf2zh_cli.py'))
-        self.install(error='failed dependency download')
-        self.assertEqual(self.manager.snapshot()['current'], '1.9.11')
-        self.install()
         self.assertEqual(self.manager.snapshot()['current'], '2.10.2')
+        self.assertEqual(self.manager.runtime()[0], [sys.executable, '-B', '-m', 'pdf2zh_next.main'])
+        self.assertEqual(self.install(), [])
+        self.assertTrue((self.manager.root / 'active.json').exists())
+
+    def test_app_update_prefers_newer_bundled_version(self):
+        self.install()
+        self.bundled.return_value = '2.11.0'
+        self.assertEqual(self.manager.runtime()[0][0], sys.executable)
+        self.assertEqual(self.manager.snapshot()['current'], '2.11.0')
+        self.assertFalse(self.manager.snapshot()['can_restore'])
 
     def test_guard_blocks_install_restore_and_final_activation(self):
         def blocked():
@@ -99,7 +110,8 @@ class PluginTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'active translation'):
                 self.manager.start(operation)
         self.install()
-        self.assertIsNone(self.manager.command())
+        with self.assertRaises(FileNotFoundError):
+            self.manager.runtime()
         self.assertEqual(self.manager.snapshot()['status'], 'error')
 
     def test_duplicate_operation_blocked_and_pointer_paths_rejected(self):
@@ -108,7 +120,8 @@ class PluginTests(unittest.TestCase):
             self.manager.start('install')
         self.manager.root.mkdir()
         (self.manager.root / 'active.json').write_text(json.dumps({'directory': '../elsewhere', 'version': '1.9.11'}))
-        self.assertIsNone(self.manager.command())
+        with self.assertRaises(FileNotFoundError):
+            self.manager.runtime()
 
     def test_check_does_not_install(self):
         with patch.object(self.manager, '_json', return_value={'releases': {'2.10.2': [WHEEL]}}) as get:

@@ -10,7 +10,7 @@ npm run dist  # 默认仅生成 ZIP，不上传
 
 `build/python/` 是 pip 管理的原始依赖，`build/runtime/` 是生成的发布副本。
 不要手工删除原始依赖。`beforePack` 会调用 `prepare-runtime.py`，更新发布副本并验证
-后端、科学计算原生库、PDF 处理和完整的 pdf2zh 命令行导入链；验证失败就中止打包。
+后端、科学计算原生库、PDF 处理和 pdf2zh-next 命令行。引擎版本由 `backend/requirements.txt` 指定。
 
 精简只排除已确认包的测试目录、pip、未使用的 Gradio 界面及缓存。
 `numpy.testing` 等运行时辅助模块、原生库、许可证、包元数据和数据文件保留。

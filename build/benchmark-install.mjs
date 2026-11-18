@@ -69,8 +69,8 @@ for (const round of process.argv.includes('--quick') ? [cases] : [cases, [...cas
       child.once('exit', code => { clearTimeout(timer); code === 0 ? resolve() : reject(Error(`NSIS exit ${code}`)); });
     });
     item.seconds.push((performance.now() - started) / 1000);
-    const sample = path.join(destination, 'Lib/site-packages/pdf2zh/pdf2zh.py');
-    if (!readFileSync(sample).equals(readFileSync(path.join(item.source, 'Lib/site-packages/pdf2zh/pdf2zh.py')))) throw Error('Extracted CLI differs');
+    const entry = 'Lib/site-packages/pdf2zh_next/main.py';
+    if (!readFileSync(path.join(destination, entry)).equals(readFileSync(path.join(item.source, entry)))) throw Error('Extracted CLI differs');
     execFileSync(path.join(destination, 'python.exe'), ['-B', '-c', 'import cv2, scipy, onnxruntime, pymupdf, fastapi; print("PASS extracted runtime")'], { windowsHide: true, stdio: 'pipe', timeout: 90000 });
     console.log(`${item.name}: ${item.seconds.at(-1).toFixed(2)}s; ${(item.installerBytes / 1024 ** 2).toFixed(1)} MiB`);
   }
