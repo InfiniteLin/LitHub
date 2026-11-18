@@ -100,6 +100,6 @@ npm run verify:updates     # 更新界面与 Electron 通信验证
 
 ## 开源
 
-基于 [PDFMathTranslate](https://github.com/Byaidu/PDFMathTranslate)、[PDF.js](https://mozilla.github.io/pdf.js/)、[Vditor](https://github.com/Vanessa219/vditor) 和 [KaTeX](https://katex.org/) 构建。
+基于 [PDFMathTranslate-next](https://github.com/PDFMathTranslate-next/PDFMathTranslate-next)、[PDF.js](https://mozilla.github.io/pdf.js/)、[Muya](https://github.com/marktext/muya) 和 [KaTeX](https://katex.org/) 构建。
 
 采用 [MIT 许可](LICENSE)。欢迎提交 [Issue](https://github.com/InfiniteLin/LitHub/issues) 或 Pull Request。

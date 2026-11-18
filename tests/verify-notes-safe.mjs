@@ -229,7 +229,7 @@ try {
   writeFileSync('tests/.shots/notes/dark.png',Buffer.from((await send('Page.captureScreenshot',{format:'png'})).result.data,'base64'));
   await send('Emulation.setDeviceMetricsOverride',{width:720,height:800,deviceScaleFactor:1,mobile:false});
   await until('narrow note panel keeps reader toolbar accessible', `document.querySelector('#note-panel').getBoundingClientRect().width<=innerWidth && document.querySelector('#note-panel').getBoundingClientRect().top>=document.querySelector('.reader-bar').getBoundingClientRect().bottom`);
-  await check('note controls remain visible and clickable after image preview', `(()=>{const b=document.querySelector('[data-action="note-save"]'),r=b.getBoundingClientRect();return !document.querySelector('.vditor-img') && b.contains(document.elementFromPoint(r.x+r.width/2,r.y+r.height/2))})()`);
+  await check('note controls remain visible and clickable after image preview', `(()=>{const b=document.querySelector('[data-action="note-save"]'),r=b.getBoundingClientRect();return b.contains(document.elementFromPoint(r.x+r.width/2,r.y+r.height/2))})()`);
   await check('narrow list fits available viewport', `(()=>{const r=document.querySelector('.note-browser-pop').getBoundingClientRect();return r.left>=0 && r.right<=innerWidth})()`);
   writeFileSync('tests/.shots/notes/narrow.png',Buffer.from((await send('Page.captureScreenshot',{format:'png'})).result.data,'base64'));
   await evaluate(`document.documentElement.dataset.theme='light';NoteEditor.refreshTheme();window.savedPanelDraft=NoteEditor.getValue();mountAiPanel(testPaper);`);

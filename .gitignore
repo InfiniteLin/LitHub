@@ -18,10 +18,6 @@ build/runtime-report.json
 /pip-install-*/
 /tmp*
 
-# 注意：frontend/vendor/vditor/dist/ 是**运行时依赖**（Vditor 发行包），必须入库。
-# 所以上面的 dist/ 规则只能锚定仓库根目录，不能写成裸 `dist/`。
-!frontend/vendor/vditor/dist/
-
 # ---------- 运行时数据（敏感：含明文 API Key 与个人文献） ----------
 # backend/data/ 下有 library.json（api_key 明文）、files/ 原文 PDF、
 # out/ 译文产物、text/ 全文旁车、search.db 索引 —— 一律不入库

@@ -20,6 +20,12 @@ export function harness() {
       return this.children.flatMap(el => [ ...(el.className === sel.slice(1) ? [el] : []), ...el.querySelectorAll(sel) ]);
     }
     remove() { if (this.parentElement) this.parentElement.children = this.parentElement.children.filter(el => el !== this); }
+    replaceWith(el) {
+      const parent = this.parentElement;
+      parent.children[parent.children.indexOf(this)] = el;
+      el.parentElement = parent;
+      this.parentElement = null;
+    }
     addEventListener(event, callback) { this.listeners.set(event, callback); }
     removeEventListener(event) { this.listeners.delete(event); }
     getContext() { return { canvas: this }; }

@@ -23,6 +23,12 @@ class El {
     this._attrs = {};
   }
   appendChild(c) { c.parentElement = this; this.children.push(c); return c; }
+  replaceWith(c) {
+    const parent = this.parentElement;
+    parent.children[parent.children.indexOf(this)] = c;
+    c.parentElement = parent;
+    this.parentElement = null;
+  }
   querySelector() { return null; }
   querySelectorAll() { return []; }
   getBoundingClientRect() { return { top: 0, bottom: 100, left: 0, right: 660 }; }

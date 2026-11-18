@@ -60,6 +60,7 @@ module.exports = {
   // 安装包图标 / 卸载图标
   win: {
     target: [{ target: "nsis", arch: ["x64"] }],
+    electronLanguages: ["zh-CN", "zh-TW", "en-US"],
     icon: "electron/icon.ico",
     // 安装器不要求管理员权限：默认装到 %LOCALAPPDATA%\Programs，
     // 用户数据在 %APPDATA%，都不需要提权，避免每次启动弹 UAC。

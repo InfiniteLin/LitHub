@@ -22,12 +22,14 @@ def excluded(relative: Path) -> str | None:
         package = parts[2]
         if package == 'pip' or (package.startswith('pip-') and package.endswith('.dist-info')):
             return 'pip'
-        if package in {'gradio', 'gradio_client'}:
+        if package in {'gradio', 'gradio_client', 'gradio_pdf'}:
             return 'unused_gui'
         if package in TEST_PACKAGES and any(part in {'tests', 'test'} for part in parts[3:]):
             return 'tests'
-        if package == 'bin' and relative.name.lower().startswith('pip'):
-            return 'pip'
+        # LitHub calls Python modules directly. The pip-generated Windows
+        # launchers in this directory refer to the build host's interpreter.
+        if package == 'bin' and len(parts) == 4 and relative.suffix.lower() == '.exe':
+            return 'unused_cli'
     return None
 
 

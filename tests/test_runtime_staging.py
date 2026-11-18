@@ -12,10 +12,12 @@ class RuntimeStagingTests(unittest.TestCase):
     def test_only_known_test_trees_and_build_tools_are_excluded(self):
         for path in ('Lib/site-packages/numpy/tests/test_a.py', 'Lib/site-packages/scipy/linalg/tests/data.npz',
                      'Lib/site-packages/pip/__init__.py', 'Lib/site-packages/pip-1.0.dist-info/METADATA',
+                     'Lib/site-packages/bin/pdf2zh.exe', 'Lib/site-packages/gradio_pdf/__init__.py',
                      'Lib/site-packages/foo/__pycache__/a.pyc'):
             self.assertIsNotNone(stage.excluded(Path(path)), path)
         for path in ('Lib/site-packages/numpy/testing/__init__.py', 'Lib/site-packages/scipy/_lib/_testutils.py',
                      'Lib/site-packages/numpy.libs/blas.dll', 'Lib/site-packages/pdf2zh_next-2.10.2.dist-info/METADATA',
+                     'Lib/site-packages/onnxruntime/capi/onnxruntime.dll', 'Lib/site-packages/gradio_i18n/i18n.py',
                      'Lib/site-packages/custom_package/tests/__init__.py', 'Lib/site-packages/pipelinelib/__init__.py'):
             self.assertIsNone(stage.excluded(Path(path)), path)
 

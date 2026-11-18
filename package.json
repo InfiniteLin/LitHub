@@ -1,7 +1,7 @@
 {
   "name": "lithub",
   "productName": "文枢 LitHub",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "文献管理与 AI 翻译对照阅读桌面应用",
   "author": "LitHub",
   "main": "electron/main.js",
@@ -68,7 +68,6 @@
   },
   "dependencies": {
     "https-proxy-agent": "7.0.6",
-    "pdfjs-dist": "^6.4.299",
     "socks-proxy-agent": "8.0.5"
   }
 }

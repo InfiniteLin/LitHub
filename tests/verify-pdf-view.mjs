@@ -483,6 +483,31 @@ try {
     assert.ok(await evaluate(`pane()._pdf.metas.reduce((v,m)=>v+m.sides[0].canvas.width*m.sides[0].canvas.height,0)<=24e6`));
   }
   await check('long scrolling releases old page bitmaps', `side(0).canvas.width === 0 && side(0).page === null`);
+  const quickScroll = await evaluate(`(async () => {
+    const original = HTMLCanvasElement.prototype.getContext;
+    let started = 0, exposed = 0;
+    HTMLCanvasElement.prototype.getContext = function (type, options) {
+      if (type === '2d' && options?.alpha === false) {
+        started++;
+        if (this.isConnected && this.closest('.pdf-page') && this.style.visibility !== 'hidden') exposed++;
+      }
+      return original.apply(this, arguments);
+    };
+    try {
+      const p = pane();
+      for (const index of [0, 16, 3, 21, 8, 23]) {
+        p.scrollTop += side(index).div.getBoundingClientRect().top - p.getBoundingClientRect().top - 12;
+        await new Promise(requestAnimationFrame);
+      }
+      for (let i = 0; i < 120 && !side(23).rendered; i++) await new Promise(requestAnimationFrame);
+      return { started, exposed, rendered: side(23).rendered };
+    } finally {
+      HTMLCanvasElement.prototype.getContext = original;
+    }
+  })()`);
+  assert.ok(quickScroll.started > 0 && quickScroll.rendered);
+  assert.equal(quickScroll.exposed, 0, 'rapid forward and backward jumps must not expose unfinished bitmaps');
+  console.log('PASS fast forward/backward scrolling publishes only completed PDF previews');
   await sleep(80);
   await evaluate(`window.savedAnchor=anchor(); window.oldPdf=pane()._pdf; location.hash='#/library'`);
   await until('route exit disposes document and every bitmap', `oldPdf.dead && oldPdf.entries.every(e=>e.destroyed) && !oldPdf.running && oldPdf.metas.every(m=>m.sides.every(s=>s.canvas.width===0))`);

@@ -132,18 +132,57 @@ await test('zooming back to a previously painted size still redraws a cancelled 
   PdfView.setZoom(pane, 1);
   pane._pdf.io.fire(side); await h.idle(pane);
   assert.equal(side.paintedW, 612);
+  const previous = side.canvas, previousWidth = previous.width;
   const pending = deferred(); let cancelled = false;
   controls.render = () => ({ promise: pending.promise, cancel() {
     cancelled = true;
     pending.reject(Object.assign(Error('cancel'), { name: 'RenderingCancelledException' }));
   } });
   PdfView.setZoom(pane, 2); await tick();
+  assert.equal(side.canvas, previous);
+  assert.equal(previous.width, previousWidth, 'keep the finished page visible during zoom');
+  assert.equal(side.basePending.parentElement, undefined);
   controls.render = null;
   PdfView.setZoom(pane, 1); await h.idle(pane);
   assert.ok(cancelled);
   assert.ok(side.rendered);
   assert.equal(side.paintedW, 612);
   assert.equal(side.paintedKey, side.key);
+  assert.equal(previous.width, 0);
+});
+
+await test('rapid scrolling never exposes an incomplete opaque preview', async () => {
+  const h = harness(), { PdfView, pane, controls } = h;
+  await PdfView.mount(pane, '/doc');
+  const pdf = pane._pdf, jobs = new Map();
+  controls.render = (page, { canvasContext: { canvas } }) => {
+    const job = { ...deferred(), canvas };
+    jobs.set(page, job);
+    return { promise: job.promise, cancel() {
+      job.reject(Object.assign(Error('cancel'), { name: 'RenderingCancelledException' }));
+    } };
+  };
+  let prior;
+  for (const index of [0, 8, 20, 5]) {
+    const side = pdf.metas[index].sides[0];
+    if (prior !== undefined) pdf.io.fire(pdf.metas[prior].sides[0], false);
+    pdf.io.fire(side);
+    await tick();
+    const pending = jobs.get(index + 1).canvas;
+    assert.equal(side.canvas.style.visibility, 'hidden');
+    assert.equal(side.canvas.width, 0);
+    assert.equal(pending.parentElement, undefined);
+    if (prior !== undefined) assert.equal(jobs.get(prior + 1).canvas.width, 0);
+    prior = index;
+  }
+  const target = pdf.metas[prior].sides[0], job = jobs.get(prior + 1);
+  job.resolve();
+  await h.idle(pane);
+  assert.equal(job.canvas.parentElement, target.div);
+  assert.equal(target.canvas, job.canvas);
+  assert.equal(target.basePending, null);
+  assert.ok(target.rendered);
+  assert.equal(h.calls.errors.length, 0);
 });
 
 await test('zoom during initial loading is applied once the document arrives', async () => {
@@ -288,7 +327,7 @@ await test('large DPR crops honor combined preview/detail budget while replacing
   const pdf=pane._pdf, side=pdf.metas[0].sides[0]; scrollGeometry(h,side);
   let peak=0;
   controls.render=()=>{
-    const pixels=pdf.metas.flatMap(m=>m.sides).reduce((n,s)=>n+[s.canvas,s.detailCanvas,s.detailPending]
+    const pixels=pdf.metas.flatMap(m=>m.sides).reduce((n,s)=>n+[s.canvas,s.basePending,s.detailCanvas,s.detailPending]
       .reduce((v,c)=>v+(c?c.width*c.height:0),0),0);
     peak=Math.max(peak,pixels);
   };

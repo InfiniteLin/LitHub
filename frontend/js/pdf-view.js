@@ -82,7 +82,7 @@ window.PdfView = (() => {
     // cancel() 异步生效，等绘制退出后再改 canvas 或清理 PageProxy。
     if (side.running) return;
     window.PdfReferences?.clear(side);
-    if (side.canvas) { side.canvas.width = 0; side.canvas.height = 0; }
+    if (side.canvas) clearPreview(side.canvas);
     if (side.textDiv) side.textDiv.innerHTML = "";
     side.textLayer = null;
     side.paintedKey = null;
@@ -90,6 +90,10 @@ window.PdfView = (() => {
     side.page?.cleanup?.();
     side.page = null;
     dropDetail(side);
+  }
+  function clearPreview(canvas) {
+    canvas.style.visibility = "hidden";
+    canvas.width = canvas.height = 0;
   }
   function dropDetail(side) {
     const canvas = side.detailCanvas;
@@ -214,7 +218,7 @@ window.PdfView = (() => {
           side.div.appendChild(tag);
         }
         side.canvas = document.createElement("canvas");
-        side.canvas.width = side.canvas.height = 0;
+        clearPreview(side.canvas);
         side.div.appendChild(side.canvas);
         side.textDiv = document.createElement("div");
         side.textDiv.className = "textLayer";
@@ -249,13 +253,15 @@ window.PdfView = (() => {
   }
   function bitmapPixels(canvas) { return canvas ? canvas.width * canvas.height : 0; }
   function rasterPixels(side) {
-    return bitmapPixels(side.canvas) + bitmapPixels(side.detailCanvas) + bitmapPixels(side.detailPending);
+    return bitmapPixels(side.canvas) + bitmapPixels(side.basePending) +
+      bitmapPixels(side.detailCanvas) + bitmapPixels(side.detailPending);
   }
-  function reserve(pane, pdf, side, pixels, replaceBase = true) {
+  function reserve(pane, pdf, side, pixels, detail = false, replacing = false) {
     const sides = allSides(pdf);
-    let used = sides.reduce((n, s) => n + rasterPixels(s), 0) - (replaceBase ? bitmapPixels(side.canvas) : 0);
-    let baseUsed = sides.reduce((n, s) => n + (s === side && replaceBase ? 0 : bitmapPixels(s.canvas)), 0);
-    const fits = () => used + pixels <= MAX_TOTAL_PIXELS && (!replaceBase || baseUsed + pixels <= MAX_BASE_PIXELS);
+    const replaced = replacing ? bitmapPixels(side.canvas) : 0;
+    let used = sides.reduce((n, s) => n + rasterPixels(s), 0) - replaced;
+    let baseUsed = sides.reduce((n, s) => n + bitmapPixels(s.canvas) + bitmapPixels(s.basePending), 0) - replaced;
+    const fits = () => used + pixels <= MAX_TOTAL_PIXELS && (detail || baseUsed + pixels <= MAX_BASE_PIXELS);
     const candidates = sides.filter(s => s !== side && !s.running && s.canvas.width && distance(pane, s) > 0)
       .sort((a, b) => distance(pane, b) - distance(pane, a));
     for (const cached of candidates) {
@@ -265,7 +271,7 @@ window.PdfView = (() => {
       release(cached);
     }
     // 通常保留旧的清晰区域直到新区域就绪；预算不够时先释放旧区域。
-    if (!fits() && !replaceBase && side.detailCanvas) {
+    if (!fits() && detail && side.detailCanvas) {
       used -= bitmapPixels(side.detailCanvas);
       dropDetail(side);
     }
@@ -321,7 +327,11 @@ window.PdfView = (() => {
   function pump(pane, pdf) {
     if (!active(pane, pdf)) return;
     while (pdf.running < MAX_CONCURRENT && pdf.queue.size) {
-      const side = [...pdf.queue].sort((a, b) => distance(pane, a) - distance(pane, b))[0];
+      const side = [...pdf.queue].map(side => {
+        const gap = distance(pane, side);
+        const priority = gap > 0 ? 2 : side.paintedKey !== side.key ? 0 : 1;
+        return { side, gap, priority };
+      }).sort((a, b) => a.priority - b.priority || a.gap - b.gap)[0].side;
       pdf.queue.delete(side);
       if (!side.near || side.running || !needsPaint(side)) continue;
       side.running = true;
@@ -348,7 +358,7 @@ window.PdfView = (() => {
         // 过期绘制只重试最新尺寸；预算不足时等滚动/布局，避免空转。
         else if (side.obsolete || side.detailDirty) {
           side.obsolete = side.detailDirty = false;
-          requestPaint(pane, pdf, side);
+          requestPaint(pane, pdf, side, false);
         }
         pump(pane, pdf);
       });
@@ -368,18 +378,30 @@ window.PdfView = (() => {
     const { k } = pixelAligned(side.cssW, side.ratio, side.w);
     const width = Math.max(1, Math.floor(side.cssW * k));
     const height = Math.max(1, Math.floor(side.cssH * k));
-    if (!reserve(pane, pdf, side, width * height)) return;
-    side.errorEl?.remove();
-    side.canvas.width = width;
-    side.canvas.height = height;
     const cssScale = side.cssW / side.w;
     const vp = side.page.getViewport({ scale: cssScale });
-    const task = side.page.render({ canvasContext: side.canvas.getContext("2d", { alpha: false }),
-      viewport: vp, transform: [width / vp.width, 0, 0, height / vp.height, 0, 0] });
-    side.renderTask = task;
+    const pixels = width * height;
+    const keepPrevious = reserve(pane, pdf, side, pixels);
+    if (!keepPrevious && (!side.canvas.width || !reserve(pane, pdf, side, pixels, false, true))) return;
+    side.errorEl?.remove();
+    // An opaque canvas starts black. Paint outside the DOM and publish only a complete bitmap.
+    const canvas = document.createElement("canvas");
+    if (!keepPrevious) clearPreview(side.canvas);
+    side.basePending = canvas;
+    canvas.width = width;
+    canvas.height = height;
+    let task;
     try {
+      task = side.page.render({ canvasContext: canvas.getContext("2d", { alpha: false }),
+        viewport: vp, transform: [width / vp.width, 0, 0, height / vp.height, 0, 0] });
+      side.renderTask = task;
       await task.promise;
       if (!current()) return;
+      const previous = side.canvas;
+      previous.replaceWith(canvas);
+      side.canvas = canvas;
+      side.basePending = null;
+      previous.width = previous.height = 0;
       const lib = await ensurePdfjs();
       if (!current()) return;
       side.textDiv.innerHTML = "";
@@ -396,10 +418,15 @@ window.PdfView = (() => {
       side.textDiv.style.visibility = "";
       if (window.PdfReferences) ignore(window.PdfReferences.paint(pane, side, vp));
       window.PdfAnnot?.paintPage(pane, side.rowIndex);
-      await paintDetail(pane, pdf, side, current);
+      // Newly visible pages get their full-page preview before extra sharp detail.
+      side.detailDirty = Boolean(side.detailWanted);
     } catch (err) {
       if (current()) throw err;
     } finally {
+      if (side.basePending === canvas) {
+        canvas.width = canvas.height = 0;
+        side.basePending = null;
+      }
       side.obsolete = active(pane, pdf) && side.near && side.revision !== revision;
       if (side.renderTask === task) side.renderTask = null;
     }
@@ -409,7 +436,7 @@ window.PdfView = (() => {
     side.detailDirty = false;
     const area = side.detailWanted;
     if (!area || !current() || side.detailPaintedKey === area.key) return;
-    if (!reserve(pane, pdf, side, area.dw * area.dh, false)) return;
+    if (!reserve(pane, pdf, side, area.dw * area.dh, true)) return;
     const canvas = document.createElement("canvas");
     canvas.className = "pdf-detail-canvas";
     canvas.width = area.dw;
