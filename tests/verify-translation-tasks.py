@@ -116,3 +116,33 @@ with tempfile.TemporaryDirectory(prefix='lithub-translation-') as temporary, con
     assert client.post('/api/translate', json={'paper_id': 'missing'}).status_code == 404
     assert client.post('/api/tasks/missing/cancel').status_code == 404
     print('PASS normal completion, terminal cancellation idempotency and missing resource handling')
+
+    old = store.get_paper('p1')['translated_file']
+    with patch.object(translate, 'enqueue'):
+        def restart():
+            response = client.post('/api/translate', json={'paper_id':'p1','retranslate':True})
+            assert response.status_code == 200, response.text
+            return response.json()
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            reruns = list(pool.map(lambda _: restart(), range(16)))
+        rerun = reruns[0]
+        assert len({t['id'] for t in reruns}) == 1 and rerun['retranslate']
+        assert start()['id'] == rerun['id']
+    with patch.object(translate, '_pdf2zh_cmd', return_value=[sys.executable,'-c','raise SystemExit(1)']):
+        translate._run_one(rerun['id'])
+    assert store.get_task(rerun['id'])['status'] == 'failed'
+    assert store.get_paper('p1')['translated_file'] == old and Path(old).exists()
+    with patch.object(translate, 'enqueue'):
+        cancelled = restart()
+        cancel(cancelled)
+    assert store.get_paper('p1')['translated_file'] == old
+    with patch.object(translate, 'enqueue'):
+        renewed = restart()
+    command = [sys.executable,'-c',"import sys; from pathlib import Path; assert '--ignore-cache' in sys.argv; Path('new-mono.pdf').write_bytes(b'new')"]
+    with patch.object(translate, '_pdf2zh_cmd', return_value=command), patch.object(translate, '_page_count', return_value=1):
+        translate._run_one(renewed['id'])
+    current = store.get_paper('p1')
+    assert current['translation_task_id'] == renewed['id']
+    assert current['translated_file'] != old and Path(current['translated_file']).read_bytes() == b'new'
+    assert Path(old).exists()
+    print('PASS retranslation deduplication, cache bypass, failed/cancelled old-output preservation and successful replacement')

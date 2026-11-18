@@ -39,9 +39,10 @@ try {
   await until('settings tabs available',`!!document.querySelector('[data-action="set-tab"][data-id="translate"]')`);
   await evaluate(`document.querySelector('[data-action="set-tab"][data-id="translate"]').click()`);
   await until('plugin version loaded from backend',`!!document.querySelector('[data-plugin="install"]')`);
-  assert.ok(await evaluate(`document.querySelector('#translation-plugin').textContent.includes('translation-plugins')`));
+  assert.ok(await evaluate(`document.querySelector('#translation-plugin h3').textContent==='pdf2zh-next'`));
+  assert.ok(await evaluate(`document.querySelector('#translation-plugin').textContent.includes('未安装') && !document.querySelector('#translation-plugin').textContent.includes('1.9.11')`));
   // Exercise busy/poll/cancel/error states without downloading third-party code in this UI test.
-  await evaluate(`window.pluginInfo={current:'1.9.11',latest:'1.9.12',available:true,source:'bundled',directory:'test/plugins',message:'found',busy:false};
+  await evaluate(`window.pluginInfo={package:'pdf2zh-next',current:'2.10.2',latest:'2.11.0',available:true,source:'independent',directory:'test/plugins',message:'found',busy:false};
     window.realFetch=window.fetch;window.pluginCalls=[];window.fetch=async(url,options)=>{
       if(String(url).includes('/api/settings/translation-plugin')){
         const op=String(url).split('/').pop();pluginCalls.push(op);
@@ -57,6 +58,7 @@ try {
   assert.equal(await evaluate(`document.querySelector('#set-target').value`),'English');
   await evaluate(`document.querySelector('[data-plugin="cancel"]').click()`);
   await until('cancel restores install actions',`!!document.querySelector('[data-plugin="install"]') && document.querySelector('#translation-plugin').textContent.includes('cancelled')`);
+  assert.ok(await evaluate(`document.querySelector('#translation-plugin').textContent.includes('已安装 2.10.2 · 可安装 2.11.0')`));
   await evaluate(`pluginInfo.can_restore=true;document.querySelector('[data-plugin="check"]').click()`);
   await until('restore option visible',`!!document.querySelector('[data-plugin="restore"]')`);
   await evaluate(`document.querySelector('[data-plugin="restore"]').click()`);

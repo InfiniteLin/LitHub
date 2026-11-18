@@ -165,9 +165,34 @@ try {
   await check('translation completion preserves original PDF and updates button', `testPaper.translated
     && pane()._pdf===pollingPdf && side(0).canvas===pollingCanvas && !pollingPdf.dead
     && pane().scrollTop===pollingScroll
-    && document.querySelector('.reader-bar [data-action="translate"]').textContent==='已翻译'
+    && document.querySelector('.reader-bar [data-action="translate"]').textContent==='重新翻译'
     && !document.querySelector('.reader-bar [data-action="translate"]').disabled
     && !document.querySelector('.reader-bar [data-action="cancel-translation"]')`);
+  await evaluate(`(async()=>{
+    window.rerunArgs=[];
+    LithubAPI.translate=async(...args)=>{rerunArgs.push(args);Object.assign(pollingTask,{id:'rerun-task',status:'queued',progress:0,retranslate:true});return {...pollingTask};};
+    document.querySelector('.reader-bar [data-action="translate"]').click();
+  })()`);
+  await until('translated paper can start one explicit retranslation', `rerunArgs.length===1 && rerunArgs[0][1]===true && !translationSubmissions.size
+    && document.querySelector('.reader-bar [data-action="translate"]').disabled
+    && document.querySelector('.reader-bar [data-action="cancel-translation"]')?.dataset.id==='rerun-task'`);
+  await evaluate(`(async()=>{await submitTranslation(testPaper.id);pollingTask.status='cancelled';await pollTasks();})()`);
+  await check('retranslation deduplicates and cancellation retains old PDF', `rerunArgs.length===1 && testPaper.translated
+    && pane()._pdf===pollingPdf && !pollingPdf.dead
+    && document.querySelector('.reader-bar [data-action="translate"]').textContent==='重新翻译'
+    && !document.querySelector('.reader-bar [data-action="translate"]').disabled`);
+  await evaluate(`(async()=>{await submitTranslation(testPaper.id);pollingTask.status='done';await pollTasks();await pollTasks();})()`);
+  await check('retranslation completion publishes a new PDF URL once', `testPaper.translationTaskId==='rerun-task'
+    && testPaper.zhUrl.includes('v=rerun-task') && pane()._pdf===pollingPdf
+    && !document.querySelector('.reader-bar [data-action="cancel-translation"]')`);
+  await evaluate(`window.uploadUI=createImportProgress([{name:'paper.pdf'},{name:'other.pdf'}]);window.uploadUpdate=uploadUI.file(0);uploadUpdate({loaded:25,total:100,processing:false});`);
+  await check('import UI shows filename, batch count and real upload percentage', `document.querySelector('.import-transfer-file').textContent==='paper.pdf'
+    && document.querySelector('.import-transfer progress').value===25
+    && document.querySelector('.import-transfer-status').textContent.includes('1 / 2')`);
+  await evaluate(`uploadUpdate({loaded:100,total:100,processing:true})`);
+  await check('upload completion shows server parsing until import resolves', `document.querySelector('.import-transfer-status').textContent.includes('正在解析文献')`);
+  await evaluate(`uploadUI.file(1);uploadUI.close()`);
+  await check('import progress is removed after the batch', `!document.querySelector('.import-transfer')`);
   await evaluate(`
     testPaper.zhUrl='/fixture.pdf'; testPaper.compareUrl='/wide.pdf';
     state.liveTasks=[];

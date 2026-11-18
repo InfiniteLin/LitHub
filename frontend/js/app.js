@@ -706,11 +706,10 @@ function renderReader(id) {
     ? state.liveTasks.find((t) => t.paper_id === p.id && (t.status === "running" || t.status === "queued"))
     : null;
   const btnHTML = p.live
-    ? (p.translated ? `${I("check", 15)}已翻译`
-        : runningTask ? `${I("refresh", 15)}<span class="spin">翻译中 ${runningTask.progress || 0}%</span>`
-        : `${I("languages", 15)}翻译全文`)
+    ? (runningTask ? `${I("refresh", 15)}<span class="spin">翻译中 ${runningTask.progress || 0}%</span>`
+        : p.translated ? `${I("refresh", 15)}重新翻译` : `${I("languages", 15)}翻译全文`)
     : (state.translating[p.id] != null ? `${I("refresh", 15)}<span class="spin">翻译中 ${state.translating[p.id]}%</span>`
-        : p.translated ? `${I("check", 15)}已翻译` : `${I("languages", 15)}翻译全文`);
+        : p.translated ? `${I("refresh", 15)}重新翻译` : `${I("languages", 15)}翻译全文`);
   $("#view").innerHTML = `
   <div class="reader">
     <header class="reader-bar">
@@ -1327,18 +1326,37 @@ function movePaperToCat(paperId, catId) {
   render();
 }
 
+function createImportProgress(files) {
+  const panel=document.createElement('div');panel.className='import-transfer';
+  panel.innerHTML='<strong>导入文献</strong><div class="import-transfer-file"></div><progress max="100" value="0" aria-label="当前文献上传进度"></progress><div class="import-transfer-status" role="status" aria-live="polite"></div>';
+  document.body.append(panel);
+  return {
+    file(index){
+      panel.querySelector('.import-transfer-file').textContent=files[index].name;
+      const bar=panel.querySelector('progress'),status=panel.querySelector('[role="status"]');bar.value=0;
+      status.textContent=`${index+1} / ${files.length} · 准备上传`;
+      return info=>{
+        if(info.total)bar.value=Math.min(100,Math.round(info.loaded/info.total*100));else bar.removeAttribute('value');
+        status.textContent=`${index+1} / ${files.length} · ${info.processing?'上传完成，正在解析文献…':info.total?`正在上传 ${bar.value}%`:'正在上传…'}`;
+      };
+    },
+    close(){panel.remove();}
+  };
+}
+
 async function importDroppedFiles(files) {
   const pdfs = files.filter((f) => f.name.toLowerCase().endsWith(".pdf"));
   if (!pdfs.length) { toast("请拖入 PDF 文件", "err"); return; }
   if (!LithubAPI.live) { toast("本地服务未启动，无法导入（演示模式）", "err"); return; }
   const cat = state.filter.cat || "local";
   let ok = 0, dup = 0, fail = 0;
-  for (const f of pdfs) {
-    try { await LithubAPI.importFile(f, cat); ok++; }
+  const progress=createImportProgress(pdfs);
+  try { for (const [index,f] of pdfs.entries()) {
+    try { await LithubAPI.importFile(f, cat, true, progress.file(index)); ok++; }
     catch (e) {
       if (String(e.message || "").includes("已导入过")) dup++; else fail++;
     }
-  }
+  } } finally { progress.close(); }
   await loadLiveLibrary();
   markSidebarDirty();
   render();
@@ -2703,7 +2721,7 @@ async function submitTranslation(paperId) {
   const buttons = $$('[data-action="translate"]').filter(b => b.dataset.id === paperId);
   buttons.forEach(b => { b.disabled = true; });
   try {
-    const task = await LithubAPI.translate(paperId);
+    const task = await LithubAPI.translate(paperId, !!paperById(paperId)?.translated);
     state.liveTasks = [task, ...state.liveTasks.filter(t => t.id !== task.id)];
     toast("已加入翻译队列");
     await pollTasks();
@@ -2745,7 +2763,7 @@ async function cancelTranslation(taskId) {
 
 function startTranslate(paperId) {
   const p = paperById(paperId);
-  if (!p || p.translated || state.translating[paperId] != null) return;
+  if (!p || state.translating[paperId] != null) return;
   state.translating[paperId] = 0;
   const newTask = {
     id: "t" + Date.now(), paperId, name: p.title, status: "running", progress: 0,
@@ -4172,10 +4190,11 @@ document.addEventListener("click", (e) => {
         t.disabled = true;
         (async () => {
           let ok = 0, fail = 0;
-          for (const f of files) {
-            try { await LithubAPI.importFile(f, targetCat, autoTitle); ok++; }
+          const progress=createImportProgress(files);
+          try { for (const [index,f] of files.entries()) {
+            try { await LithubAPI.importFile(f, targetCat, autoTitle, progress.file(index)); ok++; }
             catch (e) { fail++; toast(`${f.name}：${e.message}`, "err"); }
-          }
+          } } finally { progress.close(); }
           closeModal();
           if (ok) {
             toast(`已导入 ${ok} 个文件到「${catName(targetCat) || "分类"}」`);
@@ -5815,6 +5834,7 @@ function mapLivePaper(p) {
     cat: p.cat || "local",
     tags: p.tags || [],
     translated: !!p.translated,
+    translationTaskId: p.translation_task_id,
     summarized: false,
     unread: false,
     fav: !!p.fav,
@@ -5827,9 +5847,9 @@ function mapLivePaper(p) {
     live: true,
     fileUrl: `${API_BASE}/api/papers/${p.id}/file`,
     coverUrl: `${API_BASE}/api/papers/${p.id}/cover`,
-    zhUrl: p.translated ? `${API_BASE}/api/papers/${p.id}/file?kind=translated` : null,
+    zhUrl: p.translated ? `${API_BASE}/api/papers/${p.id}/file?kind=translated${p.translation_task_id ? "&v="+encodeURIComponent(p.translation_task_id) : ""}` : null,
     // 左右并排对照版（后端按需合成，缓存于 out/<id>/<id>-compare.pdf）
-    compareUrl: p.translated ? `${API_BASE}/api/papers/${p.id}/file?kind=compare` : null,
+    compareUrl: p.translated ? `${API_BASE}/api/papers/${p.id}/file?kind=compare${p.translation_task_id ? "&v="+encodeURIComponent(p.translation_task_id) : ""}` : null,
   };
 }
 
@@ -5871,24 +5891,25 @@ async function pollTasks() {
   // 阅读器：更新进度 / 完成后装载译文
   if (state.route.view === "reader") {
     const p = paperById(state.route.id);
-    if (p?.live && !p.translated) {
+    if (p?.live) {
       const t = tasks.find((x) => x.paper_id === p.id);
-      if (t?.status === "done") {
+      if (t?.status === "done" && (!p.translated || (t.retranslate && p.translationTaskId !== t.id))) {
         p.translated = true;
-        p.zhUrl = `${API_BASE}/api/papers/${p.id}/file?kind=translated`;
-        p.compareUrl = `${API_BASE}/api/papers/${p.id}/file?kind=compare`;
+        p.translationTaskId = t.id;
+        p.zhUrl = `${API_BASE}/api/papers/${p.id}/file?kind=translated&v=${t.id}`;
+        p.compareUrl = `${API_BASE}/api/papers/${p.id}/file?kind=compare&v=${t.id}`;
         toast("翻译完成，已生成中文对照版");
         // 原文文件没有变化；保留现有 PDF 实例、选区和滚动位置。
         if (state.reader.mode === "en") {
           const btn = $('.reader-bar [data-action="translate"]');
-          if (btn) { btn.innerHTML = `${I("check", 15)}已翻译`; btn.classList.remove("btn-primary"); btn.disabled = false; }
+          if (btn) { btn.innerHTML = `${I("refresh", 15)}重新翻译`; btn.classList.remove("btn-primary"); btn.disabled = false; }
           $('.reader-bar [data-action="cancel-translation"]')?.remove();
         } else {
           renderReader(p.id);
         }
       } else if (t && (t.status === "running" || t.status === "queued")) {
         // 只有译文面板需要从空态切入进度态；原文/对照模式没有 zh-pct。
-        if ($("#pane-zh") && !$("#zh-pct")) { renderReader(p.id); }
+        if (!p.translated && $("#pane-zh") && !$("#zh-pct")) { renderReader(p.id); }
         const translateBtn = $('.reader-bar [data-action="translate"]');
         if (translateBtn && !translateBtn.querySelector('.spin')) {
           translateBtn.innerHTML = `${I("refresh", 15)}<span class="spin"></span>`;
@@ -5912,12 +5933,12 @@ async function pollTasks() {
       } else if (t && ["failed", "cancelled"].includes(t.status)) {
         const btn = $('.reader-bar [data-action="translate"]');
         if (btn) {
-          btn.innerHTML = `${I("languages", 15)}翻译全文`;
+          btn.innerHTML = p.translated ? `${I("refresh", 15)}重新翻译` : `${I("languages", 15)}翻译全文`;
           btn.classList.add("btn-primary"); btn.disabled = false;
         }
         $('.reader-bar [data-action="cancel-translation"]')?.remove();
         const ph = $("#pane-zh .pane-placeholder");
-        if (ph && !$("#zh-retry")) {
+        if (!p.translated && ph && !$("#zh-retry")) {
           ph.innerHTML = `<h3>${t.status === "cancelled" ? "翻译已取消" : "翻译失败"}</h3><p>${esc(t.note || "")}</p>
             <button class="btn" id="zh-retry" data-action="translate" data-id="${p.id}">${I("refresh", 14)}${t.status === "cancelled" ? "重新翻译" : "重试"}</button>`;
         }

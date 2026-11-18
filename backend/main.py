@@ -38,7 +38,7 @@ try:
 except Exception:  # 非 Windows / 缺依赖时不影响其它接口
     browser_embed = None
 
-SERVICE_VERSION = "0.2.9"
+SERVICE_VERSION = "0.2.10"
 
 
 @contextlib.asynccontextmanager
@@ -507,12 +507,13 @@ def delete_category(cid: str):
 
 class TranslateBody(BaseModel):
     paper_id: str
+    retranslate: bool = False
 
 
 @app.post("/api/translate")
 def start_translation(body: TranslateBody):
     try:
-        return translate.submit(body.paper_id)
+        return translate.submit(body.paper_id, retranslate=body.retranslate)
     except KeyError:
         raise HTTPException(404, "文献不存在")
     except ValueError as exc:

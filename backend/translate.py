@@ -4,6 +4,7 @@ import os
 import queue
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import threading
@@ -21,7 +22,7 @@ _procs_lock = threading.RLock()
 _ACTIVE = {"queued", "running"}
 
 
-def submit(paper_id: str) -> dict:
+def submit(paper_id: str, retranslate: bool = False) -> dict:
     """创建和入队共用锁，并发请求复用同一篇文献的活动任务。"""
     with plugin_manager.lock, _procs_lock:
         if plugin_manager.snapshot()["status"] == "installing":
@@ -29,12 +30,15 @@ def submit(paper_id: str) -> dict:
         paper = store.get_paper(paper_id)
         if not paper:
             raise KeyError("文献不存在")
-        if paper.get("translated"):
-            raise ValueError("该文献已有译文")
         for task in store.list_tasks(limit=None):
             if task["paper_id"] == paper_id and task["status"] in _ACTIVE:
                 return task
+        if paper.get("translated") and not retranslate:
+            raise ValueError("该文献已有译文，请选择重新翻译")
         task = store.add_task(paper_id)
+        if retranslate:
+            store.update_task(task["id"], retranslate=True)
+            task = store.get_task(task["id"])
         enqueue(task["id"])
         return task
 
@@ -47,7 +51,21 @@ def cancel_task(task_id: str) -> dict | None:
             return task
         proc = _procs.get(task_id)
         if proc and proc.poll() is None:
-            proc.kill()
+            # The Next engine also starts a BabelDOC child process.
+            if os.name == "nt":
+                try:
+                    subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                   creationflags=subprocess.CREATE_NO_WINDOW, timeout=10, check=False)
+                except (OSError, subprocess.TimeoutExpired):
+                    pass
+                if proc.poll() is None:
+                    proc.kill()
+            else:
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
         store.update_task(task_id, status="cancelled", note="已取消")
         return store.get_task(task_id)
 
@@ -111,24 +129,29 @@ def _run_one(task_id: str):
         if not paper:
             store.update_task(task_id, status="failed", note="文献不存在")
             return
-        if paper.get("translated"):
+        if paper.get("translated") and not task.get("retranslate"):
             store.update_task(task_id, status="cancelled", note="已有译文，跳过重复任务")
             return
         store.update_task(task_id, status="running", progress=0, note="正在解析版面…")
 
     src = store.paper_file(paper["id"])
-    out_dir = store.output_dir / paper["id"]
+    # A failed/cancelled retry must not overwrite the previous usable PDF.
+    out_dir = store.output_dir / paper["id"] / task_id
     out_dir.mkdir(parents=True, exist_ok=True)
 
     cfg = store.get_settings()
     service = cfg.get("service") or "bing"
-    cmd = [
-        *_pdf2zh_cmd(),
-        str(src),
-        "-s", service,
-        "-lo", cfg.get("target_lang", "zh"),
-        "-o", str(out_dir),
-    ]
+    target_lang = cfg.get("target_lang", "zh")
+    runtime = plugin_manager.runtime()
+    isolated_home = runtime[1] if runtime else None
+    if isolated_home is not None:
+        cmd = [*runtime[0], str(src), "--" + service, "--lang-out", target_lang,
+               "--output", str(out_dir), "--use-alternating-pages-dual",
+               "--no-auto-extract-glossary", "--disable-config-auto-save"]
+    else:
+        cmd = [*_pdf2zh_cmd(), str(src), "-s", service, "-lo", target_lang, "-o", str(out_dir)]
+    if task.get("retranslate"):
+        cmd.append("--ignore-cache")
     # 复用 pdf2zh 内置翻译器：1.9.x 经环境变量配置（set_envs 读取 os.environ），
     # 键名与各翻译器类声明的 envs 一致
     env_extra: dict[str, str] = {}
@@ -142,6 +165,11 @@ def _run_one(task_id: str):
         }
 
     env = {**os.environ, "PYTHONIOENCODING": "utf-8", **env_extra}
+    if isolated_home is not None:
+        isolated_home.mkdir(exist_ok=True)
+        env = {key: value for key, value in env.items() if not key.upper().startswith("PDF2ZH_")}
+        env.update({f"PDF2ZH_{key}": value for key, value in env_extra.items()})
+        env.update(USERPROFILE=str(isolated_home), HOME=str(isolated_home))
     err_tail = []
     with _procs_lock:
         if not _is_active(task_id):
@@ -156,6 +184,7 @@ def _run_one(task_id: str):
             env=env,
             cwd=str(out_dir),
             creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+            start_new_session=os.name != "nt",
         )
         _procs[task_id] = proc
 
@@ -178,6 +207,8 @@ def _run_one(task_id: str):
                             store.update_task(task_id, progress=pct, note=f"正在翻译… {pct}%")
             low = line.lower()
             if "error" in low or "traceback" in low:
+                if env_extra.get("OPENAI_API_KEY"):
+                    line = line.replace(env_extra["OPENAI_API_KEY"], "***")
                 err_tail.append(line)
                 if len(err_tail) > 6:
                     err_tail.pop(0)
@@ -199,6 +230,7 @@ def _run_one(task_id: str):
                 translated=True,
                 translated_file=str(mono),
                 translated_dual_file=str(dual) if dual else None,
+                translation_task_id=task_id,
                 pages=_page_count(mono) or paper.get("pages"),
             )
             store.update_task(task_id, status="done", progress=100,

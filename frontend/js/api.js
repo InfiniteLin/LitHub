@@ -44,21 +44,31 @@ window.LithubAPI = {
     return r.json();
   },
 
-  async importFile(file, cat = "local", autoTitle = true) {
+  async importFile(file, cat = "local", autoTitle = true, onProgress) {
     const fd = new FormData();
     fd.append("file", file);
     fd.append("cat", cat);
     fd.append("auto_title", String(autoTitle));
-    const r = await fetch(`${API_BASE}/api/import`, { method: "POST", body: fd });
-    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || "导入失败");
-    return r.json();
+    return new Promise((resolve,reject)=>{
+      const xhr=new XMLHttpRequest();xhr.open('POST',`${API_BASE}/api/import`);
+      xhr.responseType='json';
+      xhr.upload.onprogress=e=>onProgress?.({loaded:e.loaded,total:e.lengthComputable?e.total:null,processing:false});
+      xhr.upload.onload=()=>onProgress?.({loaded:file.size,total:file.size,processing:true});
+      xhr.onload=()=>{
+        if(xhr.status>=200&&xhr.status<300)resolve(xhr.response);
+        else reject(new Error(xhr.response?.detail||'导入失败'));
+      };
+      xhr.onerror=()=>reject(new Error('上传失败，请检查本地服务连接'));
+      xhr.onabort=()=>reject(new Error('上传已取消'));
+      xhr.send(fd);
+    });
   },
 
-  async translate(paperId) {
+  async translate(paperId, retranslate = false) {
     const r = await fetch(`${API_BASE}/api/translate`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ paper_id: paperId }),
+      body: JSON.stringify({ paper_id: paperId, retranslate }),
     });
     if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || "发起翻译失败");
     return r.json();

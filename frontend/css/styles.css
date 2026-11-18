@@ -450,6 +450,10 @@ body:not(.desktop) .tb-drag { display: none; }
   background: #ffffff;
 }
 .cover-img.loaded { opacity: 1; }
+.import-transfer { position:fixed; right:24px; bottom:24px; z-index:1200; width:min(360px,calc(100vw - 48px)); padding:16px; background:var(--surface); border:1px solid var(--line); border-radius:12px; box-shadow:var(--shadow-md); font-size:13px; }
+.import-transfer-file { margin:8px 0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.import-transfer progress { display:block; width:100%; height:8px; accent-color:var(--accent); }
+.import-transfer-status { margin-top:8px; color:var(--ink-2); font-size:12px; }
 .cover.mini { width: 42px; aspect-ratio: 5 / 7; border-radius: 5px; padding: 5px; }
 .cover.mini b { font-size: 16px; }
 .cover.mini em { display: none; }

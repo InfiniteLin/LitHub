@@ -12,3 +12,4 @@ python-multipart==0.0.32
 pypdf==6.18.1
 pymupdf==1.25.2
 openai==2.7.2
+packaging>=24

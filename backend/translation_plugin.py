@@ -1,4 +1,4 @@
-"""Independently installed pdf2zh 1.x runtimes; bundled Python stays immutable."""
+"""Install PDFMathTranslate-next beside the bundled legacy engine."""
 import hashlib
 import importlib.metadata
 import json
@@ -8,9 +8,16 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import urllib.request
 import uuid
+
+from packaging.specifiers import InvalidSpecifier, SpecifierSet
+
+
+NEXT_PACKAGE = "pdf2zh-next"
+NEXT_MIN_VERSION = (2, 10, 2)
 
 
 class PluginManager:
@@ -26,13 +33,19 @@ class PluginManager:
         try:
             value = json.loads((self.root / "active.json").read_text(encoding="utf8"))
             name = value["directory"]
-            if not re.fullmatch(r"pdf2zh-1\.[0-9]+\.[0-9]+-[a-f0-9]{12}", name):
+            match = re.fullmatch(r"(pdf2zh|pdf2zh-next)-(\d+\.\d+\.\d+)-[a-f0-9]{12}", name)
+            if not match:
+                return None
+            package, version = match.groups()
+            if not version.startswith("2." if package == NEXT_PACKAGE else "1."):
                 return None
             folder = self.root / name
             if folder.is_symlink() or not (folder / "ready.json").is_file():
                 return None
             ready = json.loads((folder / "ready.json").read_text(encoding="utf8"))
-            if ready["version"] != value["version"] or not self._python(folder).is_file():
+            if (ready["version"] != version or value["version"] != version
+                    or ready.get("package", "pdf2zh") != package or value.get("package", "pdf2zh") != package
+                    or not self._python(folder).is_file()):
                 return None
             return value
         except (OSError, ValueError, KeyError, TypeError):
@@ -44,13 +57,20 @@ class PluginManager:
             return folder / ("python.exe" if (folder / "python.exe").exists() else "Scripts/python.exe")
         return folder / "bin/python"
 
-    def command(self):
+    def runtime(self):
         with self.lock:
             active = self._pointer()
             if active:
-                return [str(self._python(self.root / active["directory"])), "-B",
-                        str(Path(__file__).with_name("pdf2zh_cli.py"))]
+                folder = self.root / active["directory"]
+                prefix = [str(self._python(folder)), "-B"]
+                if active.get("package") == NEXT_PACKAGE:
+                    return prefix + ["-m", "pdf2zh_next.main"], folder / "home"
+                return prefix + [str(Path(__file__).with_name("pdf2zh_cli.py"))], None
             return None
+
+    def command(self):
+        runtime = self.runtime()
+        return runtime[0] if runtime else None
 
     def snapshot(self):
         with self.lock:
@@ -60,6 +80,7 @@ class PluginManager:
             except importlib.metadata.PackageNotFoundError:
                 bundled = ""
             return {**self.state, "current": active["version"] if active else bundled,
+                    "package": active.get("package", "pdf2zh") if active else "pdf2zh",
                     "source": "independent" if active else "bundled", "can_restore": bool(active),
                     "directory": str(self.root), "busy": self.state["status"] in {"checking", "installing"}}
 
@@ -80,11 +101,22 @@ class PluginManager:
     def _latest(metadata):
         versions = []
         for version, files in metadata.get("releases", {}).items():
-            if re.fullmatch(r"1\.[0-9]+\.[0-9]+", version) and any(not f.get("yanked") for f in files):
+            if not re.fullmatch(r"2\.[0-9]+\.[0-9]+", version) or tuple(map(int, version.split("."))) < NEXT_MIN_VERSION:
+                continue
+            if any(PluginManager._compatible_wheel(file) for file in files):
                 versions.append(version)
         if not versions:
-            raise ValueError("未找到兼容的 pdf2zh 1.x 正式版")
+            raise ValueError("未找到兼容当前 Python 的 pdf2zh-next 正式版")
         return max(versions, key=lambda v: tuple(map(int, v.split("."))))
+
+    @staticmethod
+    def _compatible_wheel(file):
+        if file.get("yanked") or not file.get("filename", "").endswith("-py3-none-any.whl"):
+            return False
+        try:
+            return ".".join(map(str, sys.version_info[:3])) in SpecifierSet(file.get("requires_python") or "")
+        except InvalidSpecifier:
+            return False
 
     def start(self, operation):
         with self.lock:
@@ -117,12 +149,16 @@ class PluginManager:
         if self.cancelled.is_set():
             raise InterruptedError("已取消插件更新")
 
-    def _run(self, cmd, timeout=1200):
+    def _run(self, cmd, timeout=1200, isolated_home=None, temp_dir=None):
         self._check_cancel()
         # No upstream API keys or developer pip indexes/configuration enter the installer.
-        env = {k: v for k, v in os.environ.items() if not k.startswith(("PIP_", "PYTHON", "OPENAI_"))}
+        env = {k: v for k, v in os.environ.items() if not k.upper().startswith(("PIP_", "PYTHON", "OPENAI_", "PDF2ZH_"))}
         env.update(PYTHONIOENCODING="utf-8", PIP_CONFIG_FILE=os.devnull,
                    PIP_DISABLE_PIP_VERSION_CHECK="1", PIP_NO_INPUT="1")
+        if isolated_home is not None:
+            env.update(USERPROFILE=str(isolated_home), HOME=str(isolated_home))
+        if temp_dir is not None:
+            env.update(TMP=str(temp_dir), TEMP=str(temp_dir), TMPDIR=str(temp_dir))
         log = self.root / "install.log"
         with log.open("w", encoding="utf8") as output:
             with self.lock:
@@ -141,7 +177,7 @@ class PluginManager:
                     self.proc = None
         self._check_cancel()
         if code:
-            raise ValueError("插件安装或兼容性验证失败，原插件保持可用。详情见插件目录 install.log")
+            raise ValueError("引擎安装或验证失败。详情见 install.log")
 
     def _environment(self, folder):
         source = Path(sys.executable).parent
@@ -183,40 +219,49 @@ class PluginManager:
     def _work(self, operation):
         folder = None
         try:
-            latest = self._latest(self._json("https://pypi.org/pypi/pdf2zh/json"))
+            snapshot = self.snapshot()
+            latest = snapshot["latest"] if operation == "install" else ""
+            if not latest:
+                latest = self._latest(self._json("https://pypi.org/pypi/pdf2zh-next/json"))
             self._check_cancel()
-            current = self.snapshot()["current"]
-            available = not re.fullmatch(r"1\.[0-9]+\.[0-9]+", current) or tuple(map(int, latest.split("."))) > tuple(map(int, current.split(".")))
+            available = snapshot["package"] != NEXT_PACKAGE or tuple(map(int, latest.split("."))) > tuple(map(int, snapshot["current"].split(".")))
+            if snapshot["package"] == NEXT_PACKAGE and not available and operation == "install":
+                latest = snapshot["current"]
             self._set(latest=latest, available=available)
             if operation == "check":
                 self._set(status="idle", message="发现兼容新版" if available else "当前已是兼容的最新版本")
                 return
             self.root.mkdir(parents=True, exist_ok=True)
-            folder = self.root / f"pdf2zh-{latest}-{uuid.uuid4().hex[:12]}"
+            folder = self.root / f"{NEXT_PACKAGE}-{latest}-{uuid.uuid4().hex[:12]}"
             self._set(message="正在创建独立 Python 环境…")
             self._environment(folder)
             self._check_cancel()
             self._set(message="正在下载插件及依赖，首次安装可能需要几分钟…")
             wheel = self._bootstrap(folder)
             code = "import sys,runpy;sys.path.insert(0,sys.argv.pop(1));runpy.run_module('pip',run_name='__main__')"
-            self._run([str(self._python(folder)), "-B", "-c", code, str(wheel), "install",
-                       "--index-url", "https://pypi.org/simple", "--only-binary=:all:", "--no-cache-dir", "--no-compile",
-                       "--target", str(folder / "Lib/site-packages" if os.name == "nt"
-                                     else folder / f"lib/python{sys.version_info.major}.{sys.version_info.minor}/site-packages"),
-                       f"pdf2zh=={latest}", "bitstring==4.4.0", "numpy==2.3.5", "scipy==1.15.2",
-                       "tencentcloud-sdk-python-tmt==3.0.1478", "tencentcloud-sdk-python-common==3.1.185"])
+            site_packages = folder / ("Lib/site-packages" if os.name == "nt"
+                                      else f"lib/python{sys.version_info.major}.{sys.version_info.minor}/site-packages")
+            with tempfile.TemporaryDirectory(dir=folder) as temp_dir:
+                self._run([str(self._python(folder)), "-B", "-c", code, str(wheel), "install",
+                           "--index-url", "https://pypi.org/simple", "--only-binary=:all:", "--no-cache-dir", "--no-compile",
+                           "--target", str(site_packages), f"{NEXT_PACKAGE}=={latest}", "bitstring<5"], temp_dir=temp_dir)
             self._set(message="正在验证插件命令与版本…")
-            probe = ("import sys,runpy;from pathlib import Path;from importlib.metadata import version;"
-                     "assert version('pdf2zh')==sys.argv[1];home=Path(sys.argv[2]);"
-                     "Path.home=classmethod(lambda cls:home);cli=sys.argv[3];"
-                     "sys.argv=[cli,'--help'];runpy.run_path(cli,run_name='__main__')")
-            home = folder / "probe-home"
+            probe = ("import sys;from importlib.metadata import version;"
+                     "assert version('pdf2zh-next')==sys.argv.pop(1);"
+                     "from pdf2zh_next.config import ConfigManager;settings=ConfigManager().initialize_config();"
+                     "from pdf2zh_next.high_level import do_translate_file_async")
+            home = folder / "home"
             home.mkdir()
-            self._run([str(self._python(folder)), "-B", "-c", probe, latest, str(home),
-                       str(Path(__file__).with_name("pdf2zh_cli.py"))], timeout=120)
+            for service in ("bing", "openai"):
+                args = ["--" + service, "--lang-out", "zh", "--output", str(folder),
+                        "--ignore-cache", "--use-alternating-pages-dual", "--no-auto-extract-glossary", "--disable-config-auto-save"]
+                if service == "openai":
+                    args += ["--openai-api-key", "probe-only", "--openai-model", "probe-only"]
+                self._run([str(self._python(folder)), "-B", "-c", probe, latest, *args],
+                          timeout=120, isolated_home=home)
             self._check_cancel()
             wheel.unlink()
-            ready = {"directory": folder.name, "version": latest}
+            ready = {"directory": folder.name, "version": latest, "package": NEXT_PACKAGE}
             (folder / "ready.json").write_text(json.dumps(ready), encoding="utf8")
             with self.lock:
                 self._check_cancel()
@@ -227,7 +272,7 @@ class PluginManager:
                 folder = None  # The verified environment now belongs to the active installation.
                 self.state.update(status="idle", available=False, message="插件已更新，下一次翻译立即生效")
         except InterruptedError:
-            self._set(status="idle", message="已取消更新，继续使用原插件")
+            self._set(status="idle", message="已取消更新")
         except Exception as exc:
             self._set(status="error", message=str(exc))
         finally:
