@@ -17,9 +17,8 @@ function proxyAgent(result, signal) {
     { timeout: 15000, socketOptions: { signal } });
 }
 
-// Only used for a failed package transfer. Node HTTPS speaks HTTP/1.1 and does
-// not share Chromium's broken HTTP/2 connection. Redirect validation stays in
-// fetchAsset; TLS certificate checks remain enabled, including through proxies.
+// Retry update traffic over HTTP/1.1 using the same system proxy.
+// The caller validates redirects; TLS hostname checks also apply through proxies.
 async function requestHTTP1(url, options, resolveProxy) {
   const { signal } = options;
   signal?.throwIfAborted();

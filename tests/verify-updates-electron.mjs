@@ -31,8 +31,9 @@ app.whenReady().then(async()=>{
     if(req.url==='/slow'){res.write('started');return;}
     if(req.url==='/broken'){res.writeHead(200,{'Content-Length':'1000'});res.write('partial');setTimeout(()=>res.destroy(),50);return;}
     if(req.url==='/asset'){res.end(payload);return;}
+    assert.equal(req.url,'/manifest');
     res.setHeader('Content-Type','application/json');const metadata={tag_name:'v0.1.2',draft:false,prerelease:false,body:'Integration release',
-      assets:[{name:'LitHub Setup 0.1.2.exe',size:payload.length,state:'uploaded',digest:'sha256:'+digest}]};res.end(JSON.stringify(req.url==='/manifest'?{schemaVersion:1,release:metadata}:metadata));});
+      assets:['LitHub Setup 0.1.2.exe','LitHub-0.1.2-win-x64.zip'].map(name=>({name,size:payload.length,state:'uploaded',digest:'sha256:'+digest}))};res.end(JSON.stringify({schemaVersion:1,release:metadata}));});
   await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
   const local='http://127.0.0.1:'+server.address().port;
   const redirected=await requestUpdate(net,local+'/redirect',{redirect:'manual'});assert.equal(redirected.status,302);assert.ok(redirected.headers.get('location').endsWith('/asset'));
@@ -46,10 +47,11 @@ app.whenReady().then(async()=>{
   const opened=[];let installCalls=0;
   service=createUpdateService({version:'0.1.1',storageFile:${JSON.stringify(path.join(dir,'state.json'))},
     canInstall:true,install:async()=>{installCalls++;return false;},
-    fetch:(url,options)=>{const manifest=url==='https://github.com/InfiniteLin/LitHub/releases/latest/download/update.json';
+    fetch:(url,options)=>{const manifest=new URL(url).pathname==='/InfiniteLin/LitHub/releases/latest/download/update.json';
       const api=url==='https://api.github.com/repos/InfiniteLin/LitHub/releases/latest';
-      if(!api&&!manifest)assert.ok(url.startsWith('https://github.com/InfiniteLin/LitHub/releases/download/'));
-      return requestUpdate(net,'http://127.0.0.1:'+server.address().port+(manifest?'/manifest':api?'/':'/asset'),options);},
+      assert.ok(!api,'the public manifest should satisfy the check');
+      if(!manifest)assert.ok(url.startsWith('https://github.com/InfiniteLin/LitHub/releases/download/'));
+      return requestUpdate(net,'http://127.0.0.1:'+server.address().port+(manifest?'/manifest':'/asset'),options);},
     openExternal:async url=>opened.push(url),onChange:s=>win.webContents.send('updates:changed',s)});
   registerUpdateIPC(ipcMain,()=>service,e=>!!win && e.sender===win.webContents && e.senderFrame===win.webContents.mainFrame);
   win=new BrowserWindow({show:false,webPreferences:{contextIsolation:true,nodeIntegration:false,

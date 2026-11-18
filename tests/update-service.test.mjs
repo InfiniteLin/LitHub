@@ -9,15 +9,16 @@ const { createUpdateService, registerUpdateIPC, compareVersions, normalizeReleas
 const root = mkdtempSync(path.join(os.tmpdir(), 'lithub-update-tests-'));
 let seq = 0;
 const release = (tag = 'v0.1.2', extra = {}) => ({ tag_name: tag, draft: false, prerelease: false,
+  assets: [{name: 'LitHub-'+tag.replace(/^v/,'')+'-win-x64.zip', size: 10, state: 'uploaded', digest: 'sha256:'+'1'.repeat(64)}],
   name: 'New version', body: 'Update notes', published_at: '2026-10-25T00:00:00Z', ...extra });
 const reply = (data = release(), status = 200, headers = {}) => ({ ok: status >= 200 && status < 300, status,
-  headers: { get: key => headers[key] ?? null }, json: async () => data });
+  headers: { get: key => headers[key] ?? null }, json: async () => ({schemaVersion: 1, release: data}) });
 const deferred = () => { let resolve; const promise = new Promise(r => { resolve = r; }); return { promise, resolve }; };
 function make(options = {}) {
   let time = Date.UTC(2026, 9, 25), response = async () => reply();
   const requests = [], events = [], opened = [];
   const storageFile = options.storageFile || path.join(root, `${seq++}.json`);
-  const service = createUpdateService({ version: options.version || '0.1.1', storageFile, useManifest:false,
+  const service = createUpdateService({ version: options.version || '0.1.1', storageFile,
     fetch: async (url, opts) => { requests.push({ url, opts }); return response(url, opts); },
     openExternal: async url => { opened.push(url); }, now: () => time,
     onChange: state => events.push(state), ...options });
@@ -47,7 +48,7 @@ try {
   gate.resolve(reply()); await first;
   assert.equal(x.requests.length, 1);
   assert.equal(x.requests[0].opts.credentials, 'omit');
-  assert.equal(x.requests[0].opts.redirect, 'error');
+  assert.equal(x.requests[0].opts.redirect, 'manual');
   assert.equal(x.service.getState().status, 'available');
   assert.equal(x.events.filter(e => e.notify).length, 1);
   await x.service.openRelease('javascript:ignored');
@@ -66,7 +67,7 @@ try {
   console.log('PASS request coalescing, daily persistence, opt-out, manual retry and once-per-version notices');
 
   for (const [data, status, expected] of [[release('v0.1.1'),200,'up-to-date'], [release('v0.1.0'),200,'up-to-date'],
-    [release('v0.1.2-beta'),200,'unavailable'], [release('v0.1.2',{draft:true}),200,'unavailable'],
+    [release('v0.1.2-beta'),200,'error'], [release('v0.1.2',{draft:true}),200,'error'],
     [{},200,'error'], [null,200,'error'], [null,404,'unavailable'], [null,500,'error']]) {
     const t = make(); t.setResponse(async () => reply(data,status));
     assert.equal((await t.service.check()).status, expected);
@@ -77,11 +78,7 @@ try {
   assert.equal(offline.service.getState().checkedAt, 0, 'failure is not recorded as successful check');
   const badJSON = make(); badJSON.setResponse(async () => ({ status:200,ok:true,json:async()=>{throw Error('bad JSON');} }));
   assert.equal((await badJSON.service.check()).status, 'error');
-  const rate = make(); rate.setResponse(async () => reply(null,429,{'retry-after':'120'}));
-  await rate.service.check(); await rate.service.check(); assert.equal(rate.requests.length, 1);
-  rate.advance(120001); rate.setResponse(async () => reply()); await rate.service.check();
-  assert.equal(rate.service.getState().status, 'available');
-  console.log('PASS equal/newer installed versions, empty releases, offline/JSON/HTTP failures and rate-limit backoff');
+  console.log('PASS equal/newer installed versions, invalid manifests, offline/JSON/HTTP failures');
 
   const timeoutHandles = [];
   const timers = { setTimeout: fn => { const h={fn,unref(){}};timeoutHandles.push(h);return h; },
@@ -128,7 +125,7 @@ try {
   await exposed.updates.openRelease('javascript:ignored');assert.deepEqual(calls.at(-1),['updates:open-release']);
   console.log('PASS own-window IPC, typed preferences and preload event unsubscribe');
 
-  const retry=make();retry.setResponse(async()=>{throw Error('offline');});
+  const retry=make();retry.setResponse(async()=>{return reply(null,403);});
   await retry.service.check({automatic:true});
   assert.equal(retry.requests.length,1);
   retry.advance(4*60000);await retry.service.check({automatic:true});assert.equal(retry.requests.length,1);
@@ -138,12 +135,9 @@ try {
   retry.advance(3600000);await retry.service.check({automatic:true});assert.equal(retry.requests.length,3,'success returns to daily schedule');
   const persisted=make({storageFile:retry.storageFile});await persisted.service.check({automatic:true});
   assert.equal(persisted.requests.length,0,'retry schedule survives restart');
-  const optout=make();optout.setResponse(async()=>{throw Error('offline');});await optout.service.check({automatic:true});
+  const optout=make();optout.setResponse(async()=>{return reply(null,403);});await optout.service.check({automatic:true});
   await optout.service.setAutoCheck(false);optout.advance(600000);await optout.service.check({automatic:true});assert.equal(optout.requests.length,1);
-  const limited=make();limited.setResponse(async()=>reply(null,429,{'retry-after':'1800'}));await limited.service.check({automatic:true});
-  limited.advance(5*60000);await limited.service.check({automatic:true});assert.equal(limited.requests.length,1);
-  limited.advance(25*60000);limited.setResponse(async()=>reply());await limited.service.check({automatic:true});assert.equal(limited.requests.length,2);
-  console.log('PASS persisted exponential retries, daily success cadence, rate-limit delay and opt-out during retry');
+  console.log('PASS persisted exponential retries, daily success cadence and opt-out during retry');
 
   const initial=deferred();let uiListener,uiNotices=0;
   const browser={lithub:{updates:{getState:()=>initial.promise,onChange:fn=>{uiListener=fn;return()=>{};},

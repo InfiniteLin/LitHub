@@ -131,10 +131,11 @@ try {
   assert.deepEqual(readdirSync(desktop),[]);
   console.log('PASS truncation, corruption, size overflow, HTTP failures, missing digest, cancel, retry and dev guard');
 
-  const metadata = {...raw, draft:false, prerelease:false};
+  const metadata = {...raw, draft:false, prerelease:false,
+    assets:[...raw.assets,{...raw.assets[0],name:'LitHub-'+raw.tag_name.slice(1)+'-win-x64.zip'}]};
   let checks = 0, installs = 0, assetRequests = 0;
-  const service = createUpdateService({version:'0.2.0',storageFile:path.join(root,'service.json'),canInstall:true,useManifest:false,
-    fetch:async url=>{ if(url.includes('api.github.com')) { checks++; return new Response(JSON.stringify(metadata)); } assetRequests++;return new Response(payload); },
+  const service = createUpdateService({version:'0.2.0',storageFile:path.join(root,'service.json'),canInstall:true,
+    fetch:async url=>{ if(new URL(url).pathname.endsWith('/latest/download/update.json')) { checks++; return new Response(JSON.stringify({schemaVersion:1,release:metadata})); } assetRequests++;return new Response(payload); },
     install:async()=>{installs++;return false;},openExternal:async()=>{throw Error('should not open browser');} });
   await service.check({automatic:true});assert.equal(assetRequests,0,'automatic checks never download installers');
   await service.download();

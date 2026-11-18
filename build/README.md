@@ -18,7 +18,7 @@ Python 后端与翻译进程使用 `-B`，避免在安装目录重新生成大�
 
 安装器采用 `useZip: true` 与 `differentialPackage: false`，直接解压到安装目录。
 两个选项必须同时保留，避免压缩格式与解压器不一致。项目目前使用完整安装包更新，
-检查更新优先读取 Release 的 `update.json`，失败时回退 GitHub API；无需 `latest.yml` 或差分包。
+检查更新直接读取 Release 的 `update.json`。
 升级和卸载继续通过 `preserve-pdfs.nsh` 保留用户 PDF。
 
 发布正式版本时，tag 使用 `v主版本.次版本.修订版本`，并上传构建生成的
@@ -97,9 +97,8 @@ ZIP 替换助手使用临时目录中的独立 Python 标准库运行时，不�
 ## 公开更新清单
 
 `npm run dist` / `dist:zip` 会生成 ZIP、SHA256SUMS.txt、update.json，三个文件必须一起上传。
-更新器优先读取固定仓库的 `releases/latest/download/update.json`，不消耗 REST API 的匿名配额；
-清单缺失或不可访问时才回退 API。API 被限流时遵守等待时间，手动检查仍可读取公开清单。
-普通 HTTP 403 不再一律解释为限流，只有 429 或带限流响应头的 403 才设置等待状态。
+更新器直接读取固定仓库的 `releases/latest/download/update.json`。
+遇到附件签名失效或连接错误时，刷新 GitHub 跳转并经同一系统代理使用 HTTP/1.1 重试。
 清单包含 schemaVersion、版本与 ZIP 名称/大小/SHA-256；客户端限制清单大小及重定向域名，
 下载链接始终从固定仓库与校验过的版本、文件名生成，不接受清单提供的任意下载 URL。
 覆盖历史附件时，需要同时更新清单中的哈希；清单不能指向旧 ZIP 的校验值。

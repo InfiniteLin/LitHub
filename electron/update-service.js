@@ -5,7 +5,6 @@ const path = require("node:path");
 const { installerAsset, portableAsset, createInstallerUpdate } = require("./installer-update");
 const { fetchPublicRelease } = require("./release-manifest");
 const RELEASES_URL = "https://github.com/InfiniteLin/LitHub/releases";
-const API_URL = "https://api.github.com/repos/InfiniteLin/LitHub/releases/latest";
 const DAY = 24 * 60 * 60 * 1000;
 
 function parseVersion(value) {
@@ -55,14 +54,14 @@ function normalizeRelease(data) {
 }
 
 function createUpdateService({ version, storageFile, fetch, openExternal, onChange = () => {},
-  install, downloadDirectory = path.join(path.dirname(storageFile), "updates"), canInstall = false, distribution = 'installer', lastUpdate = null, useManifest = true,
+  install, downloadDirectory = path.join(path.dirname(storageFile), "updates"), canInstall = false, distribution = 'installer', lastUpdate = null,
   now = Date.now, timers = globalThis }) {
   if (!parseVersion(version)) throw Error("当前程序版本号格式无效");
-  let prefs = { autoCheck: true, lastAttemptAt: 0, checkedAt: 0, blockedUntil: 0, nextCheckAt: 0, failures: 0, notifiedVersion: "", release: null };
+  let prefs = { autoCheck: true, lastAttemptAt: 0, checkedAt: 0, nextCheckAt: 0, failures: 0, notifiedVersion: "", release: null };
   try {
     if (fs.statSync(storageFile).size <= 65536) {
       const saved = JSON.parse(fs.readFileSync(storageFile, "utf8"));
-      for (const k of ["lastAttemptAt", "checkedAt", "blockedUntil", "nextCheckAt"]) {
+      for (const k of ["lastAttemptAt", "checkedAt", "nextCheckAt"]) {
         if (Number.isFinite(saved[k]) && saved[k] >= 0 && saved[k] <= now() + DAY) prefs[k] = saved[k];
       }
       prefs.failures = Number.isSafeInteger(saved.failures) ? Math.max(0, Math.min(10, saved.failures)) : 0;
@@ -135,57 +134,22 @@ function createUpdateService({ version, storageFile, fetch, openExternal, onChan
       controller = new AbortController();
       const timeout = timers.setTimeout(() => controller?.abort(), 15000);
       try {
-        let response, publicRelease = null;
-        if (useManifest) {
-          try {
-            const candidate = await fetchPublicRelease(fetch, controller.signal);
-            if (!normalizeRelease(candidate)?.portable?.sha256) throw Error('更新清单缺少可校验的 ZIP');
-            publicRelease = candidate;
-          } catch { controller.signal.throwIfAborted(); }
-        }
-        if (publicRelease) response = {status:200,ok:true,json:async()=>publicRelease};
-        else {
-          if (now() < prefs.blockedUntil) throw Error(`GitHub API 暂时限流，将于 ${new Date(prefs.blockedUntil).toLocaleTimeString()} 后重试；公开更新清单暂不可用。`);
-          try {
-            response = await fetch(API_URL, { signal: controller.signal,
-              headers: { Accept: "application/vnd.github+json", "User-Agent": `LitHub/${version}` },
-              credentials: "omit", redirect: "error" });
-          } catch { throw Error("无法连接更新服务，请检查网络后重试。"); }
-        }
-        if (response.status === 404) {
-          status = "unavailable"; error = "暂无可访问的正式版本。发布源可能尚未发布版本，或仓库未公开。";
-        } else {
-          if (response.status === 429 || (response.status === 403 &&
-              (response.headers?.get('x-ratelimit-remaining') === '0' || response.headers?.get('retry-after')))) {
-            const reset = Number(response.headers?.get("x-ratelimit-reset")) * 1000;
-            const rawRetry = response.headers?.get("retry-after");
-            const retry = Number.isFinite(Number(rawRetry)) ? Number(rawRetry)*1000 : Date.parse(rawRetry)-now();
-            prefs.blockedUntil = now() + Math.min(DAY, Math.max(60000, reset - now() || 0, retry || 0));
-            throw Error(`GitHub API 暂时限流，请在 ${new Date(prefs.blockedUntil).toLocaleTimeString()} 后重试。`);
-          }
-          if (!response.ok) throw Error(`检查失败（HTTP ${response.status}），请稍后重试。`);
-          let data;
-          try { data = await response.json(); } catch { throw Error("发布信息无法解析，请稍后重试。"); }
-          let release;
-          try { release = normalizeRelease(data); } catch (e) { throw Error(e.message); }
-          if (!release) {
-            status = "unavailable"; error = "当前发布的版本是草稿或测试版，暂不提供正式版更新。";
-          } else {
-            prefs.release = release; prefs.checkedAt = now(); if (!publicRelease) prefs.blockedUntil = 0;
-            status = compareVersions(release.version, version) > 0 ? "available" : "up-to-date";
-          }
-        }
+        const release = normalizeRelease(await fetchPublicRelease(fetch, controller.signal));
+        if (!release || !release.portable?.sha256) throw Error("更新清单缺少可校验的 ZIP。");
+        prefs.release = release;
+        prefs.checkedAt = now();
+        status = compareVersions(release.version, version) > 0 ? "available" : "up-to-date";
       } catch (e) {
         if (stopped) { status = baseStatus(); return getState(); }
-        status = "error";
+        status = e.status === 404 && !controller.signal.aborted ? "unavailable" : "error";
         error = controller.signal.aborted ? "检查超时，请检查网络后重试。"
           : (e instanceof TypeError ? "无法连接 GitHub，请检查网络后重试。" : e.message || "检查失败，请稍后重试。");
       } finally { timers.clearTimeout(timeout); controller = null; }
       if (stopped) return getState();
-      if (status === 'error') {
+      if (status === 'error' || status === 'unavailable') {
         const delays = [5, 15, 60, 360];
         prefs.failures++;
-        prefs.nextCheckAt = Math.max(useManifest ? 0 : prefs.blockedUntil, now() + delays[Math.min(prefs.failures - 1, delays.length - 1)] * 60000);
+        prefs.nextCheckAt = now() + delays[Math.min(prefs.failures - 1, delays.length - 1)] * 60000;
       } else { prefs.failures = 0; prefs.nextCheckAt = now() + DAY; }
       const notify = automatic && prefs.autoCheck && status === "available" && prefs.notifiedVersion !== prefs.release.version;
       if (status === "available") prefs.notifiedVersion = prefs.release.version;

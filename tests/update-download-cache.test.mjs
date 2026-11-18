@@ -14,13 +14,13 @@ const services=[];
 function make(options={}) {
   const calls=[];let failure=false,corrupt=false;
   const storageFile=options.storageFile||path.join(root,`${seq++}.json`);
-  const service=createUpdateService({version:'0.2.4',storageFile,canInstall:true,distribution:'portable',useManifest:false,
+  const service=createUpdateService({version:'0.2.4',storageFile,canInstall:true,distribution:'portable',
     downloadDirectory:path.join(root,`downloads-${seq++}`),
     fetch:async url=>{
       calls.push(url);
-      if(url.includes('api.github.com'))return failure
-        ? new Response('',{status:429,headers:{'retry-after':'3600'}})
-        : new Response(JSON.stringify(metadata));
+      if(new URL(url).pathname.endsWith('/latest/download/update.json'))return failure
+        ? new Response('',{status:403})
+        : new Response(JSON.stringify({schemaVersion:1,release:metadata}));
       const requested=new URL(url);
       assert.ok(requested.searchParams.get('lithub_download'));
       requested.search='';
@@ -42,7 +42,7 @@ try {
   first.badDownload(false);await first.service.download();
   assert.equal(first.service.getState().download.status,'ready');
   assert.equal(first.calls.length,2);
-  assert.ok(first.calls.every(u=>!u.includes('api.github.com')),'download and retry must bypass checks under rate limits');
+  assert.ok(first.calls.every(u=>!new URL(u).pathname.endsWith('/update.json')),'download and retry must bypass checks after a manifest failure');
   first.service.stop();
 
   // Startup restores asset identity/hash/size, deriving its URL from the fixed repository.
@@ -70,5 +70,5 @@ try {
     await fixture.service.download();assert.equal(fixture.calls.length,0);
     assert.match(fixture.service.getState().download.error,/检查更新/);
   }
-  console.log('PASS direct download/retry during rate limits, persisted asset metadata, safe URL reconstruction and explicit missing-metadata errors');
+  console.log('PASS direct download/retry after a manifest failure, persisted asset metadata, safe URL reconstruction and explicit missing-metadata errors');
 } finally {services.forEach(s=>s.stop());rmSync(root,{recursive:true,force:true});}
