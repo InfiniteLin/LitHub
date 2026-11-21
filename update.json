@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "release": {
+    "tag_name": "v0.3.4",
+    "name": "文枢 LitHub v0.3.4",
+    "draft": false,
+    "prerelease": false,
+    "body": "## 修复\n\n- 修复笔记中选中多个列表项或表格单元格后，按 Ctrl 导致内容被删除的问题。\n- GitHub Release 更新清单连接失败时，自动尝试仓库中的静态更新清单。应用继续从 GitHub Release 下载 ZIP 并校验 SHA-256。\n\n## 下载\n\n下载 Windows x64 ZIP，完整解压后运行 `LitHub.exe`。\n",
+    "assets": [
+      {
+        "name": "LitHub-0.3.4-win-x64.zip",
+        "size": 388513359,
+        "state": "uploaded",
+        "digest": "sha256:25b65206a9c74a80bb90a0eb3f63ee0e6c471cf477c2955672d8e9c9ad7837dc"
+      }
+    ]
+  }
+}
