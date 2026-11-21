@@ -125,7 +125,7 @@ try {
   await exposed.updates.openRelease('javascript:ignored');assert.deepEqual(calls.at(-1),['updates:open-release']);
   console.log('PASS own-window IPC, typed preferences and preload event unsubscribe');
 
-  const retry=make();retry.setResponse(async()=>{return reply(null,403);});
+  const retry=make();retry.setResponse(async()=>{return reply(null,400);});
   await retry.service.check({automatic:true});
   assert.equal(retry.requests.length,1);
   retry.advance(4*60000);await retry.service.check({automatic:true});assert.equal(retry.requests.length,1);
@@ -135,7 +135,7 @@ try {
   retry.advance(3600000);await retry.service.check({automatic:true});assert.equal(retry.requests.length,3,'success returns to daily schedule');
   const persisted=make({storageFile:retry.storageFile});await persisted.service.check({automatic:true});
   assert.equal(persisted.requests.length,0,'retry schedule survives restart');
-  const optout=make();optout.setResponse(async()=>{return reply(null,403);});await optout.service.check({automatic:true});
+  const optout=make();optout.setResponse(async()=>{return reply(null,400);});await optout.service.check({automatic:true});
   await optout.service.setAutoCheck(false);optout.advance(600000);await optout.service.check({automatic:true});assert.equal(optout.requests.length,1);
   console.log('PASS persisted exponential retries, daily success cadence and opt-out during retry');
 

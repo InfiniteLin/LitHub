@@ -3,13 +3,14 @@
 const {randomUUID} = require('node:crypto');
 const MANIFEST_PATH = '/InfiniteLin/LitHub/releases/latest/download/update.json';
 const MANIFEST_URL = 'https://github.com' + MANIFEST_PATH;
+const FEED_URL = 'https://raw.githubusercontent.com/InfiniteLin/LitHub/update-feed/update.json';
 const MAX_BYTES = 65536;
 const ATTEMPT_TIMEOUT = 6500;
 const REDIRECTS = [301, 302, 303, 307, 308];
 
 function allowed(url) {
   return url.protocol === 'https:' && !url.username && !url.password && !url.port && !url.hash &&
-    ((url.hostname === 'github.com' &&
+    (url.href === FEED_URL || (url.hostname === 'github.com' &&
       (url.pathname === MANIFEST_PATH ||
         /^\/InfiniteLin\/LitHub\/releases\/download\/[^/]+\/update\.json$/.test(url.pathname))) ||
       ['release-assets.githubusercontent.com', 'objects.githubusercontent.com'].includes(url.hostname));
@@ -20,8 +21,8 @@ async function discard(response) {
   else response.body?.destroy();
 }
 
-async function readManifest(fetch, signal, transport) {
-  let url = new URL(MANIFEST_URL);
+async function readManifest(fetch, source, signal, transport) {
+  let url = new URL(source);
   const nonce = randomUUID();
   for (let hop = 0; hop < 6; hop++) {
     signal.throwIfAborted();
@@ -44,7 +45,8 @@ async function readManifest(fetch, signal, transport) {
     }
     if (!response.ok) {
       await discard(response);
-      const signedURLRejected = url.hostname !== 'github.com' && [400, 401, 403].includes(response.status);
+      const signedURLRejected = source === MANIFEST_URL && url.hostname !== 'github.com' &&
+        [400, 401, 403].includes(response.status);
       throw Object.assign(Error(`更新清单暂不可用（HTTP ${response.status}）。`),
         {status: response.status, retryTransport: signedURLRejected || response.status === 408 || response.status >= 500});
     }
@@ -80,15 +82,30 @@ async function readManifest(fetch, signal, transport) {
   throw Error('更新清单跳转过多。');
 }
 
-async function fetchPublicRelease(fetch, signal) {
+async function fetchFrom(fetch, source, signal) {
   const first = AbortSignal.any([signal, AbortSignal.timeout(ATTEMPT_TIMEOUT)]);
   try {
-    return await readManifest(fetch, first);
+    return await readManifest(fetch, source, first);
   } catch (error) {
     signal.throwIfAborted();
     if (!first.aborted && !error.retryTransport) throw error;
   }
-  return readManifest(fetch, AbortSignal.any([signal, AbortSignal.timeout(ATTEMPT_TIMEOUT)]), 'http1');
+  return readManifest(fetch, source, AbortSignal.any([signal, AbortSignal.timeout(ATTEMPT_TIMEOUT)]), 'http1');
 }
 
-module.exports = {fetchPublicRelease, MANIFEST_URL};
+async function fetchPublicRelease(fetch, signal) {
+  try {
+    return await fetchFrom(fetch, MANIFEST_URL, signal);
+  } catch (error) {
+    signal.throwIfAborted();
+    if (!error.retryTransport && ![403, 404, 429].includes(error.status)) throw error;
+    try {
+      return await fetchFrom(fetch, FEED_URL, signal);
+    } catch {
+      signal.throwIfAborted();
+      throw error;
+    }
+  }
+}
+
+module.exports = {fetchPublicRelease, MANIFEST_URL, FEED_URL};

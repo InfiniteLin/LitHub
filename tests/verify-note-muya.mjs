@@ -30,10 +30,12 @@ try {
   ws.onmessage=e=>{const m=JSON.parse(e.data);if(m.id){pending.get(m.id)?.(m);pending.delete(m.id);}if(m.method==='Runtime.exceptionThrown')errors.push(m.params.exceptionDetails.exception?.description||m.params.exceptionDetails.text);};
   const send=(method,params={})=>new Promise(resolve=>{const id=++sequence;pending.set(id,resolve);ws.send(JSON.stringify({id,method,params}));});
   const evaluate=async expression=>{const r=await send('Runtime.evaluate',{expression,returnByValue:true,awaitPromise:true});if(r.result?.exceptionDetails)throw Error(r.result.exceptionDetails.exception?.description);return r.result.result.value;};
+  const keyEvent=(type,key,code,windowsVirtualKeyCode,modifiers=0)=>
+    send('Input.dispatchKeyEvent',{type,key,code,windowsVirtualKeyCode,modifiers});
   const historyKey=async(key,modifiers=2)=>{
     const code=`Key${key.toUpperCase()}`,windowsVirtualKeyCode=key.toUpperCase().charCodeAt(0);
-    await send('Input.dispatchKeyEvent',{type:'rawKeyDown',key,code,windowsVirtualKeyCode,modifiers});
-    await send('Input.dispatchKeyEvent',{type:'keyUp',key,code,windowsVirtualKeyCode,modifiers});
+    await keyEvent('rawKeyDown',key,code,windowsVirtualKeyCode,modifiers);
+    await keyEvent('keyUp',key,code,windowsVirtualKeyCode,modifiers);
   };
   const until=async(name,expression)=>{for(let i=0;i<140;i++){if(await evaluate(`typeof state !== 'undefined' && !!window.LithubAPI?.live && (${expression})`)){console.log('PASS '+name);return;}await sleep(60);}console.log('NOTE DIAGNOSTIC',await evaluate(`JSON.stringify({value:NoteEditor.getValue(),jobs:[...noteUploads.values()].map(j=>({status:j.status,stack:j.error?.stack})),errors:${JSON.stringify(errors)}})`));throw Error('Timeout: '+name);};
   await send('Runtime.enable');await send('Page.enable');
@@ -44,6 +46,41 @@ try {
   assert.equal(await evaluate(`NoteEditor.mount(ed,{value:'# Imported title\\n\\nHello **world**.\\n\\n- [ ] Task\\n\\n| A | B |\\n| --- | --- |\\n| 1 | 2 |',onChange:()=>changes++})`),true);
   await until('Muya mounts with real Markdown blocks',`NoteEditor._ready() && !!ed.querySelector('h1') && !!ed.querySelector('table')`);
   assert.ok((await evaluate(`NoteEditor.getValue()`)).includes('**world**'));
+  for(const {markdown,selector,first,last} of [
+    {markdown:'- Discovery\n- Execution',selector:'li .mu-content',first:'Discovery',last:'Execution'},
+    {markdown:'| Discovery | Execution |\n| --- | --- |',selector:'td .mu-content',first:'Discovery',last:'Execution'},
+  ]){
+    const before=await evaluate(`(()=>{
+      NoteEditor.setValue(${JSON.stringify(markdown)});
+      const [start,end]=ed.querySelectorAll(${JSON.stringify(selector)});
+      NoteEditor.focus();
+      const firstText=document.createTreeWalker(start,NodeFilter.SHOW_TEXT).nextNode();
+      const lastText=document.createTreeWalker(end,NodeFilter.SHOW_TEXT).nextNode();
+      getSelection().setBaseAndExtent(firstText,0,lastText,lastText.length);
+      const clipboard=NoteEditor._instance().editor.clipboard;
+      const copy=clipboard.copyHandler;
+      window.copiedNoteText='';
+      clipboard.copyHandler=function(event){
+        clipboard.copyHandler=copy;
+        copy.call(this,event);
+        window.copiedNoteText=event.clipboardData.getData('text/plain');
+      };
+      return NoteEditor.getValue();
+    })()`);
+    assert.equal(await evaluate(`NoteEditor._instance().editor.selection.getSelection()?.isSelectionInSameBlock`),false);
+    const selected=await evaluate(`getSelection().toString()`);
+    assert.ok(selected.includes(first)&&selected.includes(last),JSON.stringify(selected));
+    await evaluate(`getSelection().anchorNode.parentElement.dispatchEvent(new KeyboardEvent('keydown',{key:'Control',ctrlKey:true,bubbles:true,cancelable:true}))`);
+    await keyEvent('rawKeyDown','Control','ControlLeft',17,2);
+    assert.equal(await evaluate(`NoteEditor.getValue()`),before,'pressing Ctrl preserves the selected Markdown');
+    assert.equal(await evaluate(`getSelection().toString()`),selected,'pressing Ctrl keeps the selection');
+    await historyKey('c');
+    await keyEvent('keyUp','Control','ControlLeft',17);
+    const copied=await evaluate(`window.copiedNoteText`);
+    assert.ok(copied.includes(first)&&copied.includes(last),'Ctrl+C copies both selected blocks');
+    assert.equal(await evaluate(`NoteEditor.getValue()`),before,'copying does not edit the note');
+  }
+  console.log('PASS Ctrl and Ctrl+C preserve multi-block selections in lists and tables');
   const pastedMath=String.raw`FLARE 首先建立初始种子集合。
 
 \\[ R_i=(I_i,C_i,S_i) \\]

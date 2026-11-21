@@ -99,6 +99,8 @@ ZIP 替换助手使用临时目录中的独立 Python 标准库运行时，不�
 `npm run dist` / `dist:zip` 会生成 ZIP、SHA256SUMS.txt、update.json，三个文件必须一起上传。
 更新器直接读取固定仓库的 `releases/latest/download/update.json`。
 遇到附件签名失效或连接错误时，刷新 GitHub 跳转并经同一系统代理使用 HTTP/1.1 重试。
+附件通道不可用时，从 `update-feed` 分支读取同一份清单。正式 Release 发布后，
+GitHub Actions 会校验并同步清单，也可手动运行 `Publish update feed` 补同步。
 清单包含 schemaVersion、版本与 ZIP 名称/大小/SHA-256；客户端限制清单大小及重定向域名，
 下载链接始终从固定仓库与校验过的版本、文件名生成，不接受清单提供的任意下载 URL。
 覆盖历史附件时，需要同时更新清单中的哈希；清单不能指向旧 ZIP 的校验值。

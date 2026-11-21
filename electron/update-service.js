@@ -132,7 +132,7 @@ function createUpdateService({ version, storageFile, fetch, openExternal, onChan
       if (stopped) return getState();
       status = "checking"; error = ""; prefs.lastAttemptAt = now(); persist(); emit();
       controller = new AbortController();
-      const timeout = timers.setTimeout(() => controller?.abort(), 15000);
+      const timeout = timers.setTimeout(() => controller?.abort(), 28000);
       try {
         const release = normalizeRelease(await fetchPublicRelease(fetch, controller.signal));
         if (!release || !release.portable?.sha256) throw Error("更新清单缺少可校验的 ZIP。");

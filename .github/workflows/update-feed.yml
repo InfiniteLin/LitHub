@@ -1,0 +1,53 @@
+name: Publish update feed
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: update-feed
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Mirror the latest release manifest
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          release=$(gh api "repos/$GH_REPO/releases/latest")
+          tag=$(jq -er '.tag_name | select(test("^v[0-9]+\\.[0-9]+\\.[0-9]+$"))' <<< "$release")
+          name="LitHub-${tag#v}-win-x64.zip"
+          asset=$(jq -ce --arg name "$name" '.assets[] | select(.name == $name and .state == "uploaded")' <<< "$release")
+          manifest=$(mktemp)
+          gh release download "$tag" --pattern update.json --output - > "$manifest"
+          jq -e --arg tag "$tag" --argjson asset "$asset" '
+            .schemaVersion == 1 and .release.tag_name == $tag
+            and (.release | (.draft != true and .prerelease != true))
+            and ([.release.assets[] | select(.name == $asset.name and .state == "uploaded"
+              and .size == $asset.size and .digest == $asset.digest
+              and (.digest | test("^sha256:[0-9a-f]{64}$")))] | length == 1)
+          ' "$manifest" >/dev/null
+
+          cd "$(mktemp -d)"
+          git init --initial-branch=update-feed
+          git remote add origin "https://github.com/$GH_REPO.git"
+          gh auth setup-git
+          if git ls-remote --exit-code origin refs/heads/update-feed >/dev/null; then
+            git fetch --depth=1 origin update-feed
+            git reset --hard FETCH_HEAD
+          fi
+          cp "$manifest" update.json
+          git add update.json
+          if ! git diff --cached --quiet; then
+            git -c user.name='github-actions[bot]' \
+                -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+                commit -m "Publish update feed for $tag"
+            git push origin HEAD:refs/heads/update-feed
+          fi

@@ -3,7 +3,7 @@ import {createRequire} from 'node:module';
 import {mkdtempSync,writeFileSync,rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
-const require=createRequire(import.meta.url),{createUpdateService}=require('../electron/update-service'),{fetchPublicRelease,MANIFEST_URL}=require('../electron/release-manifest');
+const require=createRequire(import.meta.url),{createUpdateService}=require('../electron/update-service'),{fetchPublicRelease,MANIFEST_URL,FEED_URL}=require('../electron/release-manifest');
 const root=mkdtempSync(path.join(tmpdir(),'lithub-release-manifest-'));
 const now=Date.UTC(2026,10,7),raw={tag_name:'v0.2.5',assets:[{name:'LitHub-0.2.5-win-x64.zip',size:10,state:'uploaded',digest:'sha256:'+'1'.repeat(64)}]};
 const isManifest = url => new URL(url).pathname === new URL(MANIFEST_URL).pathname;
@@ -49,10 +49,23 @@ try {
     await failed.check();await failed.check();
     assert.equal(failed.getState().status,status);
     assert.ok(failed.getState().error.includes('HTTP '+code));
-    assert.equal(calls.length,2);
-    assert.ok(calls.every(isManifest),'manual retries only use the public manifest');
+    assert.equal(calls.length,4);
+    assert.ok(calls.every(url=>isManifest(url) || url===FEED_URL),'manual retries use only public sources');
     failed.stop();
   }
+  calls=[];
+  const mirror=service(async (url,options)=>{
+    calls.push([url,options.transport]);
+    if (url===FEED_URL) return manifest();
+    assert.ok(isManifest(url));
+    throw Error('net::ERR_CONNECTION_RESET');
+  });
+  const mirrored=await mirror.check();
+  assert.equal(mirrored.status,'available');
+  assert.ok(mirrored.release.portable.sha256);
+  assert.deepEqual(calls.map(([url,transport])=>[isManifest(url)?MANIFEST_URL:url,transport]),
+    [[MANIFEST_URL,undefined],[MANIFEST_URL,'http1'],[FEED_URL,undefined]]);
+  mirror.stop();
   const signal=new AbortController().signal;
   const redirects=[];
   await assert.rejects(fetchPublicRelease(async url=>{redirects.push(url);return new Response(null,{status:302,headers:{location:'https://evil.example/update.json'}});},signal),/不安全/);
@@ -61,5 +74,5 @@ try {
   await assert.rejects(fetchPublicRelease(async()=>new Response(JSON.stringify(raw)),signal),/格式/);
   let n=0;const data=await fetchPublicRelease(async()=>++n===1?new Response(null,{status:302,headers:{location:'https://release-assets.githubusercontent.com/fixture'}}):manifest(),signal);
   assert.equal(data.tag_name,'v0.2.5');
-  console.log('PASS public manifest under API backoff, expired CDN or HTTP/2 recovery, fresh redirect validation, manifest-only checks and bounded JSON');
+  console.log('PASS public manifest, CDN/HTTP2 retry, independent static feed, safe redirects and bounded JSON');
 } finally {rmSync(root,{recursive:true,force:true});}
