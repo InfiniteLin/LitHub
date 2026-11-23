@@ -2708,14 +2708,14 @@ function regenSummary(p, force = true) {
   }, 900);
 }
 
-/* ---------------- 翻译流程（模拟） ---------------- */
+/* ---------------- 翻译流程 ---------------- */
 const translationSubmissions = new Set();
 const translationCancellations = new Set();
 
 async function submitTranslation(paperId) {
   if (translationSubmissions.has(paperId)) return;
   if (state.liveTasks.some(t => t.paper_id === paperId && ["queued", "running"].includes(t.status))) {
-    toast("该文献已在翻译队列中"); return;
+    toast("该文献已有翻译任务"); return;
   }
   translationSubmissions.add(paperId);
   const buttons = $$('[data-action="translate"]').filter(b => b.dataset.id === paperId);
@@ -2723,7 +2723,7 @@ async function submitTranslation(paperId) {
   try {
     const task = await LithubAPI.translate(paperId, !!paperById(paperId)?.translated);
     state.liveTasks = [task, ...state.liveTasks.filter(t => t.id !== task.id)];
-    toast("已加入翻译队列");
+    if (task.status === "failed") toast(task.note || "发起翻译失败", "err");
     await pollTasks();
     if (state.route.view === "tasks") renderTasks();
   } catch (e) {
@@ -2797,7 +2797,7 @@ function startTranslate(paperId) {
 const TASK_STATUS = {
   done: { text: "已完成", cls: "ok" },
   running: { text: "翻译中", cls: "run" },
-  queued: { text: "排队中", cls: "queue" },
+  queued: { text: "等待启动", cls: "queue" },
   failed: { text: "失败", cls: "fail" },
   cancelled: { text: "已取消", cls: "queue" },
 };
@@ -2834,7 +2834,7 @@ function renderTasks() {
         ? `<div class="progress"><span style="width:${t.progress}%"></span></div><span class="t-pct">${t.progress}%</span>`
         : t.status === "done" ? `<div class="progress done"><span style="width:100%"></span></div>`
         : ["failed", "cancelled"].includes(t.status) ? `<button class="btn sm" data-action="retry" data-id="${t.id}">${I("refresh", 13)}${t.status === "cancelled" ? "重新翻译" : "重试"}</button>`
-        : `<span class="t-queued">${I("clock", 13)}等待分配</span>`}
+        : ""}
       </div>
       <div class="t-actions">
         ${["queued", "running"].includes(t.status) ? `<button class="btn sm" data-action="cancel-translation" data-id="${t.id}" ${translationCancellations.has(t.id) ? "disabled" : ""}>取消</button>` : ""}
@@ -2849,9 +2849,9 @@ function renderTasks() {
   <header class="page-head">
     <div>
       <div class="overline">TRANSLATION · 翻译任务</div>
-      <h1>任务队列 <span class="num">${view.length}</span><span class="num-sub">项</span></h1>
+      <h1>翻译任务 <span class="num">${view.length}</span><span class="num-sub">项</span></h1>
     </div>
-    <div class="head-actions"><span class="run-hint">${running ? `${running} 个任务进行中` : "队列为空闲状态"}</span></div>
+    ${running ? `<div class="head-actions"><span class="run-hint">${running} 个任务进行中</span></div>` : ""}
   </header>
   <div class="tasks-area">${rows}</div>`;
 }
@@ -5877,10 +5877,14 @@ async function loadLiveLibrary() {
   await loadLiveSettings();
 }
 
+let taskPollSequence = 0, appliedTaskPoll = 0;
 async function pollTasks() {
   if (!LithubAPI.live) return;
+  const sequence = ++taskPollSequence;
   let tasks;
   try { tasks = await LithubAPI.tasks(); } catch { return; }
+  if (sequence < appliedTaskPoll) return;
+  appliedTaskPoll = sequence;
   const changed = JSON.stringify(tasks) !== JSON.stringify(state.liveTasks);
   state.liveTasks = tasks;
 

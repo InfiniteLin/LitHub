@@ -1,7 +1,7 @@
 {
   "name": "lithub",
   "productName": "文枢 LitHub",
-  "version": "0.3.4",
+  "version": "0.4.1",
   "description": "文献管理与 AI 翻译对照阅读桌面应用",
   "author": "LitHub",
   "main": "electron/main.js",
@@ -24,7 +24,7 @@
     "verify:notes-safe": "python -m unittest discover -s tests -p test_note_storage.py && python tests/verify-notes-safe.py && node tests/verify-notes-safe.mjs",
     "verify:pdf-view": "node tests/verify-pdf-view.mjs",
     "verify:pdf-references": "node tests/verify-pdf-references.mjs",
-    "verify:translation": "python tests/verify-translation-tasks.py && node tests/verify-pdf-view.mjs",
+    "verify:translation": "python tests/verify-engine-progress.py && python tests/verify-translation-tasks.py && node tests/verify-pdf-view.mjs",
     "verify:translation-plugin": "python -m unittest discover -s tests -p test_translation_plugin.py && python tests/verify-translation-plugin.py && node tests/verify-translation-plugin.mjs",
     "verify:sidecar": "node tests/desktop-instance.test.mjs && node tests/sidecar-connection.test.mjs && node tests/verify-sidecar-isolation.mjs",
     "verify:desktop-instance": "node tests/desktop-instance.test.mjs && node tests/verify-desktop-instance.mjs",

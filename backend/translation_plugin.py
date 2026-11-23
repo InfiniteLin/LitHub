@@ -2,6 +2,7 @@
 import hashlib
 import importlib.metadata
 import json
+import logging
 import os
 from pathlib import Path
 import re
@@ -21,6 +22,9 @@ from paths import DATA_DIR
 
 NEXT_PACKAGE = "pdf2zh-next"
 NEXT_MIN_VERSION = (2, 10, 2)
+NEXT_DIRECTORY = re.compile(r"pdf2zh-next-(2\.\d+\.\d+)-[a-f0-9]{12}")
+ENGINE_ENTRY = Path(__file__).resolve().parent / "engine_entry.py"
+logger = logging.getLogger(__name__)
 
 
 class PluginManager:
@@ -31,12 +35,14 @@ class PluginManager:
         self.cancelled = threading.Event()
         self.proc = None
         self.state = {"status": "idle", "message": "", "latest": ""}
+        self._asset_seed_lock = threading.Lock()
+        self._legacy_assets_seeded = False
 
     def _pointer(self):
         try:
             value = json.loads((self.root / "active.json").read_text(encoding="utf8"))
             name = value["directory"]
-            match = re.fullmatch(r"pdf2zh-next-(2\.\d+\.\d+)-[a-f0-9]{12}", name)
+            match = NEXT_DIRECTORY.fullmatch(name)
             if not match:
                 return None
             version = match[1]
@@ -77,12 +83,49 @@ class PluginManager:
             active = self._active(bundled)
             if active:
                 folder = self.root / active["directory"]
-                executable, home = self._python(folder), folder / "home"
+                executable = self._python(folder)
             elif bundled:
-                executable, home = sys.executable, DATA_DIR / "translation-engine"
+                executable = sys.executable
             else:
                 raise FileNotFoundError("未找到 pdf2zh-next，请在「设置 → 翻译」安装")
-            return [str(executable), "-B", "-m", "pdf2zh_next.main"], home
+        home = DATA_DIR / "translation-engine"
+        # Share the one-time cache migration across concurrently starting tasks.
+        with self._asset_seed_lock:
+            if not self._legacy_assets_seeded:
+                try:
+                    self._seed_legacy_assets(home, active["directory"] if active else None)
+                    self._legacy_assets_seeded = True
+                except OSError as exc:
+                    logger.warning("Could not reuse old BabelDOC assets: %s", exc)
+        return [str(executable), "-B", str(ENGINE_ENTRY)], home
+
+    def _seed_legacy_assets(self, home, active_name):
+        """Fill missing shared assets from retained plugin homes, leaving originals intact."""
+        shared = home / ".cache/babeldoc"
+        root = self.root.resolve()
+        folders = sorted(root.glob("pdf2zh-next-*"), key=lambda folder: folder.name != active_name)
+        for folder in folders:
+            if (not NEXT_DIRECTORY.fullmatch(folder.name) or folder.resolve() != folder
+                    or not (folder / "ready.json").is_file()):
+                continue
+            for kind in ("fonts", "models", "cmap"):
+                legacy = folder / "home/.cache/babeldoc" / kind
+                if not legacy.resolve().is_relative_to(folder) or not legacy.is_dir():
+                    continue
+                destination = shared / kind
+                for source in legacy.iterdir():
+                    target = destination / source.name
+                    if source.is_symlink() or not source.is_file() or target.exists():
+                        continue
+                    destination.mkdir(parents=True, exist_ok=True)
+                    with tempfile.NamedTemporaryFile(dir=destination, suffix=".tmp", delete=False) as stream:
+                        temporary = Path(stream.name)
+                    try:
+                        shutil.copyfile(source, temporary)
+                        if not target.exists():
+                            temporary.replace(target)
+                    finally:
+                        temporary.unlink(missing_ok=True)
 
     def snapshot(self):
         with self.lock:
@@ -261,10 +304,6 @@ class PluginManager:
                            "--index-url", "https://pypi.org/simple", "--only-binary=:all:", "--no-cache-dir", "--no-compile",
                            "--target", str(site_packages), f"{NEXT_PACKAGE}=={latest}", "bitstring<5"], temp_dir=temp_dir)
             self._set(message="正在验证插件命令与版本…")
-            probe = ("import sys;from importlib.metadata import version;"
-                     "assert version('pdf2zh-next')==sys.argv.pop(1);"
-                     "from pdf2zh_next.config import ConfigManager;settings=ConfigManager().initialize_config();"
-                     "from pdf2zh_next.high_level import do_translate_file_async")
             home = folder / "home"
             home.mkdir()
             for service in ("bing", "openai"):
@@ -272,7 +311,8 @@ class PluginManager:
                         "--ignore-cache", "--use-alternating-pages-dual", "--no-auto-extract-glossary", "--disable-config-auto-save"]
                 if service == "openai":
                     args += ["--openai-api-key", "probe-only", "--openai-model", "probe-only"]
-                self._run([str(self._python(folder)), "-B", "-c", probe, latest, *args],
+                self._run([str(self._python(folder)), "-B", str(ENGINE_ENTRY),
+                           "--lithub-self-check", latest, *args],
                           timeout=120, isolated_home=home)
             self._check_cancel()
             wheel.unlink()

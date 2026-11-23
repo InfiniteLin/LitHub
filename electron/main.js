@@ -7,7 +7,7 @@
 const { app, BrowserWindow, dialog, ipcMain, net, shell, screen, WebContentsView } = require("electron");
 const path = require("node:path");
 const fs = require("node:fs");
-const { spawn } = require("node:child_process");
+const { execFile, spawn } = require("node:child_process");
 const { requestUpdate } = require("./update-network");
 const { createUpdateService, registerUpdateIPC } = require("./update-service");
 const { randomUUID } = require("node:crypto");
@@ -120,12 +120,17 @@ function startSidecar() {
 
 }
 
-function stopSidecar() {
-  if (!sidecar) return;
+async function stopSidecar() {
+  const proc = sidecar;
+  if (!proc || proc.exitCode !== null) return;
+  if (process.platform === "win32" && proc.pid) {
+    // A forced Windows exit skips the sidecar lifespan. Stop its engines too.
+    await new Promise(resolve => execFile("taskkill", ["/PID", String(proc.pid), "/T", "/F"],
+      { windowsHide: true, timeout: 5000 }, resolve));
+  }
   try {
-    sidecar.kill();
+    if (proc.exitCode === null) proc.kill();
   } catch {}
-  sidecar = null;
 }
 
 function waitForSidecar() {
@@ -632,9 +637,9 @@ app.on("before-quit", (event) => {
       { method: 'POST', signal: AbortSignal.timeout(5000) }),
   ]).then(results => {
     if (results[1].status === 'rejected') log('退出时取消插件更新失败:', results[1].reason?.message);
-  }).finally(() => {
+  }).finally(async () => {
+    await stopSidecar();
     shutdownComplete = true;
-    stopSidecar();
     app.quit();
   });
 });

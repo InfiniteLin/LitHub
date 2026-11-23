@@ -1,26 +1,22 @@
-"""翻译任务运行器：单 worker 队列，逐行解析翻译引擎输出。"""
+"""并行运行翻译任务，每个任务独立读取进度和管理引擎子进程。"""
 
 import os
-import queue
-import re
 import signal
 import subprocess
 import threading
 import time
 
+import engine_progress
 from store import store
 from translation_plugin import manager as plugin_manager
 
-_progress_re = re.compile(r"(\d{1,3})%\|")
-_queue: "queue.Queue[str]" = queue.Queue()
-_worker: threading.Thread | None = None
 _procs: dict[str, subprocess.Popen] = {}   # task_id -> 运行中的子进程
 _procs_lock = threading.RLock()
 _ACTIVE = {"queued", "running"}
 
 
 def submit(paper_id: str, retranslate: bool = False) -> dict:
-    """创建和入队共用锁，并发请求复用同一篇文献的活动任务。"""
+    """同一篇文献复用活动任务，不同文献各自启动。"""
     with plugin_manager.lock, _procs_lock:
         if plugin_manager.snapshot()["status"] == "installing":
             raise ValueError("翻译插件正在更新，请完成或取消更新后再开始翻译")
@@ -32,12 +28,12 @@ def submit(paper_id: str, retranslate: bool = False) -> dict:
                 return task
         if paper.get("translated") and not retranslate:
             raise ValueError("该文献已有译文，请选择重新翻译")
-        task = store.add_task(paper_id)
-        if retranslate:
-            store.update_task(task["id"], retranslate=True)
-            task = store.get_task(task["id"])
-        enqueue(task["id"])
-        return task
+        task = store.add_task(paper_id, retranslate=retranslate)
+        try:
+            _start_task(task["id"])
+        except RuntimeError as exc:
+            store.update_task(task["id"], status="failed", note=f"无法启动翻译任务：{exc}")
+        return store.get_task(task["id"])
 
 
 def cancel_task(task_id: str) -> dict | None:
@@ -47,28 +43,14 @@ def cancel_task(task_id: str) -> dict | None:
         if not task or task["status"] not in _ACTIVE:
             return task
         proc = _procs.get(task_id)
-        if proc and proc.poll() is None:
-            # The Next engine also starts a BabelDOC child process.
-            if os.name == "nt":
-                try:
-                    subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"],
-                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                                   creationflags=subprocess.CREATE_NO_WINDOW, timeout=10, check=False)
-                except (OSError, subprocess.TimeoutExpired):
-                    pass
-                if proc.poll() is None:
-                    proc.kill()
-            else:
-                try:
-                    os.killpg(proc.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
+        if proc:
+            _stop_process(proc)
         store.update_task(task_id, status="cancelled", note="已取消")
         return store.get_task(task_id)
 
 
 def cancel(paper_id: str) -> bool:
-    """删除文献时同时取消排队和运行任务，包括旧版本留下的重复任务。"""
+    """删除文献时取消该文献的所有活动任务。"""
     with _procs_lock:
         tasks = [t for t in store.list_tasks(limit=None)
                  if t["paper_id"] == paper_id and t["status"] in _ACTIVE]
@@ -77,10 +59,39 @@ def cancel(paper_id: str) -> bool:
         return bool(tasks)
 
 
+def stop_all():
+    for task in store.list_tasks(limit=None):
+        if task["status"] in _ACTIVE:
+            try:
+                cancel_task(task["id"])
+            except OSError:
+                continue
+
+
+def _stop_process(proc):
+    if proc.poll() is not None:
+        return
+    # BabelDOC runs in a child of the engine launcher.
+    if os.name == "nt":
+        try:
+            subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                           creationflags=subprocess.CREATE_NO_WINDOW, timeout=10, check=False)
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+        if proc.poll() is None:
+            proc.kill()
+    else:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+
+
 def _run_one(task_id: str):
     with _procs_lock:
         task = store.get_task(task_id)
-        if not task or task["status"] != "queued":
+        if not task or task["status"] not in _ACTIVE:
             return
         paper = store.get_paper(task["paper_id"])
         if not paper:
@@ -89,7 +100,8 @@ def _run_one(task_id: str):
         if paper.get("translated") and not task.get("retranslate"):
             store.update_task(task_id, status="cancelled", note="已有译文，跳过重复任务")
             return
-        store.update_task(task_id, status="running", progress=0, note="正在解析版面…")
+        if task["status"] == "queued":
+            store.update_task(task_id, status="running", note="正在启动翻译引擎…")
 
     src = store.paper_file(paper["id"])
     # A failed/cancelled retry must not overwrite the previous usable PDF.
@@ -132,22 +144,29 @@ def _run_one(task_id: str):
         _procs[task_id] = proc
 
     started = time.time()
-    last_flush, last_pct = 0.0, -1
+    last_flush = float("-inf")
+    progress = saved_progress = 0
+    stage = ""
     code = 1
     try:
         assert proc.stdout is not None
         for line in proc.stdout:
             line = line.strip()
-            m = _progress_re.search(line)
-            if m:
-                # 进度节流：约 0.4s 落盘一次，避免逐行触发全量 JSON 写入
-                pct = min(95, int(m.group(1)))
-                now = time.time()
-                if pct != last_pct and now - last_flush >= 0.4:
-                    last_flush, last_pct = now, pct
+            parsed = engine_progress.parse(line)
+            if parsed:
+                pct, new_stage = parsed
+                if pct is not None:
+                    progress = max(progress, min(99, pct))
+                changed_stage = bool(new_stage and new_stage != stage)
+                stage = new_stage or stage
+                now = time.monotonic()
+                # 阶段切换时一起提交最新进度，包括节流期间收到的数值。
+                if changed_stage or (progress > saved_progress and now - last_flush >= 0.4):
                     with _procs_lock:
                         if _is_active(task_id):
-                            store.update_task(task_id, progress=pct, note=f"正在翻译… {pct}%")
+                            label = engine_progress.stage_label(stage) if stage else "正在翻译"
+                            store.update_task(task_id, progress=progress, note=label)
+                            last_flush, saved_progress = now, progress
             low = line.lower()
             if "error" in low or "traceback" in low:
                 if env.get("PDF2ZH_OPENAI_API_KEY"):
@@ -157,13 +176,20 @@ def _run_one(task_id: str):
                     err_tail.pop(0)
         code = proc.wait()
     finally:
-        with _procs_lock:
-            _procs.pop(task_id, None)
+        try:
+            _stop_process(proc)
+            proc.wait()
+        finally:
+            if proc.stdout:
+                proc.stdout.close()
+            with _procs_lock:
+                _procs.pop(task_id, None)
 
     elapsed = int(time.time() - started)
     mono = _find_output(out_dir, "mono")
     dual = _find_output(out_dir, "dual")
 
+    pages = _page_count(mono) if code == 0 and mono else None
     with _procs_lock:
         if not _is_active(task_id):
             return
@@ -174,7 +200,7 @@ def _run_one(task_id: str):
                 translated_file=str(mono),
                 translated_dual_file=str(dual) if dual else None,
                 translation_task_id=task_id,
-                pages=_page_count(mono) or paper.get("pages"),
+                pages=pages or paper.get("pages"),
             )
             store.update_task(task_id, status="done", progress=100,
                               note=f"用时 {elapsed // 60} 分 {elapsed % 60} 秒 · 已生成对照版")
@@ -201,25 +227,17 @@ def _page_count(pdf_path) -> int | None:
         return None
 
 
-def _worker_loop():
-    while True:
-        tid = _queue.get()
-        try:
-            _run_one(tid)
-        except Exception as exc:  # 队列不因单任务异常而停摆
-            with _procs_lock:
-                if _is_active(tid):
-                    store.update_task(tid, status="failed", note=f"任务异常：{exc}")
-        finally:
-            _queue.task_done()
+def _run_task(task_id: str):
+    try:
+        _run_one(task_id)
+    except Exception as exc:
+        with _procs_lock:
+            if _is_active(task_id):
+                store.update_task(task_id, status="failed", note=f"任务异常：{exc}")
 
 
-def enqueue(task_id: str):
-    global _worker
-    if _worker is None or not _worker.is_alive():
-        _worker = threading.Thread(target=_worker_loop, daemon=True)
-        _worker.start()
-    _queue.put(task_id)
+def _start_task(task_id: str):
+    threading.Thread(target=_run_task, args=(task_id,), daemon=True).start()
 
 
 def _plugin_switch_guard():

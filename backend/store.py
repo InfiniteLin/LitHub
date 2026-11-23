@@ -336,16 +336,18 @@ class Store:
         return True, ""
 
     # ---------- tasks ----------
-    def add_task(self, paper_id: str) -> dict:
+    def add_task(self, paper_id: str, retranslate: bool = False) -> dict:
         task = {
             "id": uuid.uuid4().hex[:12],
             "paper_id": paper_id,
-            "status": "queued",     # queued | running | done | failed | cancelled
+            "status": "running",
             "progress": 0,
-            "note": "排队中",
+            "note": "正在启动翻译引擎…",
             "error": None,
             "created": time.time(),
         }
+        if retranslate:
+            task["retranslate"] = True
         with _lock:
             self._db["tasks"][task["id"]] = task
             self._flush()

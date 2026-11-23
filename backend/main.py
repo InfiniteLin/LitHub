@@ -1,6 +1,6 @@
 """文枢 LitHub · 本地 sidecar API
 
-文献导入 / 翻译任务队列（pdf2zh 子进程）/ 译文文件服务。
+文献导入 / 并发翻译任务（pdf2zh-next 子进程）/ 译文文件服务。
 前端（Electron 或浏览器）经 HTTP 调用；CORS 仅放行本地已知来源。
 """
 
@@ -38,7 +38,7 @@ try:
 except Exception:  # 非 Windows / 缺依赖时不影响其它接口
     browser_embed = None
 
-SERVICE_VERSION = "0.3.4"
+SERVICE_VERSION = "0.4.1"
 
 
 @contextlib.asynccontextmanager
@@ -55,6 +55,7 @@ async def lifespan(_app: FastAPI):
 
     threading.Thread(target=_rebuild, daemon=True).start()
     yield
+    translate.stop_all()
     translate.plugin_manager.cancel()
     try:
         _browser_session.shutdown()
@@ -533,9 +534,10 @@ def cancel_translation(tid: str):
 
 @app.get("/api/tasks")
 def tasks(active_only: bool = False):
+    items = store.list_tasks(limit=None)
     if active_only:
-        return [t for t in store.list_tasks(limit=None) if t["status"] in {"queued", "running"}]
-    return store.list_tasks()
+        return [t for t in items if t["status"] in {"queued", "running"}]
+    return [t for index, t in enumerate(items) if index < 50 or t["status"] in {"queued", "running"}]
 
 
 # ---------- 设置 ----------

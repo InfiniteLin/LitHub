@@ -16,6 +16,9 @@ class PluginTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
+        data = patch('translation_plugin.DATA_DIR', Path(self.temp.name) / 'data')
+        data.start()
+        self.addCleanup(data.stop)
         self.manager = PluginManager(Path(self.temp.name) / 'plugins')
         bundled = patch.object(self.manager, '_bundled_version', return_value='')
         self.bundled = bundled.start()
@@ -26,7 +29,7 @@ class PluginTests(unittest.TestCase):
         executable.parent.mkdir(parents=True, exist_ok=True)
         executable.write_bytes(b'test')
 
-    def install(self, error=None, cancel=False):
+    def install(self, error=None, cancel=False, error_at=1):
         manager = self.manager
         def bootstrap(folder):
             wheel = folder / 'pip-bootstrap.whl'
@@ -35,7 +38,7 @@ class PluginTests(unittest.TestCase):
         calls = []
         def run(cmd, **kwargs):
             calls.append(cmd)
-            if error:
+            if error and len(calls) == error_at:
                 raise ValueError(error)
             if cancel:
                 manager.cancel()
@@ -63,7 +66,10 @@ class PluginTests(unittest.TestCase):
         self.assertIn('--bing', calls[1])
         self.assertIn('--openai', calls[2])
         command, _ = self.manager.runtime()
-        self.assertEqual(command[-2:], ['-m', 'pdf2zh_next.main'])
+        self.assertTrue(command[-1].endswith('engine_entry.py'))
+        for probe in calls[1:]:
+            self.assertEqual(probe[:5], [*command, '--lithub-self-check', '2.10.2'])
+        self.assertTrue(Path(command[-1]).is_file())
         self.assertTrue(Path(command[0]).is_file())
         self.bundled.return_value = '2.10.2'
         self.manager.start('restore')
@@ -73,7 +79,7 @@ class PluginTests(unittest.TestCase):
     def test_failed_reinstall_and_cancel_preserve_active_pointer(self):
         self.install()
         old = self.manager.runtime()
-        self.install(error='network failure')
+        self.install(error='incompatible entry', error_at=2)
         self.assertEqual(self.manager.runtime(), old)
         self.assertEqual(self.manager.snapshot()['status'], 'error')
         self.assertEqual(len(list(self.manager.root.glob('pdf2zh-next-*'))), 1)
@@ -91,7 +97,9 @@ class PluginTests(unittest.TestCase):
         (folder / 'ready.json').write_text(state)
         (self.manager.root / 'active.json').write_text(state)
         self.assertEqual(self.manager.snapshot()['current'], '2.10.2')
-        self.assertEqual(self.manager.runtime()[0], [sys.executable, '-B', '-m', 'pdf2zh_next.main'])
+        command = self.manager.runtime()[0]
+        self.assertEqual(command[:2], [sys.executable, '-B'])
+        self.assertTrue(command[-1].endswith('engine_entry.py'))
         self.assertEqual(self.install(), [])
         self.assertTrue((self.manager.root / 'active.json').exists())
 
@@ -129,6 +137,54 @@ class PluginTests(unittest.TestCase):
         get.assert_called_once_with('https://pypi.org/pypi/pdf2zh-next/json')
         self.assertEqual(self.manager.snapshot()['latest'], '2.10.2')
         self.assertFalse(self.manager.root.exists())
+
+    def test_engine_home_is_stable_across_plugin_updates(self):
+        """字体与版面模型缓存在 HOME 下；路径必须跨版本/来源保持不变。
+
+        独立插件目录名带随机后缀，每次更新都会换；如果 home 跟着插件目录走，
+        用户每升级一次引擎就要重新下载约 330MB 资源（表现就是「解析版面」卡很久）。
+        """
+        self.bundled.return_value = '2.10.2'
+        home = self.manager.runtime()[1]
+        self.assertNotIn('pdf2zh-next-', str(home))
+        self.bundled.return_value = ''
+        # 升级到独立安装版后，home 不变
+        self.install()
+        self.assertEqual(self.manager.snapshot()['source'], 'independent')
+        self.assertEqual(self.manager.runtime()[1], home)
+        self.bundled.return_value = '2.10.2'
+        self.manager.start('restore')
+        self.assertEqual(self.manager.snapshot()['source'], 'bundled')
+        self.assertEqual(self.manager.runtime()[1], home)
+
+    def test_retained_plugin_assets_seed_missing_shared_files(self):
+        self.install()
+        folder, = self.manager.root.glob('pdf2zh-next-*')
+        legacy = folder / 'home/.cache/babeldoc'
+        shared = Path(self.temp.name) / 'data/translation-engine/.cache/babeldoc'
+        assets = {
+            'fonts/font.ttf': b'font',
+            'models/layout.onnx': b'old model',
+            'cmap/Example': b'cmap',
+        }
+        for name, contents in assets.items():
+            source = legacy / name
+            source.parent.mkdir(parents=True)
+            source.write_bytes(contents)
+        (legacy / 'cache.v1.db').write_bytes(b'translation results')
+        (shared / 'models').mkdir(parents=True)
+        (shared / 'models/layout.onnx').write_bytes(b'current model')
+
+        self.bundled.return_value = '2.10.2'
+        self.manager.start('restore')
+        command, _ = self.manager.runtime()
+        self.assertEqual(command[0], sys.executable)
+        self.assertEqual((shared / 'fonts/font.ttf').read_bytes(), b'font')
+        self.assertEqual((shared / 'cmap/Example').read_bytes(), b'cmap')
+        self.assertEqual((shared / 'models/layout.onnx').read_bytes(), b'current model')
+        self.assertFalse((shared / 'cache.v1.db').exists())
+        for name, contents in assets.items():
+            self.assertEqual((legacy / name).read_bytes(), contents)
 
 
 if __name__ == '__main__':

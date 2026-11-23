@@ -15,7 +15,8 @@ with tempfile.TemporaryDirectory(prefix='lithub-plugin-api-') as temporary:
     import translate
     import search_index
     try:
-        with TestClient(main.app) as client, patch.object(translate, 'enqueue'):
+        with patch.object(search_index, 'rebuild', return_value=0), \
+             TestClient(main.app) as client, patch.object(translate, '_start_task'):
             snapshot = client.get('/api/settings/translation-plugin')
             assert snapshot.status_code == 200
             assert snapshot.json()['directory'] == str(root / 'translation-plugins/pdf2zh')
