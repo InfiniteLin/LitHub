@@ -22,98 +22,98 @@ window.DB = {
       id: "p1", title: "Attention Is All You Need", zh: "注意力机制就是你所需要的",
       authors: "Vaswani, Shazeer, Parmar, et al.", venue: "NeurIPS", year: 2017, type: "会议",
       cat: "nlp", tags: ["Transformer", "注意力机制", "机器翻译"],
-      translated: true, summarized: true, unread: false, fav: true, cover: 0, added: "2026-09-12",
+      translated: true, unread: false, fav: true, cover: 0, added: "2026-09-12",
       abstract: "The dominant sequence transduction models are based on complex recurrent or convolutional neural networks. We propose the Transformer, a new simple network architecture based solely on attention mechanisms, dispensing with recurrence and convolutions entirely. Experiments on two machine translation tasks show these models to be superior in quality while being more parallelizable and requiring significantly less time to train."
     },
     {
       id: "p2", title: "Deep Residual Learning for Image Recognition", zh: "用于图像识别的深度残差学习",
       authors: "He, Zhang, Ren, Sun", venue: "CVPR", year: 2016, type: "会议",
       cat: "cv-cls", tags: ["CNN", "残差网络", "图像识别"],
-      translated: true, summarized: true, unread: false, fav: true, cover: 1, added: "2026-08-30",
+      translated: true, unread: false, fav: true, cover: 1, added: "2026-08-30",
       abstract: "Deeper neural networks are more difficult to train. We present a residual learning framework that eases the optimization of very deep networks by letting stacked layers fit a residual mapping instead of the underlying one. On ImageNet, networks with depths beyond one hundred layers achieve lower recognition error than shallower counterparts, and set new records on detection and localization tasks."
     },
     {
       id: "p3", title: "BERT: Pre-training of Deep Bidirectional Transformers for Language Understanding", zh: "BERT：面向语言理解的深度双向 Transformer 预训练",
       authors: "Devlin, Chang, Lee, Toutanova", venue: "NAACL", year: 2019, type: "会议",
       cat: "nlp-pre", tags: ["预训练", "语言模型"],
-      translated: true, summarized: false, unread: false, fav: false, cover: 2, added: "2026-09-02",
+      translated: true, unread: false, fav: false, cover: 2, added: "2026-09-02",
       abstract: "We introduce BERT, a pre-trained language representation model that is deeply bidirectional. BERT jointly conditions on both left and right context in all layers, and can be fine-tuned with a single output layer for a wide range of tasks such as question answering and language inference, setting new state-of-the-art results on eleven NLP benchmarks."
     },
     {
       id: "p4", title: "Language Models are Few-Shot Learners", zh: null,
       authors: "Brown, Mann, Ryder, et al.", venue: "NeurIPS", year: 2020, type: "会议",
       cat: "nlp-pre", tags: ["少样本", "大模型"],
-      translated: false, summarized: false, unread: true, fav: false, cover: 3, added: "2026-09-20",
+      translated: false, unread: true, fav: false, cover: 3, added: "2026-09-20",
       abstract: "We demonstrate that scaling up language models greatly improves task-agnostic few-shot performance. GPT-3, an autoregressive model with 175 billion parameters, achieves strong performance on many NLP tasks without any fine-tuning, sometimes rivaling or surpassing prior fine-tuned state of the art."
     },
     {
       id: "p5", title: "An Image is Worth 16x16 Words: Transformers for Image Recognition at Scale", zh: null,
       authors: "Dosovitskiy, Beyer, Kolesnikov, et al.", venue: "ICLR", year: 2021, type: "会议",
       cat: "cv-cls", tags: ["ViT", "图像分类"],
-      translated: false, summarized: true, unread: false, fav: false, cover: 4, added: "2026-09-18",
+      translated: false, unread: false, fav: false, cover: 4, added: "2026-09-18",
       abstract: "We show that a pure Transformer applied directly to sequences of image patches performs very well on image classification. With pre-training on large amounts of data, Vision Transformers attain excellent results compared to state-of-the-art CNNs while requiring substantially fewer computational resources to train."
     },
     {
       id: "p6", title: "Learning Transferable Visual Models From Natural Language Supervision", zh: null,
       authors: "Radford, Kim, Hallacy, et al.", venue: "ICML", year: 2021, type: "会议",
       cat: "cv", tags: ["多模态", "对比学习", "零样本"],
-      translated: false, summarized: false, unread: true, fav: true, cover: 5, added: "2026-10-01",
+      translated: false, unread: true, fav: true, cover: 5, added: "2026-10-01",
       abstract: "We construct a simple yet effective contrastive learning method to transfer visual representations from natural language supervision. CLIP zero-shot transfers to many image classification benchmarks and matches the accuracy of a fully supervised baseline, demonstrating robustness to distribution shift."
     },
     {
       id: "p7", title: "Denoising Diffusion Probabilistic Models", zh: "去噪扩散概率模型",
       authors: "Ho, Jain, Abbeel", venue: "NeurIPS", year: 2020, type: "会议",
       cat: "cv-gen", tags: ["扩散模型", "图像生成"],
-      translated: true, summarized: true, unread: false, fav: false, cover: 0, added: "2026-08-22",
+      translated: true, unread: false, fav: false, cover: 0, added: "2026-08-22",
       abstract: "We present high quality image synthesis results using diffusion probabilistic models, a class of latent variable models trained with a variational bound. Our models achieve state-of-the-art Inception and FID scores, and reveal a close connection between diffusion models and denoising score matching."
     },
     {
       id: "p8", title: "Segment Anything", zh: null,
       authors: "Kirillov, Mintun, Ravi, et al.", venue: "ICCV", year: 2023, type: "会议",
       cat: "cv-seg", tags: ["分割", "零样本"],
-      translated: false, summarized: false, unread: true, fav: false, cover: 2, added: "2026-10-03",
+      translated: false, unread: true, fav: false, cover: 2, added: "2026-10-03",
       abstract: "We introduce the Segment Anything project: an image segmentation model, a promptable segmentation task, and a large-scale segmentation dataset. The model supports zero-shot transfer to new visual concepts and tasks through prompt engineering."
     },
     {
       id: "p9", title: "Masked Autoencoders Are Scalable Vision Learners", zh: null,
       authors: "He, Chen, Xie, et al.", venue: "CVPR", year: 2022, type: "会议",
       cat: "cv-cls", tags: ["自监督", "掩码建模"],
-      translated: false, summarized: false, unread: true, fav: false, cover: 3, added: "2026-09-25",
+      translated: false, unread: true, fav: false, cover: 3, added: "2026-09-25",
       abstract: "We mask random patches of the input image and reconstruct the missing pixels with an asymmetric encoder-decoder. Masked autoencoders learn good representations with high masking ratios and scale well, enabling efficient training of large vision models."
     },
     {
       id: "p10", title: "Swin Transformer: Hierarchical Vision Transformer using Shifted Windows", zh: null,
       authors: "Liu, Lin, Cao, et al.", venue: "ICCV", year: 2021, type: "会议",
       cat: "cv-cls", tags: ["ViT", "主干网络"],
-      translated: false, summarized: false, unread: false, fav: false, cover: 5, added: "2026-09-10",
+      translated: false, unread: false, fav: false, cover: 5, added: "2026-09-10",
       abstract: "We propose a hierarchical Transformer whose representation is computed with shifted windows. The shifted window scheme brings greater efficiency by limiting self-attention to non-overlapping local windows while allowing cross-window connection, making the architecture suitable as a general-purpose backbone for vision tasks."
     },
     {
       id: "p11", title: "Chain-of-Thought Prompting Elicits Reasoning in Large Language Models", zh: null,
       authors: "Wei, Wang, Schuurmans, et al.", venue: "NeurIPS", year: 2022, type: "会议",
       cat: "nlp-reason", tags: ["提示工程", "推理"],
-      translated: false, summarized: false, unread: true, fav: false, cover: 1, added: "2026-09-28",
+      translated: false, unread: true, fav: false, cover: 1, added: "2026-09-28",
       abstract: "We explore how chain-of-thought prompting, which produces a series of intermediate reasoning steps, significantly improves the ability of large language models to perform complex reasoning. Performance gains scale with model size and emerge on arithmetic, commonsense and symbolic reasoning tasks."
     },
     {
       id: "p12", title: "LLaMA: Open and Efficient Foundation Language Models", zh: null,
       authors: "Touvron, Lavril, Izacard, et al.", venue: "arXiv", year: 2023, type: "预印本",
       cat: "nlp-pre", tags: ["开源模型", "大模型"],
-      translated: false, summarized: false, unread: true, fav: false, cover: 4, added: "2026-10-02",
+      translated: false, unread: true, fav: false, cover: 4, added: "2026-10-02",
       abstract: "We introduce a collection of foundation language models ranging from 7B to 65B parameters, trained on trillions of tokens. LLaMA-13B outperforms GPT-3 on most benchmarks while being ten times smaller, allowing single-GPU inference and further fine-tuning."
     },
     {
       id: "p13", title: "A Mathematical Theory of Communication", zh: "通信的数学理论",
       authors: "Claude E. Shannon", venue: "Bell System Technical Journal", year: 1948, type: "期刊",
       cat: "classic", tags: ["信息论", "经典"],
-      translated: true, summarized: true, unread: false, fav: false, cover: 3, added: "2026-07-15",
+      translated: true, unread: false, fav: false, cover: 3, added: "2026-07-15",
       abstract: "A mathematical theory of communication is presented, in which the transmission of information is quantified by entropy. The theory establishes fundamental limits on data compression and on reliable transmission over noisy channels, laying the foundation of modern information theory."
     },
     {
       id: "p14", title: "ImageNet Classification with Deep Convolutional Neural Networks", zh: null,
       authors: "Krizhevsky, Sutskever, Hinton", venue: "NeurIPS", year: 2012, type: "会议",
       cat: "cv-cls", tags: ["CNN", "经典"],
-      translated: false, summarized: false, unread: false, fav: false, cover: 0, added: "2026-08-12",
+      translated: false, unread: false, fav: false, cover: 0, added: "2026-08-12",
       abstract: "We trained a large, deep convolutional neural network to classify the 1.2 million high-resolution images in the LSVRC-2010 contest, achieving record-breaking results. The network uses ReLU activations, dropout and GPU-based training, substantially reducing the top-1 error relative to previous methods."
     },
   ],
@@ -273,72 +273,6 @@ window.CONTENT = {
         { t: "p", x: "多头注意力让模型能够在不同位置的多个表示子空间中共同关注信息。查询、键与值会先被线性投影 h 次，再对各投影并行地计算注意力。" },
         { t: "note", x: "NeurIPS 2017 会议论文 · 由 deepseek-chat 翻译，仅供参考，请以原文为准" },
       ],
-    ],
-  },
-};
-
-/* ---------- AI 总结内容（p1 按提示词模板区分；其余文献走通用生成器） ---------- */
-
-window.SUMMARY_P1 = {
-  d1: {
-    meta: "deepseek-chat · 默认 · 文献速读",
-    sections: [
-      { h: "一句话总结", type: "p", x: "论文提出 Transformer——一种完全依赖注意力机制、彻底摒弃循环与卷积的序列转换架构，在机器翻译任务上以更低的训练成本取得了当时最优的结果。" },
-      { h: "研究背景", type: "p", x: "此前主导序列建模的 RNN / LSTM / GRU 结构按时间步串行计算，难以并行，长距离依赖的传递路径也较长；卷积模型虽可并行，但远距离位置之间的对齐仍需堆叠很多层。作者希望找到一种既保留长程建模能力、又能高度并行的新架构。" },
-      { h: "核心方法", type: "ul", x: [
-        "多头自注意力：将 Q / K / V 投影到多个子空间并行计算注意力，再拼接输出；",
-        "位置编码：模型不含循环与卷积，使用正弦函数编码向模型注入序列顺序信息；",
-        "编码器–解码器堆叠：每层由自注意力 + 前馈网络组成，配合残差连接与 LayerNorm；",
-        "训练技巧：Label Smoothing、Warmup 学习率调度与 Adam 优化器。",
-      ] },
-      { h: "实验结果", type: "p", x: "在 WMT 2014 英→德翻译任务上取得 28.4 BLEU，超过此前包括集成模型在内的所有结果 2 BLEU 以上；英→法任务取得 41.8 BLEU，8 卡 GPU 仅训练 3.5 天，计算量约为以往最优模型的四分之一。" },
-      { h: "局限与思考", type: "p", x: "自注意力对序列长度呈二次复杂度，长文档场景开销大；位置信息需要额外编码，向更长序列外推的能力有限；论文当时仅验证了翻译任务，其在预训练与多模态方向的潜力尚未显现。" },
-      { h: "关键要点", type: "ul", x: [
-        "Transformer 用注意力完全替代递归结构，训练并行度大幅提升；",
-        "多头机制让模型在不同表示子空间同时关注不同位置；",
-        "该架构成为后续 BERT、GPT 等预训练模型的基座。",
-      ] },
-    ],
-  },
-  d2: {
-    meta: "deepseek-chat · 深度方法剖析",
-    sections: [
-      { h: "一句话总结", type: "p", x: "从方法论看，Transformer 的关键在于用「缩放点积注意力 + 多头投影」替代递归，把序列建模问题转化为可完全并行的一组矩阵运算。" },
-      { h: "方法拆解", type: "ul", x: [
-        "缩放点积注意力：Attention(Q, K, V) = softmax(QK\u1D40 / \u221Ad\u2096)V，除以 \u221Ad\u2096 是为了在维度较大时抵消点积方差过大、 softmax 进入梯度饱和区的问题；",
-        "多头机制：先线性投影 h 次再分别注意力，等价于在多个低维子空间同时建模不同的对齐关系；",
-        "前馈层：逐位置两层 MLP（先升维 4 倍再降回），为注意力输出提供非线性变换；",
-        "Post-LN 结构：残差连接之后做 LayerNorm，训练时需要 Warmup 稳定早期梯度。",
-      ] },
-      { h: "复杂度分析", type: "p", x: "自注意力每层为 O(n\u00B2·d)，高于循环层的 O(n·d\u00B2)；但当 n < d 时计算量更小，且所有位置可以完全并行。最大路径长度 O(1)，是长程依赖建模能力的根本优势。" },
-      { h: "与已有架构对比", type: "p", x: "相比 ByteNet / ConvS2S 以膨胀卷积扩大感受野、路径长度随距离对数增长，Transformer 将其降为常数；相比循环模型，串行操作从 O(n) 降为 O(1)。" },
-      { h: "可复现性评估", type: "p", x: "论文给出了完整的超参表与训练配置，后续开源复现（如 Tensor2Tensor、fairseq）均能对齐原文结果，可复现性好。" },
-    ],
-  },
-  d3: {
-    meta: "deepseek-chat · 审稿人视角",
-    sections: [
-      { h: "优点", type: "ul", x: [
-        "架构创新点明确：完全移除递归与卷积，思想简洁而彻底；",
-        "实验充分：在两个大规模翻译任务上均取得显著提升，并给出训练成本对比；",
-        "消融完整：对头数、模型维度、 dropout、标签平滑等关键超参均做了消融。",
-      ] },
-      { h: "主要疑问与潜在风险", type: "ul", x: [
-        "自注意力的二次复杂度如何扩展到长序列（如文档级翻译）；",
-        "正弦位置编码与学习式位置编码的差异未充分比较；",
-        "仅覆盖机器翻译，泛化到其他序列任务尚需验证。",
-      ] },
-      { h: "总体评价", type: "p", x: "开创性工作，架构、实验与写作质量俱佳。即使某些设计选择的解释仍偏经验性，其对领域的深远影响足以弥补。建议接收。" },
-    ],
-  },
-  d4: {
-    meta: "deepseek-chat · 组会汇报版",
-    sections: [
-      { h: "这篇论文做了什么", type: "p", x: "提出 Transformer：完全用注意力机制替代循环和卷积的序列转换模型（30 秒版本：把 RNN 扔掉，只留注意力，翻译效果更好、训练更快）。" },
-      { h: "为什么重要", type: "p", x: "训练并行度大幅提升，长程依赖路径降为常数；后来 BERT、GPT 等一系列大模型都构建在这一架构之上。" },
-      { h: "怎么做到的", type: "p", x: "多头自注意力 + 位置编码 + 编码器-解码器堆叠，配合 Warmup 调度与 Label Smoothing 完成训练。" },
-      { h: "结果如何", type: "p", x: "WMT 2014 英德 28.4 BLEU、英法 41.8 BLEU，均刷新当时纪录；训练成本约为以往最优模型的四分之一。" },
-      { h: "对我们的启发", type: "p", x: "「结构先验让位给数据与注意力」的思路值得借鉴；组内涉及序列建模的模块可优先考虑注意力化改造。" },
     ],
   },
 };

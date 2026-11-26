@@ -56,7 +56,7 @@ const I = (() => {
    阅读中的可变项会按文献各存一份（readerSessions），这里只是初始模板。 */
 const DEFAULT_READER_STATE = Object.freeze({
   mode: "dual2", zoom: 1, fit: "width",
-  panel: false, notePanel: false, notePanelWidth: 760,
+  notePanel: false, notePanelWidth: 760,
   webAi: false, webAiWidth: 46,
 });
 
@@ -65,8 +65,9 @@ const state = {
   filter: { smart: "all", cat: null, search: "", tag: null },
   sort: "added",
   libView: "list",
+  selectedPaper: null,
   settingsTab: "ai",
-  reader: { ...DEFAULT_READER_STATE, prompt: "d1", vision: false },
+  reader: { ...DEFAULT_READER_STATE },
   translating: {},          // paperId -> percent（演示模式）
   liveTasks: [],            // 真实模式：sidecar 任务列表
   pendingFiles: [],         // 导入弹窗中选中的文件
@@ -105,8 +106,6 @@ const readerSession = (paperId) => {
 /* 当前唯一嵌入浏览器窗口的归属文献；null = 没有打开过 */
 
 
-/* AI 总结流式状态 */
-const aiStream = { text: "", meta: null, err: null, streaming: false, ctrl: null };
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
@@ -129,7 +128,6 @@ const allTags = () => {
 const badge = (p) => {
   const bits = [];
   if (p.translated) bits.push('<span class="pill pill-ok"><i class="dot"></i>已翻译</span>');
-  if (p.summarized) bits.push('<span class="pill pill-ai">AI 总结</span>');
   if (p.unread) bits.push('<span class="pill pill-new">未读</span>');
   return bits.join("");
 };
@@ -212,7 +210,8 @@ const rowHTML = (p, ftOnly = new Set()) => {
   const open = state.expanded.has(p.id);
   return `
   <div class="row-wrap ${open ? "open" : ""}" data-row-id="${p.id}">
-    <article class="row" data-action="open" data-id="${p.id}" draggable="true" title="拖动到左侧分类可移动">
+    <article class="row" data-action="select-paper" data-id="${p.id}" tabindex="0"
+             aria-current="${state.selectedPaper === p.id}" draggable="true">
       <button class="row-toggle" data-action="toggle-row" data-id="${p.id}"
               title="${open ? "收起附件" : "展开附件"}" aria-expanded="${open}">
         ${I(open ? "chevD" : "chevR", 14)}
@@ -223,9 +222,9 @@ const rowHTML = (p, ftOnly = new Set()) => {
         ${snip ? `<p class="row-snippet">${esc(snip).replace(/\[\[/g, "<mark>").replace(/\]\]/g, "</mark>")}</p>` : ""}
       </div>
       <div class="row-tags">${p.tags.map((t) => `<span class="tag-chip" data-action="tag" data-id="${esc(t)}">${esc(t)}</span>`).join("")}</div>
-      <div class="row-status">${badge(p)}${ftOnly.has(p.id) ? '<span class="pill pill-ai">全文命中</span>' : ""}</div>
+      <div class="row-status">${badge(p)}${ftOnly.has(p.id) ? '<span class="pill pill-accent">全文命中</span>' : ""}</div>
       ${rowActs(p)}
-      <span class="row-go">${I("right", 16)}</span>
+      <button class="icon-btn sm row-go" data-action="open" data-id="${p.id}" title="打开文献" aria-label="打开文献">${I("right", 16)}</button>
     </article>
     <div class="att-tree" role="tree" ${open ? "" : "hidden"}>${open ? attachmentsHTML(p) : ""}</div>
   </div>`;
@@ -234,7 +233,8 @@ const rowHTML = (p, ftOnly = new Set()) => {
 const gcardHTML = (p, ftOnly = new Set()) => {
   const snip = state.fulltext.map[p.id];
   return `
-  <article class="gcard" data-action="open" data-id="${p.id}" draggable="true" title="拖动到左侧分类可移动">
+  <article class="gcard" data-action="select-paper" data-id="${p.id}" tabindex="0"
+           aria-current="${state.selectedPaper === p.id}" draggable="true">
     ${cover(p)}
     <span class="gcard-acts">
       <button class="icon-btn sm" data-action="rename-paper" data-id="${p.id}" title="重命名文献">${I("pencil", 15)}</button>
@@ -246,7 +246,7 @@ const gcardHTML = (p, ftOnly = new Set()) => {
       <p class="gcard-meta">${esc(p.authors)}</p>
       ${snip ? `<p class="row-snippet">${esc(snip).replace(/\[\[/g, "<mark>").replace(/\]\]/g, "</mark>")}</p>` : ""}
     </div>
-    <div class="gcard-foot"><span class="gcard-venue">${esc(p.venue)} ${p.year}</span>${badge(p)}${ftOnly.has(p.id) ? '<span class="pill pill-ai">全文命中</span>' : ""}</div>
+    <div class="gcard-foot"><span class="gcard-venue">${esc(p.venue)} ${p.year}</span>${badge(p)}${ftOnly.has(p.id) ? '<span class="pill pill-accent">全文命中</span>' : ""}</div>
   </article>`;
 };
 
@@ -401,6 +401,79 @@ const currentTitle = () =>
   state.filter.smart === "recent" ? "最近添加" :
   state.filter.cat ? (catName(state.filter.cat) || "分类") : "全部文献";
 
+const paperIntroDrafts = new Map();
+const paperIntroSaving = new Set();
+
+function renderPaperDetails() {
+  const p = state.route.view === "library" && paperById(state.selectedPaper);
+  let panel = $("#paper-details");
+  if (!p) {
+    panel?.remove();
+    return;
+  }
+  if (!panel) {
+    panel = document.createElement("aside");
+    panel.id = "paper-details";
+    panel.setAttribute("aria-labelledby", "paper-details-heading");
+    $("#view").after(panel);
+  }
+  const intro = paperIntroDrafts.get(p.id) ?? p.abstract ?? "";
+  const saving = paperIntroSaving.has(p.id);
+  panel.innerHTML = `
+    <header class="paper-details-head">
+      <h2 id="paper-details-heading">文献信息</h2>
+      <button class="icon-btn sm" data-action="close-paper-details" title="关闭文献信息" aria-label="关闭文献信息">${I("x", 15)}</button>
+    </header>
+    <dl class="paper-details-meta">
+      <dt>论文标题</dt>
+      <dd class="paper-details-title" data-paper-title="${p.id}">${esc(p.title)}</dd>
+      <dt>作者</dt>
+      <dd>${esc(p.authors || "未知作者")}</dd>
+    </dl>
+    <form data-paper-intro="${p.id}" class="paper-intro">
+      <label for="paper-intro">简介</label>
+      <textarea id="paper-intro" name="abstract" placeholder="添加简介" ${saving ? "readonly" : ""}></textarea>
+      <div class="paper-details-actions">
+        <button type="button" class="btn sm" data-action="open" data-id="${p.id}">${I("book", 14)}打开文献</button>
+        <button type="submit" class="btn btn-primary sm" ${saving || intro.trim() === (p.abstract || "") ? "disabled" : ""}>${saving ? "保存中…" : "保存"}</button>
+      </div>
+    </form>`;
+  panel.querySelector("textarea").value = intro;
+}
+
+function selectLibraryPaper(id) {
+  if (state.selectedPaper === id) return;
+  state.selectedPaper = id;
+  $$("#list-area [data-action='select-paper']").forEach(entry =>
+    entry.setAttribute("aria-current", String(entry.dataset.id === id)));
+  renderPaperDetails();
+}
+
+async function savePaperIntro(form) {
+  const id = form.dataset.paperIntro;
+  const p = paperById(id);
+  if (!p || paperIntroSaving.has(id)) return;
+  const abstract = form.elements.abstract.value.trim();
+  if (abstract === (p.abstract || "")) return;
+  paperIntroSaving.add(id);
+  form.elements.abstract.readOnly = true;
+  const button = form.querySelector("button[type='submit']");
+  button.disabled = true;
+  button.textContent = "保存中…";
+  try {
+    const updated = p.live ? await LithubAPI.updatePaper(id, { abstract }) : { abstract };
+    const current = paperById(id);
+    if (current) current.abstract = updated.abstract;
+    paperIntroDrafts.delete(id);
+    toast("简介已保存");
+  } catch (error) {
+    toast(esc(error.message || "保存简介失败"), "err");
+  } finally {
+    paperIntroSaving.delete(id);
+    if (state.selectedPaper === id) renderPaperDetails();
+  }
+}
+
 function renderLibrary() {
   const { list, ftOnly } = mergedList();
 
@@ -437,6 +510,7 @@ function renderLibrary() {
   <div id="list-area" class="${state.libView === "grid" ? "grid-area" : "table-area"}">
     ${paperListHTML(list, ftOnly)}
   </div>`;
+  renderPaperDetails();
   $("#search-input").addEventListener("input", (e) => {
     state.filter.search = e.target.value;
     clearTimeout(renderLibrary._debounce);
@@ -748,7 +822,7 @@ function renderReader(id) {
         <button class="btn ${annotListState.open ? "is-on" : ""}" data-action="annot-panel" data-id="${p.id}" title="批注列表">${I("list", 15)}批注<span class="annot-count" ${annotCountOf(p.id) ? "" : "hidden"}>${annotCountOf(p.id) || ""}</span></button>
         <button class="btn" data-action="note-panel" data-id="${p.id}" title="在右侧栏打开 Markdown 笔记">${I("pencil", 15)}笔记</button>
         <button class="icon-btn" data-action="open-note" data-id="${p.id}" title="在新标签页中打开笔记（更大编辑区）">${I("external", 16)}</button>
-        <button class="btn btn-ai" data-action="ai-panel" data-id="${p.id}">${I("sparkle", 15)}AI 总结</button>
+        <button class="btn" data-action="copy-original-pdf" data-id="${p.id}">${I("copy", 15)}复制原文 PDF</button>
         <button class="btn ${r.webAi ? "is-on" : ""}" data-action="webai-toggle" data-id="${p.id}"
                 title="在右侧内嵌网页 AI，与论文并排（免 Token）">${I("external", 15)}网页 AI</button>
       </div>
@@ -800,8 +874,6 @@ function activateReaderSession(paperId) {
   const next = readerSession(paperId);
   if (prev && prev !== next) {
     // 提示词/视觉模式是全局阅读偏好，不随文献隔离
-    next.prompt = prev.prompt || next.prompt;
-    next.vision = prev.vision;
   }
   state.reader = next;
   activeReaderPaper = paperId;
@@ -1447,7 +1519,7 @@ document.body.insertAdjacentHTML("beforeend", `
    保存：输入停 800ms 自动保存，Ctrl+S 立即保存
 ------------------------------------------------- */
 
-/* 笔记编辑器运行时状态（与 aiStream 并列，避免污染 state 快照）
+/* 笔记编辑器运行时状态（独立于 state 快照）
    host: "panel"（阅读器右侧栏）| "page"（文献库打开的独立标签页） */
 const noteState = {
   paperId: null,
@@ -1557,9 +1629,9 @@ function noteBodyHTML() {
         <div class="note-drop-hint" id="note-drop-hint">松开以导入笔记或插入图片</div>
       </div>
     </div>
-    <footer class="ai-foot">
-      <span class="ai-meta" id="note-meta"></span>
-      <div class="ai-foot-btns">
+    <footer class="note-footer">
+      <span class="panel-meta" id="note-meta"></span>
+      <div class="note-footer-btns">
         <button class="btn sm" data-action="note-insert-image">${I("upload", 14)}插入图片</button>
         <button class="btn sm" data-action="note-save">${I("check", 14)}保存</button>
     </div>
@@ -1570,10 +1642,10 @@ function noteBodyHTML() {
    左边缘带一条可拖拽的把手（拖动改变宽度，宽度记在 state.reader.notePanelWidth） */
 function notePanelHTML(p) {
   return `
-  <aside class="ai-panel note-panel open" id="note-panel">
+  <aside class="note-panel open" id="note-panel">
     <div class="note-panel-grip" data-note-grip title="拖动调整笔记宽度（双击恢复默认）"></div>
-    <header class="ai-head">
-      <div class="ai-head-title">${I("pencil", 16)}<h2>笔记</h2>
+    <header class="note-panel-header">
+      <div class="panel-title">${I("pencil", 16)}<h2>笔记</h2>
         <button class="note-save-state" id="note-save-state" data-action="note-save" title="点击保存或重试" aria-live="polite"></button>
         <button class="icon-btn sm" data-action="note-popout" title="在新标签页中打开（更大编辑区）">${I("external", 15)}</button>
         <button class="icon-btn sm" data-action="note-close" title="关闭笔记面板">${I("x", 15)}</button>
@@ -2350,51 +2422,6 @@ function cancelNoteUpload(id) {
   replaceNoteUpload(job,''); noteUploads.delete(id); renderNoteUploads();
 }
 
-/* ---------------- AI 总结面板 ---------------- */
-
-const promptName = () => state.db.prompts.find((x) => x.id === state.reader.prompt)?.name || "";
-
-/* 打开 AI 面板时**不自动发送**：
-   先展示可配置的发送区（提示词 / 视觉精读 / 已缓存结果），由用户点「发送」才真正请求。
-   用户偏好：AI 总结是有成本的调用，不该点开就跑。
-   如果该提示词已有缓存，直接展示缓存内容（省一次请求），但仍可用「重新生成」覆盖。 */
-function mountAiPanel(p, opts = {}) {
-  if ($('#note-panel')) closeNotePanel();
-  closeAnnotationPanel();
-  $('[data-action="annot-panel"]')?.classList.remove("is-on");
-  $("#overlay-root").innerHTML = aiPanelHTML(p);
-  syncNotePanelLayout(null);   // AI 面板顶掉了笔记面板，收回让出的宽度
-  if (!p?.live) return;
-  // 已经有缓存就直接显示，避免每次打开都空白一片
-  showCachedSummary(p);
-  if (opts.autoFocus) $("#ai-send")?.focus?.();
-}
-
-/* 读缓存并渲染（不发请求）。没有缓存就展示「待发送」空态。 */
-async function showCachedSummary(p) {
-  const body = $("#ai-body");
-  if (!body) return;
-  const mode = state.reader.vision ? "vision" : "text";
-  let cached = null;
-  try { cached = await LithubAPI.summaryCache(p.id, state.reader.prompt, mode); } catch {}
-  if (!document.getElementById("ai-body")) return;   // 期间面板被关了
-  if (cached?.content) {
-    aiStream.text = cached.content;
-    aiStream.streaming = false;
-    aiStream.err = null;
-    renderStreamSections(body, cached.content, false);
-    setAiMeta(`${cached.model || ""} · ${promptName()}${mode === "vision" ? " · 视觉" : ""} · ${cached.created || "缓存"}`);
-    setAiSendState("sent");
-  } else {
-    body.innerHTML = aiIdleHTML();
-    setAiMeta(`${p.title.slice(0, 22)}…`);
-    setAiSendState("ready");
-  }
-}
-
-/* 网页 AI 的两个复制动作已经搬进阅读器右侧的「网页 AI」面板头
-   （见 panesHTML），AI 总结面板不再重复摆一排按钮。 */
-
 /* 打开外链：桌面壳走 Electron 的 shell.openExternal（系统浏览器，登录态互通）；
    浏览器里直接 window.open（同样用当前浏览器，登录态也互通）。 */
 async function openExternalUrl(url) {
@@ -2428,286 +2455,16 @@ async function copyToClipboard(text) {
   }
 }
 
-/* 拼出「要粘给网页 AI 的提示词」：取当前选中的模板，渲染占位符。
-   正文/PDF 由「复制 PDF」单独提供（模型看 PDF 比看纯文本更准）。 */
 function buildWebAiPrompt(p) {
-  const tpl = state.db.prompts.find((x) => x.id === state.reader.prompt)?.content || "";
-  return _renderPromptClient(tpl, p, "");
+  const templates = state.db.prompts;
+  const tpl = (templates.find((template) => template.default) || templates[0])?.content || "";
+  const venue = `${p.venue || ""} ${p.year || ""}`.trim() || "未知来源";
+  return tpl
+    .replaceAll("{{title}}", () => p.title || "未知标题")
+    .replaceAll("{{venue}}", () => venue)
+    .replaceAll("{{lang}}", "简体中文")
+    .replaceAll("{{abstract}}", "（正文请见随附的 PDF）");
 }
-
-/* 前端版模板渲染（与后端 _render_prompt 保持一致的占位符） */
-function _renderPromptClient(tpl, paper, content) {
-  const venue = `${paper.venue || ""} ${paper.year || ""}`.trim() || "未知来源";
-  return (tpl || "")
-    .replace(/\{\{title\}\}/g, paper.title || "未知标题")
-    .replace(/\{\{venue\}\}/g, venue)
-    .replace(/\{\{lang\}\}/g, "简体中文")
-    .replace(/\{\{abstract\}\}/g, content || "（正文请见随后粘贴的全文）");
-}
-function aiIdleHTML() {
-  const vision = state.reader.vision;
-  return `<div class="ai-idle">
-    <div class="ai-idle-ico">${I("sparkle", 22)}</div>
-    <p class="ai-idle-title">准备好后点击下方「发送」</p>
-    <p class="ai-idle-desc">当前使用 <b>${esc(promptName() || "默认模板")}</b>${vision ? " · <b>视觉精读</b>（逐页截图，token 更高）" : " · 文本模式"}。<br>可先在顶部切换模板或开启视觉精读，再发送。</p>
-  </div>`;
-}
-
-function setAiMeta(text) {
-  const el = $("#ai-meta");
-  if (el) el.textContent = text;
-}
-
-/* 发送按钮的三种状态：ready 可发送 / busy 生成中 / sent 已生成 */
-function setAiSendState(state, label) {
-  const btn = $("#ai-send");
-  if (!btn) return;
-  btn.dataset.state = state;
-  if (state === "busy") {
-    btn.disabled = true;
-    btn.innerHTML = `${I("refresh", 14)}生成中…`;
-  } else if (state === "sent") {
-    btn.disabled = false;
-    btn.innerHTML = `${I("refresh", 14)}重新生成`;
-  } else {
-    btn.disabled = false;
-    btn.innerHTML = `${I("play", 14)}${label || "发送"}`;
-  }
-}
-
-/* Markdown「## 小节」解析 → 侧栏分节渲染；streaming 时末尾加光标并智能跟随滚动 */
-function parseMarkdownSections(text) {
-  const secs = [];
-  let cur = null;
-  for (const raw of text.split("\n")) {
-    const line = raw.trimEnd();
-    if (/^#{1,4}\s*$/.test(line)) continue; // 流式传输中尚未传完的标题行，先吞掉
-    const m = line.match(/^#{1,4}\s*(.+)$/);
-    if (m) {
-      cur = { h: m[1].replace(/[#*`]/g, "").trim(), lines: [] };
-      secs.push(cur);
-    } else if (cur) {
-      cur.lines.push(line);
-    } else if (line.trim()) {
-      cur = { h: "", lines: [line] };
-      secs.push(cur);
-    }
-  }
-  return secs;
-}
-
-function sectionBodyHTML(lines) {
-  const list = lines.filter((l) => /^\s*(-|•|\d+[.、)])\s*/.test(l));
-  if (list.length) {
-    return "<ul>" + list.map((l) => `<li>${esc(l.replace(/^\s*(-|•|\d+[.、)])\s*/, ""))}</li>`).join("") + "</ul>";
-  }
-  const para = lines.filter((l) => l.trim()).map((l) => esc(l)).join("<br>");
-  return para ? `<p>${para}</p>` : "";
-}
-
-function renderStreamSections(target, text, streaming) {
-  if (!target) return;
-  const nearBottom = target.scrollHeight - target.scrollTop - target.clientHeight < 90;
-  const secs = parseMarkdownSections(text);
-  if (!secs.length) {
-    target.innerHTML = `<div class="ai-sec"><p class="muted-note">${streaming ? "正在思考…" : "（无内容）"}</p></div>`;
-    return;
-  }
-  target.innerHTML = secs.map((s) => `
-    <section class="ai-sec">
-      ${s.h ? `<h3>${esc(s.h)}</h3>` : ""}
-      ${sectionBodyHTML(s.lines)}
-    </section>`).join("")
-    + (streaming ? '<span class="ai-cursor" aria-hidden="true"></span>' : "");
-  if (streaming && nearBottom) target.scrollTop = target.scrollHeight;
-}
-
-/* 真实模式：缓存优先读取，无缓存则流式生成。
-   只在用户点「发送 / 重新生成」或切换模板时调用（打开面板时不自动跑）。 */
-async function startSummaryStream(p, force = false, isFallback = false) {
-  const body = $("#ai-body");
-  if (!body) return;
-  const mode = state.reader.vision ? "vision" : "text";
-  aiStream.ctrl?.abort();
-  const ctrl = new AbortController();
-  aiStream.ctrl = ctrl;
-  aiStream.text = "";
-  aiStream.meta = null;
-  aiStream.err = null;
-  aiStream.streaming = true;
-  setAiSendState("busy");
-  body.innerHTML = `<div class="ai-skeleton">${Array.from({ length: 3 }, () => `<div class="sk-sec"><div class="sk sk-h"></div><div class="sk"></div><div class="sk short"></div></div>`).join("")}</div>`;
-
-  const metaEl = () => $("#ai-meta");
-
-  if (!force) {
-    const cached = await LithubAPI.summaryCache(p.id, state.reader.prompt, mode);
-    if (aiStream.ctrl !== ctrl) return;
-    if (cached?.content) {
-      aiStream.text = cached.content;
-      aiStream.streaming = false;
-      renderStreamSections(body, cached.content, false);
-      if (metaEl()) metaEl().textContent = `${cached.model || ""} · ${promptName()}${mode === "vision" ? " · 视觉" : ""} · ${cached.created || ""}`;
-      setAiSendState("sent");
-      return;
-    }
-  }
-
-  await LithubAPI.streamSummary({
-    paper_id: p.id,
-    prompt_id: state.reader.prompt,
-    force,
-    mode,
-    onMeta: (m) => {
-      aiStream.meta = m;
-      if (metaEl()) metaEl().textContent = `${m.model} · ${m.prompt}${m.pages ? ` · 视觉 ${m.pages} 页` : ""} · 生成中`;
-      if ($("#ai-body")) renderStreamSections($("#ai-body"), aiStream.text, true);
-    },
-    onDelta: (d) => {
-      if (aiStream.ctrl !== ctrl) return;
-      aiStream.text += d;
-      renderStreamSections($("#ai-body"), aiStream.text, true);
-    },
-    onError: (msg) => {
-      if (aiStream.ctrl !== ctrl) return;
-      aiStream.err = msg;
-      aiStream.streaming = false;
-      // 文本模式提取失败（如扫描版）→ 自动切视觉精读重试一次
-      if (mode === "text" && !isFallback && msg.includes("提取文本")) {
-        state.reader.vision = true;
-        const chk = $("#vision-chk");
-        if (chk) chk.checked = true;
-        toast("该 PDF 提取不到文本，已自动切换视觉精读");
-        startSummaryStream(p, false, true);
-        return;
-      }
-      const b = $("#ai-body");
-      if (b) {
-        b.innerHTML = `<div class="ai-sec"><p class="err-note">${esc(msg)}</p>
-          <button class="btn sm" data-action="ai-retry" data-id="${p.id}" style="margin-top:12px">${I("refresh", 14)}重试</button></div>`;
-      }
-    },
-  }, ctrl.signal);
-
-  if (aiStream.ctrl !== ctrl) return;
-  aiStream.streaming = false;
-  const b = $("#ai-body");
-  if (!aiStream.err && b) {
-    renderStreamSections(b, aiStream.text, false);
-    if (metaEl()) metaEl().textContent = `${aiStream.meta?.model || state.db.settings.model} · ${promptName()}${mode === "vision" ? " · 视觉" : ""} · 刚刚生成`;
-    setAiSendState("sent");
-  } else if (aiStream.err) {
-    setAiSendState("ready");
-  }
-}
-
-function aiPanelHTML(p) {
-  if (p.live) {
-    return `
-  <aside class="ai-panel open" id="ai-panel">
-    <header class="ai-head">
-      <div class="ai-head-title">${I("sparkle", 16)}<h2>AI 文献总结</h2>
-        <button class="icon-btn sm" data-action="ai-close">${I("x", 15)}</button>
-      </div>
-      <div class="ai-prompt-row">
-        <label class="select-wrap grow">
-          <select id="prompt-sel">
-            ${state.db.prompts.map((t) => `<option value="${t.id}" ${t.id === state.reader.prompt ? "selected" : ""}>${esc(t.name)}</option>`).join("")}
-          </select>
-        </label>
-        <label class="switch" title="把论文逐页渲染成图片发给模型：图表、公式、扫描件友好，token 消耗更高（最多 12 页）">
-          <input type="checkbox" id="vision-chk" ${state.reader.vision ? "checked" : ""}>
-          <span class="switch-track"></span>
-          <span class="switch-label">视觉精读</span>
-        </label>
-        <button class="icon-btn" data-action="edit-prompts" title="管理提示词模板">${I("sliders", 15)}</button>
-      </div>
-    </header>
-    <div class="ai-body" id="ai-body">
-      <div class="ai-idle">
-        <div class="ai-idle-ico">${I("sparkle", 22)}</div>
-        <p class="ai-idle-title">正在读取缓存…</p>
-      </div>
-    </div>
-    <footer class="ai-foot">
-      <span class="ai-meta" id="ai-meta">${esc(p.title.slice(0, 22))}…</span>
-      <div class="ai-foot-btns">
-        <button class="btn sm" data-action="ai-copy">${I("copy", 14)}复制</button>
-        <button class="btn sm btn-primary" id="ai-send" data-state="ready"
-                data-action="ai-regen" data-id="${p.id}">${I("play", 14)}发送</button>
-      </div>
-    </footer>
-  </aside>`;
-  }
-  const r = state.reader;
-  const sum = summaryFor(p, r.prompt);
-  return `
-  <aside class="ai-panel open" id="ai-panel">
-    <header class="ai-head">
-      <div class="ai-head-title">${I("sparkle", 16)}<h2>AI 文献总结</h2>
-        <button class="icon-btn sm" data-action="ai-close">${I("x", 15)}</button>
-      </div>
-      <div class="ai-prompt-row">
-        <label class="select-wrap grow">
-          <select id="prompt-sel">
-            ${state.db.prompts.map((t) => `<option value="${t.id}" ${t.id === r.prompt ? "selected" : ""}>${esc(t.name)}</option>`).join("")}
-          </select>
-        </label>
-        <button class="icon-btn" data-action="edit-prompts" title="管理提示词模板">${I("sliders", 15)}</button>
-      </div>
-    </header>
-    ${summaryBodyHTML(p)}
-    <footer class="ai-foot">
-      <span class="ai-meta">${esc(sum.meta)} · 刚刚生成</span>
-      <div class="ai-foot-btns">
-        <button class="btn sm" data-action="ai-copy">${I("copy", 14)}复制</button>
-        <button class="btn sm btn-primary" data-action="ai-regen" data-id="${p.id}">${I("refresh", 14)}重新生成</button>
-      </div>
-    </footer>
-  </aside>`;
-}
-
-function summaryFor(p, promptId) {
-  if (p.id === "p1" && window.SUMMARY_P1[promptId]) return window.SUMMARY_P1[promptId];
-  if (p.id === "p1") return window.SUMMARY_P1.d1;
-  const first = p.abstract.split(". ")[0];
-  return {
-    meta: `${state.db.settings.model} · ${state.db.prompts.find((x) => x.id === promptId)?.name || "默认"}`,
-    sections: [
-      { h: "一句话总结", type: "p", x: `${first}.（${p.venue} ${p.year}，${p.authors} 等人的工作）` },
-      { h: "核心贡献", type: "ul", x: p.tags.map((t) => `与「${t}」相关的关键设计或结论，详见原文对应章节。`) },
-      { h: "方法要点", type: "p", x: "该文围绕上述问题提出了一套完整方案，主体思路与实验设置在原文中均有系统阐述；此处为演示数据，接入后端后由模型实时生成。" },
-      { h: "局限与思考", type: "p", x: "建议结合领域内后续工作对照阅读，评估其方法在当前基准下的有效性。" },
-    ],
-  };
-}
-
-const summaryBodyHTML = (p, stagger = false) => {
-  const sum = summaryFor(p, state.reader.prompt);
-  return `
-  <div class="ai-body${stagger ? " stagger" : ""}" id="ai-body">
-    ${sum.sections.map((s, i) => `
-      <section class="ai-sec" style="--i:${i}">
-        <h3>${esc(s.h)}</h3>
-        ${s.type === "ul" ? `<ul>${s.x.map((li) => `<li>${esc(li)}</li>`).join("")}</ul>` : `<p>${esc(s.x)}</p>`}
-      </section>`).join("")}
-  </div>`;
-};
-
-function regenSummary(p, force = true) {
-  if (p?.live) { startSummaryStream(p, force); return; }
-  const body = $("#ai-body");
-  if (!body) return;
-  body.innerHTML = `<div class="ai-skeleton">${Array.from({ length: 4 }, () => `<div class="sk-sec"><div class="sk sk-h"></div><div class="sk"></div><div class="sk short"></div></div>`).join("")}</div>`;
-  setTimeout(() => {
-    if (!document.getElementById("ai-body")) return;
-    document.getElementById("ai-body").outerHTML = summaryBodyHTML(p, true);
-    const meta = $(".ai-meta");
-    if (meta) meta.textContent = `${summaryFor(p, state.reader.prompt).meta} · 刚刚生成`;
-    toast("已按当前提示词重新生成总结");
-  }, 900);
-}
-
 /* ---------------- 翻译流程 ---------------- */
 const translationSubmissions = new Set();
 const translationCancellations = new Set();
@@ -2908,10 +2665,10 @@ function selectApiProfile(id) {
 function apiSettingsHTML() {
   const s = state.db.settings, profiles = state.db.providers, selected = profiles.find(p=>p.id === s.provider);
   return `<section class="set-card api-settings">
-    <div class="set-card-head"><div><h3>模型服务</h3><p class="set-desc">添加你自己的 OpenAI 兼容 API，用于 AI 总结与问答。修改后保存设置。</p></div>
+    <div class="set-card-head"><div><h3>模型服务</h3><p class="set-desc">添加你自己的 OpenAI 兼容 API，用于全文翻译。修改后保存设置。</p></div>
       ${profiles.length ? `<button class="btn sm" data-action="api-add">${I('plus',14)}添加 API</button>` : ''}</div>
     ${!profiles.length ? `<div class="api-empty"><span class="api-empty-icon">${I('sliders',24)}</span><h4>尚未添加 API</h4>
-      <p>添加服务地址、API Key 和模型后，即可使用 AI 总结。</p><button class="btn btn-primary" data-action="api-add">${I('plus',14)}添加 API</button></div>` : `
+      <p>添加服务地址、API Key 和模型后，可在翻译设置中选用该服务。</p><button class="btn btn-primary" data-action="api-add">${I('plus',14)}添加 API</button></div>` : `
     <div class="prov-grid">${profiles.map(p=>`<button class="prov-card ${s.provider === p.id ? 'active' : ''}" data-action="provider" data-id="${esc(p.id)}" aria-pressed="${s.provider === p.id}">
       <b>${esc(p.name || '未命名 API')}</b><span>${esc(p.base || '尚未配置地址')}</span></button>`).join('')}</div>
     ${selected ? `<div class="form-grid">
@@ -3026,14 +2783,14 @@ function renderSettings() {
     prompts: () => `
       <section class="set-card">
         <div class="set-card-head">
-          <div><h3>提示词模板</h3><p class="set-desc">在阅读器侧栏一键切换不同风格的 AI 总结。</p></div>
+          <div><h3>提示词模板</h3><p class="set-desc">网页 AI 的「复制提示词」会使用默认模板。</p></div>
           <button class="btn btn-primary sm" data-action="new-prompt">${I("plus", 14)}新建模板</button>
         </div>
         <div class="prompt-list">
           ${state.db.prompts.map((t) => `
             <article class="prompt-item ${t.default ? "is-default" : ""}">
               <div class="prompt-info">
-                <h4>${esc(t.name)}${t.default ? '<span class="pill pill-ai">默认</span>' : ""}</h4>
+                <h4>${esc(t.name)}${t.default ? '<span class="pill pill-accent">默认</span>' : ""}</h4>
                 <p>${esc(t.desc)}</p>
                 <code>${esc(t.content.split("\n")[0])}…</code>
               </div>
@@ -3471,6 +3228,7 @@ function render(opts = {}) {
   if (state.route.view === "reader") captureReaderScroll(state.route.id);
   disposePdfHosts();
   state.route = nextRoute;
+  if (nextRoute.view !== "library") $("#paper-details")?.remove();
   const noteView = state.route.view === "note";
   // 阅读器与笔记页都是「专注视图」：隐藏文献库侧栏，把宽度全部让给内容
   document.body.classList.toggle("reading", state.route.view === "reader" || noteView);
@@ -3479,7 +3237,6 @@ function render(opts = {}) {
   if (state.route.view !== "reader") {
     // 只清理 DOM 与布局标记；阅读会话里的 webAi 开关/宽度、阅读模式、缩放和
     // 滚动位置全部保留，返回该文献时原样恢复。
-    state.reader.panel = false;
     state.reader.notePanel = false;
     closeAnnotationPanel();
     // 离开阅读器：只隐藏原生窗口，不关闭、不销毁。
@@ -3495,9 +3252,6 @@ function render(opts = {}) {
     if (!state.tabs.some((x) => tabKey(x) === key)) state.tabs.push({ kind: "paper", paperId: state.route.id });
     if (!$("#app .reader")) app.innerHTML = `<main id="view"></main>`;
     renderReader(state.route.id);
-    if (state.reader.panel) {
-      mountAiPanel(paperById(state.route.id));
-    }
     // 笔记面板：切换阅读模式/缩放后恢复（面板内部的编辑内容由 noteState 维护）
     if (state.reader.notePanel) {
       mountNotePanel(paperById(state.route.id));
@@ -3688,12 +3442,35 @@ document.addEventListener("keydown", (e) => {
    render() 依据旧 hash 重新渲染回当前页，导致无法返回） */
 function navLibrary(patch) {
   state.filter = { ...state.filter, ...patch };
+  state.selectedPaper = null;
   if (/^#\/(reader|tasks|settings)/.test(location.hash)) {
     location.hash = "#/library"; // 触发 hashchange → render
   } else {
     render();
   }
 }
+
+document.addEventListener("dblclick", (e) => {
+  const entry = e.target.closest("[data-action]");
+  if (entry?.dataset.action === "select-paper") openTab("paper", entry.dataset.id);
+});
+
+document.addEventListener("keydown", (e) => {
+  if (!e.target.matches?.("[data-action='select-paper']") || e.isComposing) return;
+  if (e.key === "Enter") {
+    e.preventDefault();
+    openTab("paper", e.target.dataset.id);
+  } else if (e.key === " ") {
+    e.preventDefault();
+    selectLibraryPaper(e.target.dataset.id);
+  }
+});
+
+document.addEventListener("submit", (e) => {
+  if (!e.target.matches("form[data-paper-intro]")) return;
+  e.preventDefault();
+  void savePaperIntro(e.target);
+});
 
 document.addEventListener("click", (e) => {
   const tagPopEl = document.getElementById("tag-pop");
@@ -3731,6 +3508,13 @@ document.addEventListener("click", (e) => {
     case "clear-tag": navLibrary({ tag: null }); break;
     case "reset-filter": navLibrary({ smart: "all", cat: null, search: "", tag: null }); break;
     case "libview": state.libView = id; render(); break;
+    case "select-paper": selectLibraryPaper(id); break;
+    case "close-paper-details": {
+      const selected = state.selectedPaper;
+      selectLibraryPaper(null);
+      $$("#list-area [data-action='select-paper']").find(entry => entry.dataset.id === selected)?.focus({ preventScroll: true });
+      break;
+    }
     case "open": openTab("paper", id); break;
 
     /* 列表条目展开/收起（Zotero 式附件树） */
@@ -3796,21 +3580,8 @@ document.addEventListener("click", (e) => {
       }
       break;
     }
-    case "ai-panel":
-      state.reader.notePanel = false;
-      state.reader.panel = true;
-      mountAiPanel(paperById(t.dataset.id));
-      break;
-    case "ai-close":
-      state.reader.panel = false;
-      aiStream.ctrl?.abort();
-      $("#ai-panel")?.remove();   // 只关 AI 面板，别连带清掉批注侧栏
-      break;
-
     /* 笔记面板 */
     case "note-panel":
-      state.reader.panel = false;
-      aiStream.ctrl?.abort();
       state.reader.notePanel = true;
       // 两侧栏都占右边，开笔记就收起批注，避免叠在一起
       if (annotListState.open) {
@@ -3836,7 +3607,6 @@ document.addEventListener("click", (e) => {
     case "annot-panel": {
       const p = paperById(id);
       if (!p) break;
-      state.reader.panel = false;
       // openAnnotationPanel 内部会收起笔记面板并重置 notePanel
       if (annotListState.open) closeAnnotationPanel();
       else openAnnotationPanel(p);
@@ -3939,25 +3709,6 @@ document.addEventListener("click", (e) => {
       input.click();
       break;
     }
-    case "ai-regen": regenSummary(paperById(t.dataset.id), true); break;
-    case "ai-retry": {
-      // 重试就是针对当前配置再发一次（视同用户点了发送）
-      const p = paperById(t.dataset.id);
-      if (p?.live) { state.reader.panel = true; mountAiPanel(p); startSummaryStream(p, true); }
-      else { state.reader.panel = true; mountAiPanel(p); }
-      break;
-    }
-    case "ai-copy": {
-      if (LithubAPI.live && aiStream.text) {
-        copyToClipboard(aiStream.text)
-          .then((ok) => toast(ok ? "总结已复制到剪贴板" : "复制失败", ok ? "ok" : "err"));
-      } else {
-        toast("总结已复制到剪贴板");
-      }
-      break;
-    }
-    case "edit-prompts": location.hash = "#/settings"; setTimeout(() => { state.settingsTab = "prompts"; render(); }, 0); break;
-
     /* ---- 内嵌网页 AI（与论文并排） ---- */
     case "webai-toggle": {
       if (state.reader.webAi) closeWebAiInline();
@@ -4033,16 +3784,15 @@ document.addEventListener("click", (e) => {
       })();
       break;
     }
-    /* ---- 网页 AI 面板：喂料动作（复制 PDF / 提示词） ---- */
+    case "copy-original-pdf":
     case "webai-copy-pdf": {
       const p = paperById(id);
       if (!p) break;
       (async () => {
         try {
-          const r = await LithubAPI.copyPaperFile(p.id, "original");
-          toast(`PDF 已复制（${Math.round((r.size || 0) / 1024)} KB），到网页 AI 对话框里 Ctrl+V 上传`);
+          await LithubAPI.copyPaperFile(p.id, "original");
+          toast("原文 PDF 已复制");
         } catch (e) {
-          // 只报错，不去「另存到下载文件夹」——用户要的是复制，不是下载（见 HANDOFF 易踩坑）
           toast(`复制 PDF 失败：${e.message || "未知错误"}`, "err");
         }
       })();
@@ -4119,6 +3869,8 @@ document.addEventListener("click", (e) => {
       closeModal();
       const done = () => {
         markSidebarDirty();
+        if (state.selectedPaper === id) state.selectedPaper = null;
+        paperIntroDrafts.delete(id);
         // 该文献的所有标签页（PDF + 笔记）一并关闭
         state.tabs = state.tabs.filter((x) => x.paperId !== id);
         if (noteState.paperId === id) noteState.paperId = null;
@@ -4311,7 +4063,6 @@ document.addEventListener("click", (e) => {
     case "del-prompt": {
       const removeLocal = () => {
         state.db.prompts = state.db.prompts.filter((x) => x.id !== id);
-        if (state.reader.prompt === id) state.reader.prompt = (state.db.prompts.find((x) => x.default) || state.db.prompts[0]).id;
       };
       if (LithubAPI.live) {
         LithubAPI.deletePrompt(id)
@@ -4504,19 +4255,19 @@ document.addEventListener("click", (e) => {
   }
 });
 
-/* 搜索输入 / 排序 / 温度滑杆 / 提示词切换 */
+/* 搜索输入 / 排序 / 温度滑杆 */
 document.addEventListener("input", (e) => {
+  if (e.target.id === "paper-intro") {
+    const form = e.target.form;
+    const id = form.dataset.paperIntro;
+    const value = e.target.value;
+    paperIntroDrafts.set(id, value);
+    form.querySelector("button[type='submit']").disabled = value.trim() === (paperById(id)?.abstract || "");
+  }
   if (e.target.matches('#set-api-name, #set-base, #set-key, #set-model, #set-temp, #set-webai-url, #set-webai-browser-path, .webai-site-name, .webai-site-url')) captureApiDraft();
   if (e.target.matches('#set-base, #set-key')) scheduleApiModels();
   if (e.target.id==='note-search') renderNoteList();
   if (e.target.id === "set-temp") $("#temp-val").textContent = e.target.value;
-  if (e.target.id === "prompt-sel") {
-    state.reader.prompt = e.target.value;
-    // 切换模板不再自动请求：只刷新「待发送」提示，由用户决定何时发送。
-    // 该模板已有缓存时顺带展示缓存。
-    const p = paperById(state.route.id);
-    if (p?.live) showCachedSummary(p);
-  }
   /* 笔记：编辑内容或标题 → 实时预览 + 安排自动保存 */
   if (e.target.id === "note-editor") markNoteDirty();
   if (e.target.id === "note-title") {
@@ -4544,12 +4295,6 @@ document.addEventListener("change", (e) => {
     const v = e.target.value;
     if (v === "width" || v === "page") applyReaderZoom(null, v);
     else applyReaderZoom(Number(v));
-  }
-  if (e.target.id === "vision-chk") {
-    state.reader.vision = e.target.checked;
-    // 同理：切换视觉模式只更新待发送状态 / 展示对应缓存，不自动发起请求
-    const p = paperById(state.route.id);
-    if (p?.live) showCachedSummary(p);
   }
   /* 笔记：切换笔记前先保存当前这条 */
   if (e.target.id === "note-sel") {
@@ -4794,7 +4539,7 @@ function annotationPanelHTML(p) {
       aria-orientation="vertical" aria-label="调整批注侧栏宽度" aria-controls="annot-panel"
       title="拖动调整批注宽度（双击恢复默认；方向键微调）"></div>
     <header class="annot-head">
-      <div class="ai-head-title">${I("list", 16)}<h2>批注</h2>
+      <div class="panel-title">${I("list", 16)}<h2>批注</h2>
         <span class="annot-total" id="annot-total">0</span>
         <button class="icon-btn sm" data-action="annot-panel-close" title="关闭">${I("x", 15)}</button>
       </div>
@@ -4806,7 +4551,7 @@ function annotationPanelHTML(p) {
     </header>
     <div class="annot-body" id="annot-body"></div>
     <footer class="annot-foot">
-      <span class="ai-meta" id="annot-meta"></span>
+      <span class="panel-meta" id="annot-meta"></span>
       <button class="btn sm" data-action="annot-export-notes" title="把全部批注按文序汇总为一条 Markdown 笔记">
         ${I("pencil", 14)}导出为笔记
       </button>
@@ -4954,7 +4699,7 @@ async function insertSelectionInNote() {
   const markdown=`\n> ${selection.text.replace(/\n/g,'\n> ')}\n\n${noteReferenceLink(paper.id,{view:selection.view,page:selection.pageIndex+1,rects:selection.rects})}\n\n`;
   if (!$('#note-panel') || noteState.paperId!==paper.id) {
     state.reader.notePanel=true;
-    closeAnnotationPanel(); state.reader.panel=false;
+    closeAnnotationPanel();
     await mountNotePanel(paper);
   }
   if (noteState.paperId!==paper.id || !noteState.ready) return;
@@ -5514,7 +5259,7 @@ document.addEventListener("mouseup", (e) => {
 
   const old = $(".sel-pop"); if (old) old.remove();
   if (state.route.view !== "reader") return;
-  if (e.target.closest(".ai-panel, .note-panel, .annot-pop")) return;
+  if (e.target.closest(".note-panel, .annot-pop")) return;
 
   const isRealPdf = Boolean(e.target.closest(".pdf-page"));
   const isMockPage = Boolean(e.target.closest(".page"));
@@ -5687,10 +5432,8 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") {
     closeAnnotationEditor();
     closeModal();
-    aiStream.ctrl?.abort(); // 中止流式请求，避免空跑消耗 token
     document.getElementById("tag-pop")?.classList.add("hidden");
     $("#sel-pop, #annot-pop") && $$(".sel-pop, .annot-pop").forEach((el) => el.remove());
-    state.reader.panel = false;
   }
   if (e.key === "Enter" && e.target.id === "tag-input") {
     e.preventDefault();
@@ -5835,7 +5578,6 @@ function mapLivePaper(p) {
     tags: p.tags || [],
     translated: !!p.translated,
     translationTaskId: p.translation_task_id,
-    summarized: false,
     unread: false,
     fav: !!p.fav,
     cover: coverIndex(p.id),
@@ -5869,9 +5611,6 @@ async function loadLiveLibrary() {
     const prompts = await LithubAPI.prompts();
     if (prompts.length) {
       state.db.prompts = prompts;
-      if (!state.db.prompts.find((x) => x.id === state.reader.prompt)) {
-        state.reader.prompt = (state.db.prompts.find((x) => x.default) || state.db.prompts[0]).id;
-      }
     }
   } catch {}
   await loadLiveSettings();

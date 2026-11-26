@@ -111,20 +111,17 @@ mkdirSync("tests/.shots", { recursive: true });
 let s = await send("Page.captureScreenshot", { format: "png" });
 writeFileSync("tests/.shots/tabstrip-desktop.png", Buffer.from(s.result.data, "base64"));
 
-/* 阅读器视图：AI 面板不应被标签栏遮挡 */
-await evaluate(`document.querySelector('.row')?.click()`);
+/* 阅读器视图：复制原文 PDF 按钮不应被标签栏遮挡 */
+await evaluate(`document.querySelector('.row [data-action="open"]')?.click()`);
 await sleep(3500);
-await evaluate(`document.querySelector('[data-action="ai-panel"]')?.click()`);
-await sleep(2500);
-const panel = JSON.parse(await evaluate(`JSON.stringify((() => {
-  const p = document.getElementById('ai-panel');
+const copyButton = JSON.parse(await evaluate(`JSON.stringify((() => {
+  const p = document.querySelector('.reader-bar [data-action="copy-original-pdf"]');
   if (!p) return { none: true };
   const r = p.getBoundingClientRect();
   const bar = document.getElementById('titlebar').getBoundingClientRect();
   return { top: Math.round(r.top), barBottom: Math.round(bar.bottom), ok: r.top >= bar.bottom - 1 };
 })())`));
-console.log("AI 面板:", JSON.stringify(panel));
-check("AI 面板不被标题栏遮挡", panel.ok === true, JSON.stringify(panel));
+check("复制原文 PDF 按钮不被标题栏遮挡", copyButton.ok === true, JSON.stringify(copyButton));
 s = await send("Page.captureScreenshot", { format: "png" });
 writeFileSync("tests/.shots/tabstrip-desktop-reader.png", Buffer.from(s.result.data, "base64"));
 

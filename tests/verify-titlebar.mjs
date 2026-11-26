@@ -107,7 +107,7 @@ check("内容区紧接标题栏下方", Math.abs(layout.appTop - layout.titlebar
 check("整页不产生额外滚动", !layout.overflow);
 
 /* 3. 打开文献 → 出现新页签 */
-await evaluate(`document.querySelector('.row')?.click()`);
+await evaluate(`document.querySelector('.row [data-action="open"]')?.click()`);
 await sleep(3500);
 const tabs2 = JSON.parse(await evaluate(`JSON.stringify((() => {
   const strip = document.getElementById('tab-strip');
@@ -139,7 +139,7 @@ check("关闭文献页签后回到文献库页签", afterClose.count === 1, JSON
 mkdirSync("tests/.shots", { recursive: true });
 await evaluate(`location.hash='#/library'`);
 await sleep(1200);
-await evaluate(`document.querySelector('.row')?.click()`);
+await evaluate(`document.querySelector('.row [data-action="open"]')?.click()`);
 await sleep(3500);
 let s = await send("Page.captureScreenshot", { format: "png" });
 writeFileSync("tests/.shots/tabstrip-reader.png", Buffer.from(s.result.data, "base64"));

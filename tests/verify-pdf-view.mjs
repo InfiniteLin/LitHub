@@ -35,9 +35,16 @@ function makePdf(wide = false) {
   return Buffer.from(output);
 }
 const root = path.resolve('frontend'), fixture = makePdf(), wide = makePdf(true);
+const copyRequests = [];
 const server = createServer(async (req, res) => {
   try {
-    const pathname = new URL(req.url, 'http://local').pathname;
+    const url = new URL(req.url, 'http://local');
+    const { pathname } = url;
+    if (req.method === 'POST' && /^\/api\/papers\/[^/]+\/copy-file$/.test(pathname)) {
+      copyRequests.push([pathname.split('/')[3], url.searchParams.get('kind')]);
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify({ ok: true })); return;
+    }
     if (pathname === '/fixture.pdf' || pathname === '/wide.pdf') {
       res.setHeader('Content-Type', 'application/pdf');
       res.end(pathname === '/wide.pdf' ? wide : fixture); return;
@@ -104,8 +111,54 @@ try {
   await evaluate(`
     window.testPaper = state.db.papers[0];
     Object.assign(testPaper, { live: true, translated: true, fileUrl: '/fixture.pdf', zhUrl: '/fixture.pdf', compareUrl: '/wide.pdf' });
+    window.libraryEntry = paper => document.querySelector('#list-area [data-id="' + paper.id + '"][data-action="select-paper"]');
+    libraryEntry(testPaper).click();
+  `);
+  await check('single click selects a paper and docks its details to the right', `(() => {
+    const panel = document.querySelector('#paper-details');
+    return state.route.view === 'library' && libraryEntry(testPaper).getAttribute('aria-current') === 'true'
+      && panel.getBoundingClientRect().left >= document.querySelector('#view').getBoundingClientRect().right - 1
+      && panel.querySelector('.paper-details-title').textContent === testPaper.title
+      && panel.textContent.includes(testPaper.authors);
+  })()`);
+  const intro = 'Editable introduction.\n\nSecond paragraph.';
+  await evaluate(`
+    window.introTestAPI = { live: LithubAPI.live, updatePaper: LithubAPI.updatePaper };
+    LithubAPI.live = true;
+    LithubAPI.updatePaper = async (id, fields) => {
+      window.savedIntro = { id, ...fields };
+      return fields;
+    };
+    document.querySelector('#paper-intro').value = ${JSON.stringify(intro)};
+    document.querySelector('#paper-intro').dispatchEvent(new Event('input', { bubbles: true }));
+    libraryEntry(state.db.papers[1]).click();
+    libraryEntry(testPaper).click();
+  `);
+  await check('switching papers preserves the unsaved introduction', `document.querySelector('#paper-intro').value === ${JSON.stringify(intro)}`);
+  await evaluate(`document.querySelector('.paper-intro button[type="submit"]').click()`);
+  await until('saving the introduction updates the selected paper', `testPaper.abstract === ${JSON.stringify(intro)} && savedIntro.id === testPaper.id && savedIntro.abstract === testPaper.abstract`);
+  await evaluate(`
+    Object.assign(LithubAPI, introTestAPI);
+    document.querySelector('[data-action="libview"][data-id="grid"]').click();
+  `);
+  await check('grid view keeps the selected paper and its saved introduction', `libraryEntry(testPaper).classList.contains('gcard')
+    && libraryEntry(testPaper).getAttribute('aria-current') === 'true' && document.querySelector('#paper-intro').value === testPaper.abstract`);
+  await send('Emulation.setDeviceMetricsOverride', { width: 1000, height: 800, deviceScaleFactor: 1, mobile: false });
+  await check('details fit the right edge of a narrow window', `(() => {
+    const panel = document.querySelector('#paper-details');
+    const bounds = panel.getBoundingClientRect();
+    return getComputedStyle(panel).position === 'fixed' && bounds.right === innerWidth && bounds.left > 0
+      && bounds.top >= document.querySelector('#app').getBoundingClientRect().top;
+  })()`);
+  await evaluate(`document.querySelector('[data-action="close-paper-details"]').click()`);
+  await check('closing details returns focus to the paper', `!document.querySelector('#paper-details') && document.activeElement === libraryEntry(testPaper)`);
+  await send('Input.dispatchKeyEvent', { type: 'keyDown', key: ' ', code: 'Space', windowsVirtualKeyCode: 32 });
+  await send('Input.dispatchKeyEvent', { type: 'keyUp', key: ' ', code: 'Space', windowsVirtualKeyCode: 32 });
+  await check('Space reselects the focused paper', `document.querySelector('#paper-intro').value === testPaper.abstract`);
+  await send('Emulation.setDeviceMetricsOverride', { width: 1500, height: 1000, deviceScaleFactor: 1, mobile: false });
+  await evaluate(`
     readerSession(testPaper.id).mode = 'en';
-    location.hash = '#/reader/' + testPaper.id;
+    libraryEntry(testPaper).dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
     window.pane = () => document.querySelector('#pane-en');
     window.side = n => pane()._pdf.metas[n].sides[0];
     window.anchor = point => PdfView.captureAnchor(pane(), point);
@@ -247,8 +300,8 @@ try {
       && getComputedStyle(document.querySelector('.reader')).paddingRight==='0px'
       && parseFloat(getComputedStyle(document.querySelector('#panes')).paddingRight)>0;
   })()`);
-  await check('toolbar AI and note buttons remain clickable with notes open', `['ai-panel','note-panel','webai-toggle'].every(action => {
-    const el=document.querySelector('.reader-bar [data-action="'+action+'"]'); if (!el) return true;
+  await check('copy, notes and web AI toolbar buttons remain clickable with notes open', `['copy-original-pdf','note-panel','webai-toggle'].every(action => {
+    const el=document.querySelector('.reader-bar [data-action="'+action+'"]'); if (!el) return false;
     const r=el.getBoundingClientRect(); return el.contains(document.elementFromPoint(r.x+r.width/2,r.y+r.height/2));
   })`);
   await evaluate(`setNotePanelWidth(1100)`);
@@ -539,6 +592,15 @@ try {
   await until('return to paper restores page anchor', `pane()?._pdf?.metas.length && anchor().page===savedAnchor.page && Math.abs(anchor().y-savedAnchor.y)<.01`);
   await evaluate(`window.oldMode=pane()._pdf; document.querySelector('[data-action="mode"][data-id="zh"]').click()`);
   await until('mode switch disposes prior PDF and renders translation', `oldMode.dead && document.querySelector('#pane-zh')?._pdf?.metas[0]?.sides[0].rendered`);
+  await evaluate(`document.querySelector('.reader-bar [data-action="copy-original-pdf"]').click()`);
+  await until('copying from the translated view confirms the original PDF was copied', `document.querySelector('#toast-root')?.textContent.includes('原文 PDF 已复制')`);
+  assert.deepEqual(copyRequests, [[await evaluate('testPaper.id'), 'original']]);
+  await check('web AI prompt uses the default template', `(() => {
+    const templates = state.db.prompts;
+    state.db.prompts = [{ content: 'Other' }, { default: true, content: 'Read {{title}}: {{abstract}}' }];
+    try { return buildWebAiPrompt(testPaper) === 'Read ' + testPaper.title + ': （正文请见随附的 PDF）'; }
+    finally { state.db.prompts = templates; }
+  })()`);
   await evaluate(`document.querySelector('[data-action="mode"][data-id="dual2"]').click()`);
   await until('wide comparison PDF ready', `document.querySelector('#pane-dual2')?._pdf?.metas[0]?.sides[0].rendered`);
   await evaluate(`applyReaderZoom(4)`);

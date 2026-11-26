@@ -211,7 +211,7 @@ window.LithubAPI = {
     return r.json();
   },
 
-  /* ---------- AI 总结 ---------- */
+  /* ---------- 文献导出与复制 ---------- */
 
   /* 导出「可粘贴给网页 AI」的全文纯文本（默认不限页数，后端已去噪） */
   async exportPaperText(paperId, { maxPages = 0, maxChars = 0 } = {}) {
@@ -231,61 +231,6 @@ window.LithubAPI = {
     });
     if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || "复制失败");
     return r.json();
-  },
-
-  async summaryCache(paperId, promptId, mode = "text") {
-    const r = await fetch(`${API_BASE}/api/summaries/${paperId}?prompt_id=${encodeURIComponent(promptId)}&mode=${mode}`);
-    if (!r.ok) return null;
-    return r.json();
-  },
-
-  /* POST + ReadableStream 解析 SSE（EventSource 不支持 POST）
-     回调：onMeta({model,prompt,mode,pages}) / onDelta(text) / onDone(full) / onError(msg) */
-  async streamSummary({ paper_id, prompt_id, force = false, mode = "text", onMeta, onDelta, onDone, onError }, signal) {
-    let res;
-    try {
-      res = await fetch(`${API_BASE}/api/summaries`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ paper_id, prompt_id, force, mode }),
-        signal,
-      });
-    } catch (e) {
-      if (e.name !== "AbortError") onError?.("无法连接本地服务");
-      return;
-    }
-    if (!res.ok) {
-      const detail = (await res.json().catch(() => ({}))).detail || `请求失败（${res.status}）`;
-      onError?.(detail);
-      return;
-    }
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = "";
-    for (;;) {
-      let chunk;
-      try {
-        chunk = await reader.read();
-      } catch {
-        return; // 被中止
-      }
-      if (chunk.done) break;
-      buffer += decoder.decode(chunk.value, { stream: true });
-      const events = buffer.split("\n\n");
-      buffer = events.pop();
-      for (const ev of events) {
-        const line = ev.split("\n").find((l) => l.startsWith("data: "));
-        if (!line) continue;
-        const payload = line.slice(6);
-        if (payload === "[DONE]") { onDone?.(); continue; }
-        try {
-          const data = JSON.parse(payload);
-          if (data.delta) onDelta?.(data.delta);
-          else if (data.meta) onMeta?.(data.meta);
-          else if (data.error) onError?.(data.error);
-        } catch {}
-      }
-    }
   },
 
   /* ---------- Markdown 笔记 ---------- */

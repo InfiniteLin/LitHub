@@ -18,7 +18,7 @@ from typing import Literal
 
 from fastapi import FastAPI, File, Form, Header, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, StreamingResponse, Response
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from pypdf import PdfReader
@@ -38,7 +38,7 @@ try:
 except Exception:  # 非 Windows / 缺依赖时不影响其它接口
     browser_embed = None
 
-SERVICE_VERSION = "0.4.1"
+SERVICE_VERSION = "0.4.2"
 
 
 @contextlib.asynccontextmanager
@@ -297,6 +297,7 @@ def paper_cover(pid: str):
 
 class PaperUpdateBody(BaseModel):
     title: str | None = None
+    abstract: str | None = None
     fav: bool | None = None
     tags: list[str] | None = None
     cat: str | None = None
@@ -306,8 +307,7 @@ class PaperUpdateBody(BaseModel):
 def export_paper_text(pid: str, max_pages: int = 0, max_chars: int = 0):
     """导出「可粘贴给网页 AI」的全文纯文本。
 
-    与 /api/summaries 内部用的 4 页/8000 字节选不同，这里默认不限量，
-    但仍做去噪（合并硬换行、剔除页眉页码），避免碎行浪费 token。
+    默认不限量，并做去噪（合并硬换行、剔除页眉页码），避免碎行浪费 token。
     max_pages / max_chars 传 0 表示不限制。"""
     paper = store.get_paper(pid)
     if not paper:
@@ -433,6 +433,8 @@ def update_paper(pid: str, body: PaperUpdateBody):
         if not title or len(title) > 500:
             raise HTTPException(400, "文献名称不能为空，且不能超过 500 个字符")
         fields["title"] = title
+    if "abstract" in fields:
+        fields["abstract"] = fields["abstract"].strip()
     if "tags" in fields:
         # 规整：去空白、去重、限长限量
         clean: list[str] = []
@@ -753,7 +755,7 @@ def remove_prompt(pid: str):
     return {"ok": True}
 
 
-# ---------- AI 总结（SSE 流式） ----------
+# ---------- PDF 全文导出 ----------
 
 def _clean_pdf_text(raw: str) -> str:
     """把 pypdf 抽出的原始文本收拾成可粘贴的连续段落：
@@ -812,150 +814,6 @@ def _extract_text_clean(pdf_path: Path, max_pages: int = 0, max_chars: int = 0) 
         return _clean_pdf_text(joined)
     except Exception:
         return ""
-
-
-def _extract_text(pdf_path: Path, max_pages: int = 4, max_chars: int = 8000) -> str:
-    try:
-        reader = PdfReader(str(pdf_path))
-        parts, total = [], 0
-        for page in reader.pages[:max_pages]:
-            t = (page.extract_text() or "").strip()
-            parts.append(t)
-            total += len(t)
-            if total >= max_chars:
-                break
-        return "\n".join(parts)[:max_chars]
-    except Exception:
-        return ""
-
-
-def _render_prompt(template: str, paper: dict, content: str) -> str:
-    return (template
-            .replace("{{title}}", paper.get("title") or "未知标题")
-            .replace("{{venue}}", f"{paper.get('venue') or ''} {paper.get('year') or ''}".strip() or "未知来源")
-            .replace("{{lang}}", "简体中文")
-            .replace("{{abstract}}", content or "（未能提取到正文文本）"))
-
-
-class SummaryBody(BaseModel):
-    paper_id: str
-    prompt_id: str
-    force: bool = False
-    mode: str = "text"          # text | vision（视觉精读：逐页渲染成图随消息发送）
-
-
-VISION_MAX_PAGES = 12
-VISION_DPI = 130
-
-
-def _render_page_images(pdf_path: Path, max_pages: int = VISION_MAX_PAGES,
-                        dpi: int = VISION_DPI, quality: int = 80) -> list[str]:
-    """PyMuPDF 逐页渲染 JPEG → base64 data URL（多模态消息用）"""
-    import base64
-
-    import fitz  # pymupdf
-
-    urls = []
-    doc = fitz.open(str(pdf_path))
-    try:
-        for page in doc.pages(0, min(doc.page_count, max_pages)):
-            pix = page.get_pixmap(dpi=dpi)
-            img = pix.tobytes("jpeg", jpg_quality=quality)
-            urls.append("data:image/jpeg;base64," + base64.b64encode(img).decode())
-    finally:
-        doc.close()
-    return urls
-
-
-@app.post("/api/summaries")
-def create_summary(body: SummaryBody):
-    import json as _json
-    import openai as openai_lib
-
-    paper = store.get_paper(body.paper_id)
-    if not paper:
-        raise HTTPException(404, "文献不存在")
-    prompt = store.get_prompt(body.prompt_id)
-    if not prompt:
-        raise HTTPException(404, "提示词模板不存在")
-
-    cfg = store.get_settings()
-    api_key = (cfg.get("api_key") or "").strip()
-    if not api_key or _is_mask(api_key):
-        raise HTTPException(400, "请先到「设置 → AI 服务」添加并配置 API")
-    base_url = cfg.get("base_url") or ""
-    model = cfg.get("model") or ""
-    if not base_url or not model:
-        raise HTTPException(400, "请到「设置 → AI 服务」填写当前 API 的 Base URL 和模型")
-
-    mode = body.mode if body.mode in ("text", "vision") else "text"
-    text = _extract_text(store.paper_file(body.paper_id))
-    if mode == "text" and not text.strip():
-        raise HTTPException(400, "无法从该 PDF 提取文本（扫描版可在侧栏开启「视觉精读」）")
-
-    page_images: list[str] = []
-    if mode == "vision":
-        try:
-            page_images = _render_page_images(store.paper_file(body.paper_id))
-        except Exception as exc:
-            raise HTTPException(400, f"页面渲染失败：{exc}")
-        if not page_images:
-            raise HTTPException(400, "该 PDF 没有可渲染的页面")
-        # 视觉模式下正文文本仅作辅助（前 2 页），页面图承载完整版面
-        text = _extract_text(store.paper_file(body.paper_id), max_pages=2, max_chars=5000)
-
-    user_prompt = _render_prompt(prompt["content"], paper, text)
-    if mode == "vision":
-        user_prompt += "\n\n（随消息附上了论文逐页截图，请结合页面中的图表、公式与排版信息补充总结；如与文本不一致，以图为准。）"
-        if paper.get("pages") and paper["pages"] > len(page_images):
-            user_prompt += f"\n\n（注意：论文共 {paper['pages']} 页，本次仅提供前 {len(page_images)} 页截图，请基于现有内容总结，不要臆测未提供的部分。）"
-
-    cache_key = f"{body.prompt_id}:{mode}"
-
-    def gen():
-        accumulated, completed = [], False
-        try:
-            client = openai_lib.OpenAI(base_url=base_url, api_key=api_key, timeout=180)
-            meta = {"model": model, "prompt": prompt["name"], "mode": mode,
-                    "pages": len(page_images)}
-            yield f"data: {_json.dumps({'meta': meta}, ensure_ascii=False)}\n\n"
-
-            if mode == "vision":
-                content: list = [{"type": "text", "text": user_prompt}]
-                content += [{"type": "image_url", "image_url": {"url": u}} for u in page_images]
-                user_message = {"role": "user", "content": content}
-            else:
-                user_message = {"role": "user", "content": user_prompt}
-
-            stream = client.chat.completions.create(
-                model=model,
-                messages=[
-                    {"role": "system", "content": "你是严谨的学术文献助手，严格按用户要求的格式输出。"},
-                    user_message,
-                ],
-                stream=True,
-                temperature=cfg.get("temperature", 0.3),
-            )
-            for chunk in stream:
-                delta = chunk.choices[0].delta.content if chunk.choices and chunk.choices[0].delta else None
-                if delta:
-                    accumulated.append(delta)
-                    yield f"data: {_json.dumps({'delta': delta}, ensure_ascii=False)}\n\n"
-            completed = True  # 上游已完整生成；此后断连也照常落盘
-            yield "data: [DONE]\n\n"
-        except Exception as exc:
-            yield f"data: {_json.dumps({'error': str(exc)}, ensure_ascii=False)}\n\n"
-        finally:
-            if completed and accumulated:
-                store.save_summary(body.paper_id, cache_key, "".join(accumulated), model)
-
-    return StreamingResponse(gen(), media_type="text/event-stream", headers={"Cache-Control": "no-cache"})
-
-
-@app.get("/api/summaries/{paper_id}")
-def get_summary(paper_id: str, prompt_id: str, mode: str = "text"):
-    key = f"{prompt_id}:{mode if mode in ('text', 'vision') else 'text'}"
-    return store.get_summary(paper_id, key) or {}
 
 
 # ---------- 笔记（Markdown） ----------

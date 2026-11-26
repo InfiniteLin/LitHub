@@ -121,6 +121,14 @@ with tempfile.TemporaryDirectory(prefix="lithub-title-test-") as temporary, cont
     from store import Store
     assert Store().get_paper(pid)["title"] == "新的论文名称 Test"
     assert Store().get_paper(pid)["authors"] == "Alice Example, Bob Example"
+    intro = "第一段简介。\n\n第二段简介。"
+    response = client.patch(f"/api/papers/{pid}", json={"abstract": f"  {intro}\n"})
+    assert response.status_code == 200 and response.json()["abstract"] == intro, response.text
+    assert Store().get_paper(pid)["abstract"] == intro
+    assert store.paper_file(pid).read_bytes() == before
+    client.patch(f"/api/papers/{pid}", json={"abstract": ""}).raise_for_status()
+    assert Store().get_paper(pid)["abstract"] == ""
+    print("PASS paper introduction persists, preserves paragraph breaks and can be cleared")
     annotation = client.post(f"/api/papers/{pid}/annotations", json={"kind":"note", "page":1,
         "rects":[{"x":.1,"y":.2,"w":.3,"h":.02}], "text":"source", "comment":"preserve comment", "color":"blue"}).json()
     aid = annotation["id"]

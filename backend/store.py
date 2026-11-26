@@ -93,7 +93,7 @@ def _ensure_dirs():
 def _empty():
     return {
         "papers": {}, "tasks": {}, "settings": copy.deepcopy(DEFAULT_SETTINGS),
-        "prompts": {p["id"]: dict(p) for p in DEFAULT_PROMPTS}, "summaries": {},
+        "prompts": {p["id"]: dict(p) for p in DEFAULT_PROMPTS},
         "categories": [{"id": "local", "name": "本地文献", "parent": None}],
         "notes": {},       # paper_id -> [note]
         "annotations": {},  # paper_id -> [annotation]
@@ -110,7 +110,6 @@ def _load():
             db.setdefault("settings", dict(DEFAULT_SETTINGS))
             if not db.setdefault("prompts", {}):
                 db["prompts"] = {p["id"]: dict(p) for p in DEFAULT_PROMPTS}
-            db.setdefault("summaries", {})
             db.setdefault("notes", {})
             db.setdefault("annotations", {})
             if not db.setdefault("categories", []):
@@ -254,7 +253,6 @@ class Store:
                 return False
             translated_file = p.get("translated_file")
             self._db["tasks"] = {k: t for k, t in self._db["tasks"].items() if t.get("paper_id") != pid}
-            self._db["summaries"].pop(pid, None)
             self._db["notes"].pop(pid, None)
             self._db["annotations"].pop(pid, None)
             self._flush()
@@ -464,23 +462,6 @@ class Store:
             del self._db["prompts"][pid]
             self._flush()
             return True
-
-    # ---------- summaries ----------
-    def get_summary(self, paper_id, prompt_id):
-        with _lock:
-            s = self._db["summaries"].get(paper_id, {}).get(prompt_id)
-            return dict(s) if s else None
-
-    def save_summary(self, paper_id, prompt_id, content, model):
-        with _lock:
-            if paper_id not in self._db["papers"]:
-                return  # 文献已删除，丢弃孤儿总结
-            self._db["summaries"].setdefault(paper_id, {})[prompt_id] = {
-                "content": content,
-                "model": model,
-                "created": datetime.now().isoformat(timespec="seconds"),
-            }
-            self._flush()
 
     # ---------- notes（Markdown 笔记） ----------
     def list_notes(self, paper_id):

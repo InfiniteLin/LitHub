@@ -78,11 +78,13 @@ await sleep(400);
 check("再次点击可收起", !(await evaluate(`document.querySelector('.row-wrap').classList.contains('open')`)));
 check("收起后附件树隐藏", await evaluate(`document.querySelector('.att-tree').hidden`));
 
-/* 3. 点击条目本体 → 进入阅读器，且不应展开 */
+/* 3. 单击查看信息，双击打开阅读器 */
 await evaluate(`document.querySelector('.row').click()`);
+check("单击文献打开右侧信息", await evaluate(`location.hash === '#/library' && !!document.querySelector('#paper-details')`));
+await evaluate(`document.querySelector('.row').dispatchEvent(new MouseEvent('dblclick', { bubbles: true }))`);
 await sleep(2500);
 const hashAfterRow = await evaluate(`location.hash`);
-check("点击条目本体进入阅读器", hashAfterRow.startsWith("#/reader/"), `实际 ${hashAfterRow}`);
+check("双击文献进入阅读器", hashAfterRow.startsWith("#/reader/"), `实际 ${hashAfterRow}`);
 
 /* 4. 回到库，展开「已翻译」的文献，点「译文」附件 → 阅读器 + zh 模式 */
 await evaluate(`location.hash='#/library'`);

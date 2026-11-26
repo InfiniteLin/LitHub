@@ -257,8 +257,6 @@ body:not(.desktop) .tb-drag { display: none; }
 .btn:disabled { opacity: 0.55; cursor: default; transform: none; }
 .btn-primary { background: var(--accent); border-color: var(--accent); color: #fff8f0; }
 .btn-primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
-.btn-ai { background: var(--accent); border-color: var(--accent); color: #fff8f0; }
-.btn-ai:hover { background: var(--accent-hover); }
 .btn.sm { padding: 5px 11px; font-size: 12.5px; }
 
 .icon-btn {
@@ -285,8 +283,8 @@ body:not(.desktop) .tb-drag { display: none; }
 }
 .pill .dot { width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
 .pill-ok { background: var(--ok-soft); color: var(--ok-ink); }
-.pill-ai { background: var(--accent-soft); color: var(--accent-ink); }
 .pill-new { background: color-mix(in srgb, var(--gold) 18%, transparent); color: var(--warn-ink); }
+.pill-accent { background: var(--accent-soft); color: var(--accent-ink); }
 
 .switch { display: inline-flex; align-items: center; gap: 9px; cursor: pointer; user-select: none; }
 .switch input { display: none; }
@@ -346,6 +344,35 @@ body:not(.desktop) .tb-drag { display: none; }
 
 .table-area { max-width: 1240px; margin: 0 auto; padding: 0 40px 60px; }
 
+#paper-details {
+  flex: 0 0 clamp(280px, 24vw, 360px);
+  min-height: 0;
+  overflow-y: auto;
+  padding: 20px;
+  border-left: 1px solid var(--line);
+  background: var(--surface);
+}
+.paper-details-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.paper-details-head h2 { font-family: var(--serif); font-size: 16px; font-weight: 600; }
+.paper-details-meta { margin: 22px 0; }
+.paper-details-meta dt, .paper-intro label { color: var(--ink-3); font-size: 12px; }
+.paper-details-meta dd { margin: 4px 0 16px; line-height: 1.55; overflow-wrap: anywhere; }
+.paper-details-title { font: 600 19px/1.4 var(--serif); }
+.paper-intro { display: grid; gap: 8px; }
+.paper-intro textarea {
+  width: 100%; min-height: 168px; padding: 10px 12px; resize: vertical;
+  border: 1px solid var(--line-2); border-radius: var(--r-sm);
+  background: var(--surface-2); color: var(--ink); font: inherit; line-height: 1.6;
+}
+.paper-intro textarea:focus { outline: 1px solid var(--accent); }
+.paper-details-actions { display: flex; justify-content: space-between; gap: 8px; }
+@media (max-width: 1050px) {
+  #paper-details {
+    position: fixed; inset: var(--titlebar-h) 0 0 auto; z-index: 12;
+    width: min(340px, 92vw); box-shadow: var(--shadow-md);
+  }
+}
+
 /* ---------- 文献条目 + 可展开附件树（Zotero 式） ---------- */
 .row-wrap { border-bottom: 1px solid var(--line); }
 .row-wrap:first-child { border-top: 1px solid var(--line); }
@@ -358,13 +385,13 @@ body:not(.desktop) .tb-drag { display: none; }
   cursor: pointer; position: relative;
   transition: background 0.15s var(--ease);
 }
-.row:hover { background: color-mix(in srgb, var(--surface) 72%, transparent); }
+.row:hover, .row[aria-current="true"] { background: color-mix(in srgb, var(--surface) 72%, transparent); }
 .row::before {
   content: ""; position: absolute; left: 0; top: 20%; bottom: 20%;
   width: 2.5px; border-radius: 99px; background: var(--accent);
   opacity: 0; transition: opacity 0.15s var(--ease);
 }
-.row:hover::before { opacity: 1; }
+.row:hover::before, .row[aria-current="true"]::before { opacity: 1; }
 
 /* 展开/收起三角：固定占位，避免展开态与收起态标题左右错位 */
 .row-toggle {
@@ -472,7 +499,7 @@ body:not(.desktop) .tb-drag { display: none; }
 .row-tags .tag-chip { pointer-events: auto; background: transparent; }
 .row-status { display: flex; gap: 6px; flex: none; width: 172px; justify-content: flex-end; }
 .row-go { color: var(--ink-3); opacity: 0; transform: translateX(-4px); transition: all 0.15s var(--ease); }
-.row:hover .row-go { opacity: 1; transform: translateX(0); }
+.row:hover .row-go, .row:focus-within .row-go, .row[aria-current="true"] .row-go { opacity: 1; transform: translateX(0); }
 .row-acts { display: flex; gap: 2px; flex: none; opacity: 0; transition: opacity 0.15s var(--ease); }
 .row:hover .row-acts, .row-acts.has-fav { opacity: 1; }
 .row:focus-within .row-acts { opacity: 1; }
@@ -655,6 +682,8 @@ mark {
   box-shadow: var(--shadow-sm);
 }
 .gcard:hover { transform: translateY(-3px); box-shadow: var(--shadow-md); border-color: var(--line-2); }
+.gcard[aria-current="true"] { border-color: var(--accent); }
+.row:focus-visible, .gcard:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .gcard .cover { border-radius: 0; box-shadow: none; aspect-ratio: 4 / 5; border-bottom: 1px solid var(--line); }
 .gcard .cover em { display: none; }
 .gcard-body { padding: 13px 15px 4px; }
@@ -1162,7 +1191,7 @@ body.annot-resizing .panes { transition: none; }
   body.annot-open .annot-panel { box-shadow: -8px 0 28px rgba(33, 29, 21, 0.18); }
 }
 .annot-head { padding: 16px 18px 10px; border-bottom: 1px solid var(--line); }
-.annot-head .ai-head-title { margin-bottom: 0; }
+.annot-head .panel-title { margin-bottom: 0; }
 .annot-total {
   font-size: 11px; font-weight: 600; padding: 1px 8px; border-radius: 99px;
   background: var(--accent-soft); color: var(--accent-ink);
@@ -1303,9 +1332,9 @@ body.annot-resizing .panes { transition: none; }
 }
 .sel-pop button:hover { background: rgba(255, 250, 240, 0.12); color: #fff; }
 
-/* ---------- AI 总结面板 ---------- */
-.ai-panel {
-  position: fixed; top: 0; right: 0; bottom: 0; z-index: 60;
+/* ---------- 笔记侧栏与面板通用样式 ---------- */
+.note-panel {
+  position: fixed; top: var(--titlebar-h); right: 0; bottom: 0; z-index: 60;
   width: 400px; max-width: 92vw;
   display: flex; flex-direction: column;
   background: var(--surface);
@@ -1314,48 +1343,24 @@ body.annot-resizing .panes { transition: none; }
   transform: translateX(24px); opacity: 0;
   transition: all 0.25s var(--ease);
 }
-.ai-panel.open { transform: translateX(0); opacity: 1; }
-/* 顶部 chrome（标签栏所在行）在所有模式下都存在，面板需下移，避免遮住页签 */
-.ai-panel { top: var(--titlebar-h); }
-.ai-head { padding: 16px 18px 12px; border-bottom: 1px solid var(--line); }
-.ai-head-title { display: flex; align-items: center; gap: 8px; }
-.ai-head-title h2 { font-family: var(--serif); font-size: 16px; font-weight: 600; flex: 1; }
-.ai-head-title .icon-btn { color: var(--ink-3); }
-.ai-prompt-row { display: flex; align-items: center; gap: 8px; margin-top: 12px; }
-.ai-body { flex: 1; overflow-y: auto; padding: 6px 18px 18px; }
-.ai-sec { padding: 15px 0; border-bottom: 1px dashed var(--line); }
-.ai-sec:last-child { border-bottom: 0; }
-.ai-sec h3 {
-  font-size: 11px; font-weight: 600; letter-spacing: 0.14em;
-  color: var(--accent-ink); text-transform: uppercase; margin-bottom: 7px;
-  display: flex; align-items: center; gap: 8px;
-}
-.ai-sec h3::before { content: ""; width: 14px; height: 1.5px; background: var(--accent); opacity: 0.7; }
-.ai-sec p { font-size: 13px; line-height: 1.75; color: var(--ink); }
-.ai-sec ul { list-style: none; }
-.ai-sec li { font-size: 13px; line-height: 1.7; color: var(--ink); padding-left: 15px; position: relative; margin-bottom: 5px; }
-.ai-sec li::before { content: "·"; position: absolute; left: 2px; color: var(--accent); font-weight: 700; }
-.ai-body.stagger .ai-sec { animation: secIn 0.4s var(--ease) both; animation-delay: calc(var(--i) * 90ms); }
-@keyframes secIn { from { opacity: 0; transform: translateY(8px); } }
-.ai-cursor {
-  display: inline-block; width: 8px; height: 15px;
-  margin: 2px 0 0 14px; border-radius: 2px;
-  background: var(--accent); vertical-align: middle;
-  animation: pulse 0.9s infinite;
-}
+.note-panel.open { transform: translateX(0); opacity: 1; }
+.note-panel-header { padding: 16px 18px 12px; border-bottom: 1px solid var(--line); }
+.panel-title { display: flex; align-items: center; gap: 8px; }
+.panel-title h2 { font-family: var(--serif); font-size: 16px; font-weight: 600; flex: 1; }
+.panel-title .icon-btn { color: var(--ink-3); }
 .muted-note { font-size: 12.5px; color: var(--ink-3); }
 .err-note {
   font-size: 13px; color: var(--err-ink); background: var(--err-soft);
   border: 1px solid color-mix(in srgb, var(--err) 30%, transparent);
   border-radius: var(--r-sm); padding: 10px 14px; line-height: 1.6;
 }
-.ai-foot {
+.note-footer {
   display: flex; align-items: center; justify-content: space-between; gap: 10px;
   padding: 12px 18px; border-top: 1px solid var(--line);
   background: var(--surface-2);
 }
-.ai-meta { font-size: 11px; color: var(--ink-3); }
-.ai-foot-btns { display: flex; gap: 8px; }
+.panel-meta { font-size: 11px; color: var(--ink-3); }
+.note-footer-btns { display: flex; gap: 8px; }
 
 /* ---------- 整页笔记（文献库 → 新标签页） ----------
    与右侧栏面板共用编辑器 DOM 与逻辑（见 app.js 的 noteToolsHTML / noteBodyHTML），
@@ -1441,7 +1446,7 @@ body.annot-resizing .panes { transition: none; }
 }
 .note-page .markdown-body { font-size: 14px; }
 /* 底部工具栏与纸同底，避免出现「纸下一块灰色」的断层 */
-.note-page .ai-foot {
+.note-page .note-footer {
   flex: none;
   padding: 9px 0;
   background: transparent;
@@ -1502,7 +1507,7 @@ body.annot-resizing .panes { transition: none; }
 /* 拖动期间：禁止选中文字 + 保持 col-resize 光标（指针移出把手也不会闪回箭头） */
 body.note-resizing, body.annot-resizing { user-select: none; cursor: col-resize; }
 body.note-resizing *, body.annot-resizing * { cursor: col-resize !important; }
-/* 拖动中关掉面板的 transition：.ai-panel 上有 transition:all，
+/* 拖动中关掉面板的 transition：.note-panel 上有 transition:all，
    否则每次 width 变化都会被 0.25s 动画吃掉，拖动会明显滞后于鼠标 */
 body.note-resizing .note-panel { transition: none; }
 
@@ -1648,34 +1653,6 @@ body > :is(.mu-float-wrapper,.mu-front-button-wrapper) { z-index:330; }
   flex: none; font-size: 10px; font-weight: 600; padding: 1px 7px;
   border-radius: 99px; background: var(--accent-soft); color: var(--accent-ink);
 }
-.ai-skeleton { padding: 16px 0; }
-.sk-sec { margin-bottom: 26px; }
-.sk { height: 13px; border-radius: 6px; margin-bottom: 9px; background: linear-gradient(90deg, var(--line) 25%, var(--surface-2) 45%, var(--line) 65%); background-size: 240% 100%; animation: shimmer 1.2s infinite; }
-.sk-h { width: 90px; height: 10px; }
-.sk.short { width: 62%; }
-@keyframes shimmer { from { background-position: 120% 0; } to { background-position: -120% 0; } }
-
-/* ---- AI 面板「待发送」空态 ----
-   打开面板不再自动请求（有 token 成本），先停在这里等用户点「发送」。 */
-.ai-idle {
-  display: flex; flex-direction: column; align-items: center; justify-content: center;
-  gap: 10px; min-height: 260px; padding: 40px 24px; text-align: center;
-}
-.ai-idle-ico {
-  display: grid; place-items: center;
-  width: 46px; height: 46px; border-radius: 50%;
-  background: var(--accent-soft); color: var(--accent-ink);
-  margin-bottom: 2px;
-}
-.ai-idle-title {
-  font-family: var(--serif); font-size: 14.5px; font-weight: 600; color: var(--ink);
-}
-.ai-idle-desc { font-size: 12px; line-height: 1.75; color: var(--ink-3); }
-.ai-idle-desc b { color: var(--ink-2); font-weight: 600; }
-/* 发送按钮：生成中禁用并显示「生成中…」，已生成后变成「重新生成」 */
-#ai-send[data-state="busy"] { opacity: 0.75; cursor: progress; }
-
-
 /* 设置页的站点编辑行 */
 .webai-sites { display: flex; flex-direction: column; gap: 8px; margin: 4px 0 2px; }
 .webai-site-row { display: flex; gap: 8px; align-items: center; }
@@ -1921,7 +1898,7 @@ body.webai-open #toast-root { left: calc(var(--webai-left, 100%) / 2); }
      普通左右并排不受影响） */
   .panes.dual .pane-divider { width: auto; height: 13px; margin-left: 0; margin-top: -12px; }
   .panes.dual .pane-divider::after { top: auto; bottom: 0; left: 0; right: 0; width: auto; height: 1px; }
-  .ai-panel { width: 100vw; max-width: 100vw; }
+  .note-panel { width: 100vw; max-width: 100vw; }
 }
 /* Notes: compact controls with transient lists, no permanent side chrome. */
 .note-select-compat { display:none !important; }

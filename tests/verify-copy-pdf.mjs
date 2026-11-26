@@ -1,6 +1,6 @@
 /* 验证「复制 PDF」真的只是复制，不是下载。
    覆盖：
-     1) 面板头的按钮点下去后，剪贴板出现 CF_HDROP（文件拖放格式），且不是文本
+     1) 点击工具栏「复制原文 PDF」后，剪贴板出现 CF_HDROP（文件拖放格式）
      2) 后台（sidecar）没有向下载文件夹写入任何文件
      3) 剪贴板里的文件名是论文标题，不是内部 ID
    用法：先启动应用（--remote-debugging-port=9333），再 node tests/verify-copy-pdf.mjs
@@ -168,6 +168,8 @@ await sleep(900);
 
 const hasBtn = await evalJS(`!!document.querySelector('[data-action="webai-copy-pdf"]')`);
 check("面板头出现「复制 PDF」按钮", hasBtn);
+const hasToolbarButton = await evalJS(`!!document.querySelector('.reader-bar [data-action="copy-original-pdf"]')`);
+check("工具栏出现「复制原文 PDF」按钮", hasToolbarButton);
 
 /* ---------- 点它 ---------- */
 const before = listDownloads();
@@ -178,7 +180,7 @@ await sleep(400);
 const probe = readClipboard();
 check("清空后剪贴板先只有文本（探针）", probe.text && !probe.hdrop, JSON.stringify(probe));
 
-await evalJS(`document.querySelector('[data-action="webai-copy-pdf"]').click(), true`);
+await evalJS(`document.querySelector('.reader-bar [data-action="copy-original-pdf"]').click(), true`);
 await sleep(2500);
 
 const after = readClipboard();

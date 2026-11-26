@@ -123,7 +123,7 @@ try {
     LithubAPI.createNote=async(p,data)=>{const n={id:'new-'+Date.now(),...data};noteDB.get(p).push(n);return {...n}};
     LithubAPI.deleteNote=async(p,id)=>{const list=noteDB.get(p);noteTrash.set(id,list.find(n=>n.id===id));noteDB.set(p,list.filter(n=>n.id!==id));return {ok:true}};
     LithubAPI.restoreNote=async(p,id)=>{const n=noteTrash.get(id);noteDB.get(p).push(n);return {...n}};
-    LithubAPI.annotations=async()=>[];LithubAPI.summaryCache=async()=>({});
+    LithubAPI.annotations=async()=>[];
     location.hash='#/note/'+testPaper.id;
   `);
   await until('real Muya note and outline mounted', `NoteEditor._ready() && noteState.currentId==='na' && document.querySelector('#note-title').value==='方法笔记' && document.querySelectorAll('#note-outline-list button').length===1`);

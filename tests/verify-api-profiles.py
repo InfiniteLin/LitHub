@@ -4,9 +4,8 @@ import json
 import os
 from pathlib import Path
 import sys
-from types import SimpleNamespace
 import tempfile
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'backend'))
 with tempfile.TemporaryDirectory(prefix='lithub-api-profiles-') as temporary, contextlib.ExitStack() as cleanup:
@@ -71,12 +70,6 @@ with tempfile.TemporaryDirectory(prefix='lithub-api-profiles-') as temporary, co
         client.post('/api/settings/models',json={'provider':'unsaved-api','base_url':'https://draft.example/v1','api_key':'fictional-draft-key'}).raise_for_status()
         discovery.assert_called_with('https://draft.example/v1','fictional-draft-key')
         assert library.read_text(encoding='utf8') == before_probe,'model discovery must never save the draft or selected model'
-    with patch.object(main,'_extract_text',return_value='isolated paper'), patch('openai.OpenAI') as ai:
-        ai.return_value.chat.completions.create.return_value = [SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content='summary'))])]
-        summary = client.post('/api/summaries',json={'paper_id':'p1','prompt_id':'d1','mode':'text'})
-        assert summary.status_code == 200, summary.text
-        assert ai.call_args.kwargs['base_url'] == profiles[1]['base_url']
-        assert ai.return_value.chat.completions.create.call_args.kwargs['temperature'] == 0.8
     store.set_settings({'service':'openai'})
     task = store.add_task('p1')
     with patch.object(translate.plugin_manager, 'runtime', return_value=(['fake-pdf2zh-next'], base / 'engine-home')), patch.object(translate.subprocess,'Popen') as process:
@@ -85,7 +78,8 @@ with tempfile.TemporaryDirectory(prefix='lithub-api-profiles-') as temporary, co
         translate._run_one(task['id'])
         env = process.call_args.kwargs['env']
         assert env['PDF2ZH_OPENAI_BASE_URL'] == profiles[1]['base_url'] and env['PDF2ZH_OPENAI_API_KEY'] == keys['beta']
-    print('PASS rename preserves keys, masked saves, connection test and selected summary/translation configuration')
+        assert env['PDF2ZH_OPENAI_MODEL'] == profiles[1]['model']
+    print('PASS rename preserves keys, masked saves, connection test and selected translation configuration')
 
     before = library.read_text(encoding='utf8')
     with patch.object(store, '_flush', side_effect=OSError('isolated disk failure')):
