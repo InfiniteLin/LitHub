@@ -1,17 +1,17 @@
 {
   "schemaVersion": 1,
   "release": {
-    "tag_name": "v0.4.1",
-    "name": "文枢 LitHub v0.4.1",
+    "tag_name": "v0.4.2",
+    "name": "文枢 LitHub v0.4.2",
     "draft": false,
     "prerelease": false,
-    "body": "## 翻译改进\n\n- 不同文献可同时翻译，每篇独立显示进度和取消操作。同一篇文献重复提交时复用已有任务。\n- 翻译过程实时显示解析版面、翻译正文、排版等阶段，阶段切换时同步最新进度。\n- 翻译插件更新后先用实际翻译入口自检，再切换版本。首次运行可复用旧插件目录中的字体、版面模型及 CMap。\n\n## 下载\n\n下载 Windows x64 免安装 ZIP，完整解压后运行 `LitHub.exe`。\n",
+    "body": "## 文献库\n\n- 单击文献，在右侧查看标题、作者和简介。简介可编辑并保存，双击进入阅读器。\n- 阅读器新增「复制原文 PDF」，可将原始 PDF 文件复制到 Windows 剪贴板。此按钮替代 AI 总结。\n\n## 下载\n\n解压 Windows x64 ZIP 后运行 LitHub.exe。已有用户可在应用内检查更新。\n",
     "assets": [
       {
-        "name": "LitHub-0.4.1-win-x64.zip",
-        "size": 388518746,
+        "name": "LitHub-0.4.2-win-x64.zip",
+        "size": 388971428,
         "state": "uploaded",
-        "digest": "sha256:08998fc895453d08a14e648c65ff00f22e898a7148c6e6d8c4ade3146382a5b8"
+        "digest": "sha256:6bf697c2323d0da0966cef36e2ec7f5996bb8d4fb585004480e28e377e92595c"
       }
     ]
   }
