@@ -32,14 +32,35 @@ import tempfile
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from pdf2zh_next.config import ConfigManager  # noqa: E402
-from pdf2zh_next.high_level import do_translate_async_stream  # noqa: E402
+from pdf2zh_next import high_level  # noqa: E402
 from babeldoc.assets import assets  # noqa: E402
+from openai import APIConnectionError, APIStatusError, APITimeoutError  # noqa: E402
 
-from engine_progress import progress_line, stage_line  # noqa: E402
+from engine_progress import CONNECT_API, PREPARE_ASSETS, STARTUP_ERROR_PREFIX, progress_line, stage_line  # noqa: E402
 
 SELF_CHECK = "--lithub-self-check"
 
 _download_asset = assets.download_file
+_get_translator = high_level.get_translator
+
+
+def _connect_translator(settings):
+    # pdf2zh-next sends a test translation before emitting any PDF progress.
+    if settings.translate_engine_settings.translate_engine_type == "OpenAI":
+        print(stage_line(CONNECT_API), flush=True)
+    try:
+        translator = _get_translator(settings)
+    except (APIStatusError, APIConnectionError) as exc:
+        if isinstance(exc, APIStatusError):
+            code = exc.status_code
+        elif isinstance(exc, APITimeoutError):
+            code = "timeout"
+        else:
+            code = "connection"
+        print(f"{STARTUP_ERROR_PREFIX} {code}", flush=True)
+        raise
+    print(stage_line(PREPARE_ASSETS), flush=True)
+    return translator
 
 
 async def _download_shared_asset(client=None, url=None, path=None, sha3_256=None):
@@ -64,6 +85,7 @@ async def _download_shared_asset(client=None, url=None, path=None, sha3_256=None
 
 # On Windows BabelDOC starts with multiprocessing spawn, which imports this entry.
 assets.download_file = _download_shared_asset
+high_level.get_translator = _connect_translator
 
 
 async def _translate(settings) -> int:
@@ -83,7 +105,7 @@ async def _translate(settings) -> int:
         span = 100 / total
         current = None
         try:
-            async for event in do_translate_async_stream(settings, file):
+            async for event in high_level.do_translate_async_stream(settings, file):
                 kind = event.get("type")
                 if kind in ("progress_start", "progress_update", "progress_end"):
                     stage = event.get("stage") or ""
@@ -119,7 +141,7 @@ def main() -> int:
             raise ValueError(f"插件版本与预期 {expected} 不符")
     settings = ConfigManager().initialize_config()
     if expected is not None:
-        inspect.signature(do_translate_async_stream).bind(settings, "probe.pdf")
+        inspect.signature(high_level.do_translate_async_stream).bind(settings, "probe.pdf")
         return 0
     try:
         return asyncio.run(_translate(settings))

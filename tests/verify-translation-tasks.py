@@ -16,7 +16,7 @@ with tempfile.TemporaryDirectory(prefix='lithub-translation-') as temporary, con
     base = Path(temporary)
     (base / 'library.json').write_text(json.dumps({
         'papers': {pid: {'id': pid, 'title': pid, 'translated': False}
-                   for pid in ('p1', 'p2', 'p3', 'p4')},
+                   for pid in ('p1', 'p2', 'p3', 'p4', 'p5')},
         'settings': {}, 'tasks': {},
     }), encoding='utf8')
     os.environ.update(LITHUB_DATA_DIR=str(base), LITHUB_PROGRAM_DIR=str(base),
@@ -140,6 +140,53 @@ with tempfile.TemporaryDirectory(prefix='lithub-translation-') as temporary, con
     # 该任务本身没有产出 PDF，按失败收尾；文献不应被标记为已翻译
     assert store.get_task(progressed['id'])['status'] == 'failed'
     assert not store.get_paper('p1')['translated']
+
+    with patch.object(translate, '_start_task'):
+        unavailable = start()
+    reply_unavailable = (
+        "print('LITHUB-STAGE Connect Translation API'); "
+        "print('LITHUB-STARTUP-ERROR 503'); "
+        "print('error: upstream response body'); raise SystemExit(1)"
+    )
+    with patch.object(translate.plugin_manager, 'runtime', return_value=(
+              [sys.executable, '-u', '-c', reply_unavailable], base / 'engine-home')):
+        translate._run_one(unavailable['id'])
+    failed = store.get_task(unavailable['id'])
+    assert failed['status'] == 'failed' and failed['progress'] == 0
+    assert 'HTTP 503' in failed['note'] and 'upstream response body' not in failed['note']
+
+    with patch.object(translate, '_start_task'):
+        stalled = start()
+    no_response = "import time; print('LITHUB-STAGE Connect Translation API'); time.sleep(30)"
+    with patch.object(translate.plugin_manager, 'runtime', return_value=(
+              [sys.executable, '-u', '-c', no_response], base / 'engine-home')), \
+         patch.object(translate, '_API_CONNECT_TIMEOUT', 0.5), \
+         patch.object(store, 'update_task', wraps=store.update_task) as changes:
+        before = time.monotonic()
+        translate._run_one(stalled['id'])
+        assert time.monotonic() - before < 10
+        assert any(call.kwargs.get('note') == '正在连接翻译 API…' for call in changes.call_args_list)
+    assert store.get_task(stalled['id'])['status'] == 'failed'
+    assert '连接翻译 API 超时' in store.get_task(stalled['id'])['note']
+    assert stalled['id'] not in translate._procs
+
+    with patch.object(translate, '_start_task'):
+        initializing = start('p5')
+    prepare_then_translate = (
+        "import time; from pathlib import Path; "
+        "print('LITHUB-STAGE Connect Translation API'); "
+        "print('LITHUB-STAGE Prepare Translation Assets'); "
+        "time.sleep(0.45); print('LITHUB-PROGRESS 1 Parse Page Layout'); "
+        "time.sleep(1.4); Path('test-mono.pdf').write_bytes(b'test')"
+    )
+    with patch.object(translate.plugin_manager, 'runtime', return_value=(
+              [sys.executable, '-u', '-c', prepare_then_translate], base / 'engine-home')), \
+         patch.object(translate, '_API_CONNECT_TIMEOUT', 0.25), \
+         patch.object(translate, '_STARTUP_TIMEOUT', 1.8), \
+         patch.object(translate, '_page_count', return_value=1):
+        translate._run_one(initializing['id'])
+    assert store.get_task(initializing['id'])['status'] == 'done'
+    print('PASS API failure is actionable, stalled API is stopped, and PDF progress clears startup deadlines')
 
     with patch.object(translate, '_start_task'):
         completed = start()

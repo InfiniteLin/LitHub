@@ -1,13 +1,13 @@
 {
   "name": "lithub",
   "productName": "文枢 LitHub",
-  "version": "0.4.2",
+  "version": "0.4.3",
   "description": "文献管理与 AI 翻译对照阅读桌面应用",
   "author": "LitHub",
   "main": "electron/main.js",
   "scripts": {
-    "dev": "electron .",
-    "start": "electron .",
+    "dev": "node build/start-dev.cjs",
+    "start": "node build/start-dev.cjs",
     "sidecar": "python -m uvicorn main:app --host 127.0.0.1 --port 8130 --app-dir backend",
     "dist": "node build/release.cjs",
     "dist:installer": "electron-builder --config electron-builder.config.js",

@@ -403,6 +403,7 @@ const currentTitle = () =>
 
 const paperIntroDrafts = new Map();
 const paperIntroSaving = new Set();
+const paperIntroEditing = new Set();
 
 function renderPaperDetails() {
   const p = state.route.view === "library" && paperById(state.selectedPaper);
@@ -419,6 +420,7 @@ function renderPaperDetails() {
   }
   const intro = paperIntroDrafts.get(p.id) ?? p.abstract ?? "";
   const saving = paperIntroSaving.has(p.id);
+  const editing = paperIntroEditing.has(p.id);
   panel.innerHTML = `
     <header class="paper-details-head">
       <h2 id="paper-details-heading">文献信息</h2>
@@ -430,15 +432,33 @@ function renderPaperDetails() {
       <dt>作者</dt>
       <dd>${esc(p.authors || "未知作者")}</dd>
     </dl>
-    <form data-paper-intro="${p.id}" class="paper-intro">
-      <label for="paper-intro">简介</label>
-      <textarea id="paper-intro" name="abstract" placeholder="添加简介" ${saving ? "readonly" : ""}></textarea>
-      <div class="paper-details-actions">
-        <button type="button" class="btn sm" data-action="open" data-id="${p.id}">${I("book", 14)}打开文献</button>
-        <button type="submit" class="btn btn-primary sm" ${saving || intro.trim() === (p.abstract || "") ? "disabled" : ""}>${saving ? "保存中…" : "保存"}</button>
+    <section class="paper-intro-section" aria-labelledby="paper-intro-heading">
+      <div class="paper-intro-head">
+        <h3 id="paper-intro-heading">简介</h3>
+        ${!editing && intro ? `<button class="paper-intro-edit" data-action="edit-paper-intro" data-id="${p.id}">${I("pencil", 13)}编辑</button>` : ""}
       </div>
-    </form>`;
-  panel.querySelector("textarea").value = intro;
+      ${editing ? `<form data-paper-intro="${p.id}" class="paper-intro">
+        <textarea id="paper-intro" name="abstract" aria-label="编辑简介" placeholder="写下这篇论文的简介…" ${saving ? "readonly" : ""}></textarea>
+        <div class="paper-intro-actions">
+          <button type="button" class="btn sm" data-action="cancel-paper-intro" data-id="${p.id}" ${saving ? "disabled" : ""}>取消</button>
+          <button type="submit" class="btn btn-primary sm" ${saving || intro.trim() === (p.abstract || "") ? "disabled" : ""}>${saving ? "保存中…" : "保存"}</button>
+        </div>
+      </form>` : intro ? `<div class="paper-intro-text">${esc(intro)}</div>` :
+        `<button class="paper-intro-add" data-action="edit-paper-intro" data-id="${p.id}">${I("plus", 14)}添加简介</button>`}
+    </section>
+    <div class="paper-details-footer">
+      <button class="btn sm" data-action="open" data-id="${p.id}">${I("book", 14)}打开文献</button>
+    </div>`;
+  const editor = panel.querySelector("textarea");
+  if (editor) {
+    editor.value = intro;
+    resizePaperIntro(editor);
+  }
+}
+
+function resizePaperIntro(editor) {
+  editor.style.height = "auto";
+  editor.style.height = editor.scrollHeight + "px";
 }
 
 function selectLibraryPaper(id) {
@@ -465,6 +485,7 @@ async function savePaperIntro(form) {
     const current = paperById(id);
     if (current) current.abstract = updated.abstract;
     paperIntroDrafts.delete(id);
+    paperIntroEditing.delete(id);
     toast("简介已保存");
   } catch (error) {
     toast(esc(error.message || "保存简介失败"), "err");
@@ -3456,6 +3477,16 @@ document.addEventListener("dblclick", (e) => {
 });
 
 document.addEventListener("keydown", (e) => {
+  if (e.target.id === "paper-intro" && !e.isComposing) {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      e.target.form.querySelector("[data-action='cancel-paper-intro']").click();
+    } else if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+      e.preventDefault();
+      e.target.form.requestSubmit();
+    }
+    return;
+  }
   if (!e.target.matches?.("[data-action='select-paper']") || e.isComposing) return;
   if (e.key === "Enter") {
     e.preventDefault();
@@ -3509,6 +3540,18 @@ document.addEventListener("click", (e) => {
     case "reset-filter": navLibrary({ smart: "all", cat: null, search: "", tag: null }); break;
     case "libview": state.libView = id; render(); break;
     case "select-paper": selectLibraryPaper(id); break;
+    case "edit-paper-intro":
+      paperIntroEditing.add(id);
+      renderPaperDetails();
+      $("#paper-intro")?.focus({ preventScroll: true });
+      break;
+    case "cancel-paper-intro":
+      if (paperIntroSaving.has(id)) break;
+      paperIntroEditing.delete(id);
+      paperIntroDrafts.delete(id);
+      renderPaperDetails();
+      $("#paper-details [data-action='edit-paper-intro']")?.focus({ preventScroll: true });
+      break;
     case "close-paper-details": {
       const selected = state.selectedPaper;
       selectLibraryPaper(null);
@@ -3871,6 +3914,7 @@ document.addEventListener("click", (e) => {
         markSidebarDirty();
         if (state.selectedPaper === id) state.selectedPaper = null;
         paperIntroDrafts.delete(id);
+        paperIntroEditing.delete(id);
         // 该文献的所有标签页（PDF + 笔记）一并关闭
         state.tabs = state.tabs.filter((x) => x.paperId !== id);
         if (noteState.paperId === id) noteState.paperId = null;
@@ -4262,7 +4306,8 @@ document.addEventListener("input", (e) => {
     const id = form.dataset.paperIntro;
     const value = e.target.value;
     paperIntroDrafts.set(id, value);
-    form.querySelector("button[type='submit']").disabled = value.trim() === (paperById(id)?.abstract || "");
+    resizePaperIntro(e.target);
+    form.querySelector("button[type='submit']").disabled = paperIntroSaving.has(id) || value.trim() === (paperById(id)?.abstract || "");
   }
   if (e.target.matches('#set-api-name, #set-base, #set-key, #set-model, #set-temp, #set-webai-url, #set-webai-browser-path, .webai-site-name, .webai-site-url')) captureApiDraft();
   if (e.target.matches('#set-base, #set-key')) scheduleApiModels();
@@ -4878,15 +4923,12 @@ function openAnnotationEditor(pane, ann, mode = "view") {
   if (mode === "view") {
     pop.className = "annot-pop annot-view-pop";
     pop.innerHTML = `
-      <div class="annot-view-head">
-        <span class="annot-view-title">${I("pencil", 12)}批注</span>
-        <div class="annot-view-acts">
-          <button class="btn sm" data-annot-edit-mode title="编辑批注内容">${I("pencil", 12)}编辑</button>
-          <button class="icon-btn sm danger" data-annot-del title="删除批注">${I("trash", 12)}</button>
-          <button class="icon-btn sm" data-annot-close title="关闭">${I("x", 12)}</button>
-        </div>
-      </div>
-      <div class="annot-view-body">${esc(fields.comment || "")}</div>`;
+      <div class="annot-view-body">${esc(fields.comment || "")}</div>
+      <div class="annot-view-acts">
+        <button class="icon-btn sm" data-annot-edit-mode title="编辑批注" aria-label="编辑批注">${I("pencil", 12)}</button>
+        <button class="icon-btn sm danger" data-annot-del title="删除批注" aria-label="删除批注">${I("trash", 12)}</button>
+        <button class="icon-btn sm" data-annot-close title="关闭" aria-label="关闭批注">${I("x", 12)}</button>
+      </div>`;
     $("#overlay-root").appendChild(pop);
     PdfAnnot.select(pane, cur.id);
     $$(".annot-item").forEach(el => el.classList.toggle("is-active", el.dataset.id === cur.id));
@@ -4904,7 +4946,9 @@ function openAnnotationEditor(pane, ann, mode = "view") {
       <button class="icon-btn sm" data-annot-reset-pos title="回到批注文字旁">${I("refresh", 13)}</button>
       <button class="icon-btn sm" data-annot-close title="关闭">${I("x", 13)}</button>
     </div>
-    <div class="annot-edit-tools">
+    <textarea id="annot-comment" aria-label="批注内容" maxlength="4000" placeholder="写下你的想法…">${esc(fields.comment || "")}</textarea>
+    <div class="annot-pop-foot">
+      <div class="annot-edit-tools">
       <div class="annot-color-picker">
         <input type="hidden" data-annot-color value="${fields.color}">
         ${ANNOT_COLOR_LIST.map((key, i) => `
@@ -4913,10 +4957,8 @@ function openAnnotationEditor(pane, ann, mode = "view") {
                   style="background:${PdfAnnot.COLORS[key].fill}"></button>
         `).join("")}
       </div>
-    </div>
-    <textarea id="annot-comment" maxlength="4000" placeholder="写下你的想法…（自动保存，Ctrl+Enter 立即保存）">${esc(fields.comment || "")}</textarea>
-    <div class="annot-pop-foot">
-      <button class="btn sm danger" data-annot-del>${I("trash", 13)}删除</button>
+      </div>
+      <button class="icon-btn sm danger" data-annot-del title="删除批注" aria-label="删除批注">${I("trash", 13)}</button>
       <button class="btn sm btn-primary" data-annot-save>${I("check", 13)}完成</button>
     </div>`;
   pop._dirty = !!draft && JSON.stringify(draft) !== JSON.stringify({comment:cur.comment || "",kind:cur.kind,color:cur.color});
@@ -4942,13 +4984,25 @@ function openAnnotationEditor(pane, ann, mode = "view") {
     clearTimeout(pop._saveTimer);
     pop._saveTimer = setTimeout(()=>saveAnnotationComment(pane,cur.id,{silent:true,close:false,pop}),800);
   };
-  pop.querySelector('textarea').addEventListener('input',changed);
+  const editor = pop.querySelector('textarea');
+  const resizeEditor = () => {
+    editor.style.height = "auto";
+    editor.style.height = editor.scrollHeight + "px";
+    if (pop.classList.contains("manually-placed")) {
+      applyPopPos(pop, parseFloat(pop.style.left), parseFloat(pop.style.top), true);
+    } else {
+      pop.classList.remove("anchor-left", "anchor-right", "anchor-below", "anchor-above");
+      positionAnnotPopNearSelection(pop, pane, cur);
+    }
+  };
+  editor.addEventListener('input', () => { resizeEditor(); changed(); });
   if (pop._dirty) pop._saveTimer = setTimeout(()=>saveAnnotationComment(pane,cur.id,{silent:true,close:false,pop}),800);
   // 定位到批注文字附近（下方优先，空间不足翻到上方）
   positionAnnotPopNearSelection(pop, pane, cur);
   // 支持按住气泡头部拖动；位置按批注 id 记住，重新打开时沿用
   makeAnnotPopDraggable(pop, pane, cur);
-  $("#annot-comment")?.focus();
+  resizeEditor();
+  editor.focus({ preventScroll: true });
 }
 
 /* ---------------- 批注气泡拖动 ----------------
@@ -5046,8 +5100,7 @@ function applyPopPos(pop, left, top, manual) {
    而阅读器两侧通常有页边空白（双语对照时中间也有间隙），遮挡更少。 */
 function positionAnnotPopNearSelection(pop, pane, ann) {
   const FALLBACK = () => {
-    pop.style.left = `${Math.max(12, window.innerWidth - 340)}px`;
-    pop.style.top = "120px";
+    applyPopPos(pop, window.innerWidth - pop.offsetWidth - 12, 120, false);
   };
   const rects = ann.rects || [];
   if (!rects.length) return FALLBACK();
@@ -5158,7 +5211,8 @@ async function saveAnnotationComment(pane, annId, options = {}) {
     const currentPane = state.route.id === p.id ? activePdfPane() : null;
     if (currentPane) PdfAnnot.update(currentPane, ann);
     const currentDraft = readAnnotationDraft(p.id, annId);
-    if (!currentDraft || JSON.stringify(currentDraft) === snapshot) {
+    const savedCurrent = !currentDraft || JSON.stringify(currentDraft) === snapshot;
+    if (savedCurrent) {
       annotationDrafts.delete(key);
       try { localStorage.removeItem(key); } catch {}
       if (pop) pop._dirty = false;
@@ -5169,6 +5223,7 @@ async function saveAnnotationComment(pane, annId, options = {}) {
       }
     }
     if (!options.silent) toast("批注已保存");
+    return savedCurrent ? ann : null;
   } catch (err) {
     if (status) status.textContent = "保存失败，草稿已保留";
     if (!options.silent) toast("保存失败：" + esc(err.message), "err");
@@ -5387,7 +5442,8 @@ document.addEventListener("click", (e) => {
     const pane = activePdfPane();
     if (pop && pane) {
       const annId = pop.dataset.annotId;
-      saveAnnotationComment(pane, annId, { silent: false, close: false, pop }).then(() => {
+      saveAnnotationComment(pane, annId, { silent: false, close: false, pop }).then(saved => {
+        if (!saved || $("#annot-pop") !== pop) return;
         const updated = PdfAnnot.get(pane, annId);
         if (updated && updated.comment?.trim()) openAnnotationEditor(pane, updated, "view");
         else closeAnnotationEditor();
@@ -5412,13 +5468,14 @@ document.addEventListener("click", (e) => {
 
 /* 批注备注：Ctrl/Cmd + Enter 保存后切回查看态 */
 document.addEventListener("keydown", (e) => {
-  if (e.target.id === "annot-comment" && (e.ctrlKey || e.metaKey) && e.key === "Enter") {
+  if (e.target.id === "annot-comment" && !e.isComposing && (e.ctrlKey || e.metaKey) && e.key === "Enter") {
     e.preventDefault();
     const pop = $("#annot-pop");
     const pane = activePdfPane();
     if (pop && pane) {
       const annId = pop.dataset.annotId;
-      saveAnnotationComment(pane, annId, { silent: false, close: false, pop }).then(() => {
+      saveAnnotationComment(pane, annId, { silent: false, close: false, pop }).then(saved => {
+        if (!saved || $("#annot-pop") !== pop) return;
         const updated = PdfAnnot.get(pane, annId);
         if (updated && updated.comment?.trim()) openAnnotationEditor(pane, updated, "view");
         else closeAnnotationEditor();

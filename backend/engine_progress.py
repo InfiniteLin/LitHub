@@ -17,10 +17,16 @@ import re
 
 PROGRESS_PREFIX = "LITHUB-PROGRESS"
 STAGE_PREFIX = "LITHUB-STAGE"
+STARTUP_ERROR_PREFIX = "LITHUB-STARTUP-ERROR"
+CONNECT_API = "Connect Translation API"
+PREPARE_ASSETS = "Prepare Translation Assets"
+STARTUP_STAGES = {CONNECT_API, PREPARE_ASSETS}
 _LEGACY_PERCENT = re.compile(r"(?<![0-9])([0-9]{1,3})%\|")
 
 # 引擎的阶段名是英文标识符，直接显示给用户不友好；未收录的按原样显示。
 STAGE_LABELS = {
+    CONNECT_API: "正在连接翻译 API…",
+    PREPARE_ASSETS: "正在准备版面模型和字体…",
     "Parse PDF and Create Intermediate Representation": "解析 PDF",
     "DetectScannedFile": "检测扫描页",
     "Parse Page Layout": "解析版面",
@@ -39,6 +45,29 @@ STAGE_LABELS = {
 
 def stage_label(stage: str) -> str:
     return STAGE_LABELS.get(stage, stage)
+
+
+def startup_error_message(line: str) -> str | None:
+    prefix, _, code = line.partition(" ")
+    if prefix != STARTUP_ERROR_PREFIX:
+        return None
+    if code == "timeout":
+        return "连接翻译 API 超时，请检查网络后重试"
+    if code == "connection":
+        return "无法连接翻译 API，请检查 Base URL 和网络后重试"
+    if not re.fullmatch(r"[45][0-9]{2}", code):
+        return None
+    if code in ("401", "403"):
+        detail = "请检查 API Key 和模型权限"
+    elif code == "404":
+        detail = "请检查 Base URL 和模型名称"
+    elif code == "429":
+        detail = "请求受限，请检查额度或稍后重试"
+    elif code.startswith("5"):
+        detail = "服务暂不可用，请稍后重试或切换 API"
+    else:
+        detail = "请检查 API 和模型配置"
+    return f"翻译 API 返回 HTTP {code}，{detail}"
 
 
 def progress_line(percent: int, stage: str = "") -> str:

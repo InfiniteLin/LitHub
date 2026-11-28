@@ -13,6 +13,8 @@ from translation_plugin import manager as plugin_manager
 _procs: dict[str, subprocess.Popen] = {}   # task_id -> 运行中的子进程
 _procs_lock = threading.RLock()
 _ACTIVE = {"queued", "running"}
+_STARTUP_TIMEOUT = 300
+_API_CONNECT_TIMEOUT = 60
 
 
 def submit(paper_id: str, retranslate: bool = False) -> dict:
@@ -148,22 +150,56 @@ def _run_one(task_id: str):
     progress = saved_progress = 0
     stage = ""
     code = 1
+    startup_timeout_note = None
+    startup_api_error = None
+    translating = False
+
+    def expire_startup(only_api=False):
+        nonlocal startup_timeout_note
+        with _procs_lock:
+            if (startup_timeout_note or translating or proc.poll() is not None
+                    or not _is_active(task_id)
+                    or (only_api and stage != engine_progress.CONNECT_API)):
+                return
+            if stage == engine_progress.CONNECT_API:
+                startup_timeout_note = "连接翻译 API 超时，请检查网络后重试"
+            elif stage == engine_progress.PREPARE_ASSETS:
+                startup_timeout_note = "准备版面模型和字体超时，请检查网络后重试"
+            else:
+                startup_timeout_note = "启动翻译引擎超时，请重试"
+        _stop_process(proc)
+
+    startup_timer = threading.Timer(_STARTUP_TIMEOUT, expire_startup)
+    api_timer = threading.Timer(_API_CONNECT_TIMEOUT, expire_startup, kwargs={"only_api": True})
+    startup_timer.daemon = api_timer.daemon = True
+    startup_timer.start()
     try:
         assert proc.stdout is not None
         for line in proc.stdout:
             line = line.strip()
+            if message := engine_progress.startup_error_message(line):
+                startup_api_error = message
+                continue
             parsed = engine_progress.parse(line)
             if parsed:
                 pct, new_stage = parsed
                 if pct is not None:
                     progress = max(progress, min(99, pct))
                 changed_stage = bool(new_stage and new_stage != stage)
-                stage = new_stage or stage
                 now = time.monotonic()
+                should_flush = changed_stage or (progress > saved_progress and now - last_flush >= 0.4)
+                if translating and not should_flush:
+                    continue
                 # 阶段切换时一起提交最新进度，包括节流期间收到的数值。
-                if changed_stage or (progress > saved_progress and now - last_flush >= 0.4):
-                    with _procs_lock:
-                        if _is_active(task_id):
+                with _procs_lock:
+                    if not startup_timeout_note and _is_active(task_id):
+                        stage = new_stage or stage
+                        if not translating and (pct is not None or stage not in engine_progress.STARTUP_STAGES):
+                            translating = True
+                            startup_timer.cancel()
+                        if not translating and stage == engine_progress.CONNECT_API and api_timer.ident is None:
+                            api_timer.start()
+                        if should_flush:
                             label = engine_progress.stage_label(stage) if stage else "正在翻译"
                             store.update_task(task_id, progress=progress, note=label)
                             last_flush, saved_progress = now, progress
@@ -176,6 +212,8 @@ def _run_one(task_id: str):
                     err_tail.pop(0)
         code = proc.wait()
     finally:
+        startup_timer.cancel()
+        api_timer.cancel()
         try:
             _stop_process(proc)
             proc.wait()
@@ -193,7 +231,7 @@ def _run_one(task_id: str):
     with _procs_lock:
         if not _is_active(task_id):
             return
-        if code == 0 and mono:
+        if code == 0 and mono and not startup_timeout_note:
             store.update_paper(
                 paper["id"],
                 translated=True,
@@ -205,7 +243,8 @@ def _run_one(task_id: str):
             store.update_task(task_id, status="done", progress=100,
                               note=f"用时 {elapsed // 60} 分 {elapsed % 60} 秒 · 已生成对照版")
         else:
-            note = " / ".join(err_tail[-2:]) if err_tail else f"pdf2zh 退出码 {code}"
+            detail = " / ".join(err_tail[-2:]) if err_tail else f"pdf2zh 退出码 {code}"
+            note = startup_api_error or startup_timeout_note or detail
             store.update_task(task_id, status="failed", note=note[:200])
 
 

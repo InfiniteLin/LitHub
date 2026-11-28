@@ -122,6 +122,8 @@ try {
       && panel.textContent.includes(testPaper.authors);
   })()`);
   const intro = 'Editable introduction.\n\nSecond paragraph.';
+  await check('introduction is displayed as selectable text with an explicit edit action',
+    `!document.querySelector('#paper-intro') && !!document.querySelector('[data-action="edit-paper-intro"]')`);
   await evaluate(`
     window.introTestAPI = { live: LithubAPI.live, updatePaper: LithubAPI.updatePaper };
     LithubAPI.live = true;
@@ -129,12 +131,26 @@ try {
       window.savedIntro = { id, ...fields };
       return fields;
     };
+    document.querySelector('[data-action="edit-paper-intro"]').click();
     document.querySelector('#paper-intro').value = ${JSON.stringify(intro)};
     document.querySelector('#paper-intro').dispatchEvent(new Event('input', { bubbles: true }));
     libraryEntry(state.db.papers[1]).click();
     libraryEntry(testPaper).click();
   `);
   await check('switching papers preserves the unsaved introduction', `document.querySelector('#paper-intro').value === ${JSON.stringify(intro)}`);
+  await evaluate(`
+    document.querySelector('#paper-intro').value = Array(50).fill('A longer introduction line.').join(String.fromCharCode(10));
+    document.querySelector('#paper-intro').dispatchEvent(new Event('input', { bubbles: true }));
+  `);
+  await check('introduction editor grows with content instead of using a small scrolling box', `(() => {
+    const editor = document.querySelector('#paper-intro');
+    return editor.offsetHeight > 600 && editor.scrollHeight <= editor.clientHeight + 2
+      && getComputedStyle(editor).borderTopWidth === '0px';
+  })()`);
+  await evaluate(`
+    document.querySelector('#paper-intro').value = ${JSON.stringify(intro)};
+    document.querySelector('#paper-intro').dispatchEvent(new Event('input', { bubbles: true }));
+  `);
   await evaluate(`document.querySelector('.paper-intro button[type="submit"]').click()`);
   await until('saving the introduction updates the selected paper', `testPaper.abstract === ${JSON.stringify(intro)} && savedIntro.id === testPaper.id && savedIntro.abstract === testPaper.abstract`);
   await evaluate(`
@@ -142,7 +158,16 @@ try {
     document.querySelector('[data-action="libview"][data-id="grid"]').click();
   `);
   await check('grid view keeps the selected paper and its saved introduction', `libraryEntry(testPaper).classList.contains('gcard')
-    && libraryEntry(testPaper).getAttribute('aria-current') === 'true' && document.querySelector('#paper-intro').value === testPaper.abstract`);
+    && libraryEntry(testPaper).getAttribute('aria-current') === 'true' && !document.querySelector('#paper-intro')
+    && document.querySelector('.paper-intro-text').textContent === testPaper.abstract`);
+  await evaluate(`
+    document.querySelector('[data-action="edit-paper-intro"]').click();
+    document.querySelector('#paper-intro').value = 'Cancelled changes';
+    document.querySelector('#paper-intro').dispatchEvent(new Event('input', { bubbles: true }));
+    document.querySelector('#paper-intro').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  `);
+  await check('Escape restores the saved introduction and returns to reading',
+    `!document.querySelector('#paper-intro') && document.querySelector('.paper-intro-text').textContent === testPaper.abstract`);
   await send('Emulation.setDeviceMetricsOverride', { width: 1000, height: 800, deviceScaleFactor: 1, mobile: false });
   await check('details fit the right edge of a narrow window', `(() => {
     const panel = document.querySelector('#paper-details');
@@ -154,7 +179,7 @@ try {
   await check('closing details returns focus to the paper', `!document.querySelector('#paper-details') && document.activeElement === libraryEntry(testPaper)`);
   await send('Input.dispatchKeyEvent', { type: 'keyDown', key: ' ', code: 'Space', windowsVirtualKeyCode: 32 });
   await send('Input.dispatchKeyEvent', { type: 'keyUp', key: ' ', code: 'Space', windowsVirtualKeyCode: 32 });
-  await check('Space reselects the focused paper', `document.querySelector('#paper-intro').value === testPaper.abstract`);
+  await check('Space reselects the focused paper', `document.querySelector('.paper-intro-text').textContent === testPaper.abstract`);
   await send('Emulation.setDeviceMetricsOverride', { width: 1500, height: 1000, deviceScaleFactor: 1, mobile: false });
   await evaluate(`
     readerSession(testPaper.id).mode = 'en';
@@ -354,6 +379,24 @@ try {
     window.pendingAnnotationWrites=[];
     LithubAPI.updateAnnotation=(id,aid,fields)=>new Promise(resolve=>pendingAnnotationWrites.push({fields,resolve}));
     openAnnotationEditor(pane(),sidebarAnnotation,"edit");
+  `);
+  await check('annotation editor uses a spacious borderless writing area', `(() => {
+    const input=document.querySelector('#annot-comment'), pop=document.querySelector('#annot-pop');
+    return input.clientHeight >= 156 && pop.offsetWidth >= 360
+      && getComputedStyle(input).borderTopWidth === '0px'
+      && input.placeholder === '写下你的想法…';
+  })()`);
+  await evaluate(`
+    document.querySelector('#annot-comment').value=Array(45).fill('Long annotation text.').join(String.fromCharCode(10));
+    document.querySelector('#annot-comment').dispatchEvent(new Event('input'));
+  `);
+  await check('long annotations expand while the popup stays inside the viewport', `(() => {
+    const input=document.querySelector('#annot-comment'), pop=document.querySelector('#annot-pop');
+    const r=pop.getBoundingClientRect();
+    return input.clientHeight > 600 && input.scrollHeight <= input.clientHeight + 2
+      && r.top >= 0 && r.bottom <= innerHeight && r.right <= innerWidth;
+  })()`);
+  await evaluate(`
     document.querySelector('#annot-comment').value='First draft';
     document.querySelector('#annot-comment').dispatchEvent(new Event('input'));
   `);
@@ -378,6 +421,11 @@ try {
   await until('failed close save retains local draft', `!annotationSaves.size && !!readAnnotationDraft(testPaper.id,'sidebar-note')`);
   await evaluate(`annotationDrafts.clear(); openAnnotationEditor(pane(),sidebarAnnotation,"edit");`);
   await check('annotation draft survives reopening from local storage', `document.querySelector('#annot-comment').value==='Recover after failed save'`);
+  await evaluate(`document.querySelector('[data-annot-save]').click()`);
+  await until('failed completion keeps the editor and its unsaved text', `!annotationSaves.size
+    && !!document.querySelector('#annot-comment')
+    && document.querySelector('.annot-save-state').textContent.includes('保存失败')
+    && document.querySelector('#annot-comment').value==='Recover after failed save'`);
   await evaluate(`LithubAPI.updateAnnotation=async(id,aid,fields)=>({...sidebarAnnotation,...fields});
     saveAnnotationComment(pane(),'sidebar-note');`);
   await until('retry saves and clears recovered draft', `!document.querySelector('#annot-pop') && !readAnnotationDraft(testPaper.id,'sidebar-note')`);
